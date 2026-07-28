@@ -1,0 +1,38 @@
+{
+  "summary": "Backend end-to-end tests for FantaGiornata (Italian fantacalcio) MVP. 40/40 tests PASSED. Coverage: auth (register/login/me + 401/409/invalid tokens), players (>=200 seeded, filters role=P|D|C|A, team=Inter, q=Lautaro), 20 teams, full league flow (create -> join -> lineup -> vote -> results -> leaderboard -> history -> advance), lineup validation (11 unique valid ids), fantavoto formula verified end-to-end incl. portiere -1 per 2 gol subiti, owner-only votes/advance authorization (403 for non-owner), member-only reads (403 for non-members on /leagues/{id}, /votes, /results, /leaderboard, /history), and MongoDB _id leak checks across ALL response payloads (recursive walk). No high-severity issues found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_fantagiornata.py",
+    "/app/backend/tests/test_no_id_leak.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py uses deprecated FastAPI @app.on_event('startup'/'shutdown'); should migrate to lifespan context manager to silence DeprecationWarning in newer FastAPI versions.",
+    "CORS middleware is added AFTER app.include_router(api); functionally OK because Starlette applies middleware app-wide, but convention is to attach middleware before mounting routers.",
+    "join_league() is idempotent (silent no-op if already a member) and returns 200; could return a hint field or 409 for clearer client feedback, but current behavior is acceptable for MVP.",
+    "advance_matchday has no upper bound check (goes past 38 which conflicts with MatchdayCreate ge=1 le=38). Consider guarding against advancing past 38.",
+    "server.py ~610 lines; approaching 700-line threshold. If more features are added, split routers (auth.py, leagues.py, votes.py) into modules.",
+    "get_current_user uses HTTPBearer(auto_error=False) but no rate limiting on /auth/login; login endpoint intentionally runs a dummy bcrypt verify on unknown email to mitigate timing attacks (nice touch).",
+    "No explicit index on lineups (league_id, user_id, matchday) uniqueness works, but a compound index on (league_id, matchday) would speed up results/history queries at scale."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_no_id_leak.py (new - recursive _id leak assertions across all endpoints)"
+  ],
+  "success_rate": {"backend": "100% (40/40)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Test users created per-run with TEST_ prefix and UUID suffix (TEST_user1_*, TEST_user2_*, TEST_user3_*). Test leagues created: 'TEST_Lega Test' and 'TEST_NoIDLeak'. Admin (admin@fantagiornata.it) is auto-seeded by backend startup and reused across runs.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "pytest-xdist runs with 2 workers using LoadScopeScheduling. Any tests that share DB state (create league -> join -> lineup -> vote -> result) MUST live in the SAME class or module so loadscope keeps them on one worker. See TestLeagueFullFlow with numeric-prefix ordering and module-level _STATE dict. Base URL comes from BASE_URL constant / EXPO_PUBLIC_BACKEND_URL env var. _id leak test uses a recursive _walk() that traverses arbitrarily nested dicts/lists.",
+  "rca_of_issue": "No new issues. Previous iteration RCA (pytest-xdist loadscope splitting shared-state tests across workers) remains solved by consolidating flow tests into a single class and using a module-level _STATE dict for cross-test data. New coverage added for _id leak validation - none detected."
+}
