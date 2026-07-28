@@ -1,0 +1,198 @@
+{
+  "app_name": "FantaGiornata",
+  "personality": "7 Dark-First Utility, with 6 Glass / Luxe surfaces for a premium Serie A feel",
+  "personality_one_liner": "A high-octane, premium command center for Serie A fantasy football that prioritizes stats and matchday performance with vibrant pitch-green accents.",
+  "color": {
+    "surface": "#0D1114",
+    "onSurface": "#F8FAFC",
+    "surfaceSecondary": "#151A1E",
+    "onSurfaceSecondary": "#E2E8F0",
+    "surfaceTertiary": "#1F262B",
+    "onSurfaceTertiary": "#CBD5E1",
+    "surfaceInverse": "#F8FAFC",
+    "onSurfaceInverse": "#0D1114",
+    "brand": "#00D95F",
+    "brandPrimary": "#00D95F",
+    "onBrandPrimary": "#021A0A",
+    "brandSecondary": "#FFB300",
+    "onBrandSecondary": "#2A1D00",
+    "brandTertiary": "#00D95F1A",
+    "onBrandTertiary": "#00D95F",
+    "success": "#10B981",
+    "onSuccess": "#FFFFFF",
+    "warning": "#F59E0B",
+    "onWarning": "#1E1400",
+    "error": "#EF4444",
+    "onError": "#FFFFFF",
+    "info": "#A1A1AA",
+    "onInfo": "#18181B",
+    "border": "#273038",
+    "borderStrong": "#3B4754",
+    "divider": "#192026"
+  },
+  "typography": {
+    "displayFontFamily": "Barlow Condensed",
+    "textFontFamily": "Satoshi",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "High-density data requires strict layout alignment. Use md spacing for component internals, and lg/xl for section separation. Avoid extraneous padding on live stats screens.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use frosted glass overlays (expo-blur) for sticky headers, the bottom tab bar, and the tactical lineup pitch background.",
+      "Overlay glass on the hero background images to ensure text readability."
+    ],
+    "dont's": [
+      "Do not use blur on player stat cards or list items to preserve high-contrast readability."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Onboarding & Login",
+      "purpose": "Immerse the user in the football manager mindset before entering the app.",
+      "states": {
+        "loading": "Centered dark spinner.",
+        "empty": "N/A",
+        "error": "Standard alert toast with Retry."
+      },
+      "layout": "Full-bleed background image with a vertical gradient scrim (transparent to surfaceInverse) at the bottom. Sticky brandPrimary CTA button."
+    },
+    {
+      "name": "Home Dashboard",
+      "purpose": "A command center showing the current matchday status, user's active lineup summary, and brief league standings.",
+      "states": {
+        "loading": "Skeleton loaders for the current lineup and league ranking cards.",
+        "empty": "Illustration of a tactic board prompting the user to join a league or create a lineup.",
+        "error": "Error message with 'Reload Data' button."
+      },
+      "layout": "Hero card at the top displaying matchday countdown/status. Below, a horizontal scroll of the current lineup (mini cards) and a stacked preview of the league ranking."
+    },
+    {
+      "name": "League List",
+      "purpose": "Hub for users to navigate between multiple leagues or create/join new ones.",
+      "states": {
+        "loading": "List skeleton.",
+        "empty": "Stylized empty stadium image with primary 'Create League' and 'Join via Code' CTAs.",
+        "error": "Error message with retry CTA."
+      },
+      "layout": "Stacked list of league cards. Each card displays league name, user's current rank, and total participants. Floating Action Button (FAB) or sticky bottom CTA for Create/Join."
+    },
+    {
+      "name": "League Detail & Leaderboard",
+      "purpose": "Displays current and overall standings, matchday history, and participants.",
+      "states": {
+        "loading": "Skeleton rows for leaderboard.",
+        "empty": "No matchdays played yet message with an abstract pitch graphic.",
+        "error": "Error message with retry."
+      },
+      "layout": "Segmented control at the top (Current Matchday vs. Overall). Stacked list leaderboard: each row shows Rank, Avatar/Initials, Username, and Score. Highlight the active user's row with surfaceTertiary. Display a brandSecondary (Amber/Gold) trophy icon on rank 1."
+    },
+    {
+      "name": "Lineup Builder",
+      "purpose": "The core interactive feature where users drag or tap to select their tactical formation and 11 starters + bench.",
+      "states": {
+        "loading": "Pitch loading spinner.",
+        "empty": "Empty pitch with '+' slots for players.",
+        "error": "Failed to load roster error."
+      },
+      "layout": "Sticky header for module selection (e.g., 4-3-3, 3-5-2). The main area is a graphical football pitch (using dark/glassmorphism) with absolute/flex positioned player slots (P, D, C, A). Tapping a slot opens a bottom sheet to select a player from the filtered roster."
+    },
+    {
+      "name": "Player Roster (Browse)",
+      "purpose": "Search and filter all available Serie A players by role and team.",
+      "states": {
+        "loading": "List skeletons.",
+        "empty": "No players found matching filters.",
+        "error": "Failed to fetch players."
+      },
+      "layout": "Sticky top section with horizontal scrolling chip filters for Roles (P, D, C, A) and Teams. Below is a flat list of player cards showing team logo, name, role, and current matchday points."
+    },
+    {
+      "name": "Admin: Votes Management",
+      "purpose": "Secure screen for admins to input votes, bonuses, and maluses for a matchday.",
+      "states": {
+        "loading": "Skeleton list.",
+        "empty": "No pending matchdays.",
+        "error": "Submission error toast."
+      },
+      "layout": "List of players with numerical steppers or text inputs for Fantavoto. Sticky 'Save Votes' CTA at the bottom."
+    },
+    {
+      "name": "User Profile",
+      "purpose": "Personal statistics, badges earned, and account settings.",
+      "states": {
+        "loading": "Profile skeleton.",
+        "empty": "N/A",
+        "error": "Failed to load profile."
+      },
+      "layout": "Top banner using a dark sports texture. Avatar overlapping the banner. Grid of stats (Matchdays won, Highest score) and a stacked list of earned badges."
+    }
+  ],
+  "components": {
+    "player_card": "Horizontal row in lists: Team logo on the left (or kit visual), followed by Player Name (Satoshi, base, 500) and Role badge (P/D/C/A). Trailing element is the current score (Barlow Condensed, xl, brandPrimary).",
+    "pitch_layout": "A container with 'surfaceSecondary' and subtle white/green line markings. Use 'flex' with nested rows for attackers, midfielders, defenders, and goalkeeper to automatically distribute spacing based on the chosen module (e.g. 4-3-3).",
+    "chip_filters": "Horizontal ScrollView of pills. Inactive: surfaceTertiary background, onSurface text. Active: brandPrimary background, onBrandPrimary text. Pill radius.",
+    "leaderboard_row": "Row with md padding. Rank number (Barlow Condensed, large), Avatar (initials if no image), Username. Highlight the winner with a Phosphor Trophy icon filled with brandSecondary (Amber). Active user's row gets a subtle brandTertiary background tint."
+  },
+  "images": {
+    "hero_background": {
+      "url": "https://images.pexels.com/photos/4122451/pexels-photo-4122451.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "dark": "https://images.pexels.com/photos/32761355/pexels-photo-32761355.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Illuminated nighttime soccer stadium pitch."
+    },
+    "profile_banner": {
+      "url": "https://images.unsplash.com/photo-1637004732258-4b792ce8f474?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDB8MHwxfHNlYXJjaHwxfHxkYXJrJTIwY2FyYm9uJTIwZmliZXIlMjBzcG9ydHMlMjB0ZXh0dXJlfGVufDB8fHx8MTc4MjYxOTc0M3ww&ixlib=rb-4.1.0&q=85",
+      "alt": "Dark carbon fiber sports texture."
+    },
+    "empty_state_tactics": {
+      "url": "https://images.pexels.com/photos/20836662/pexels-photo-20836662.jpeg",
+      "alt": "Manager planning tactics on a board."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Design personality is 7 Dark-First Utility. Emphasize dense, legible statistics combined with premium glassmorphic overlays.",
+    "BANNED: Do not use any blue, indigo, or purple hues. Stick strictly to the dark slate base and Pitch Green (brandPrimary) accent.",
+    "Use Barlow Condensed for all numerals, scores, and major headers. Use Satoshi for body text and player names.",
+    "Implement the sticky primary CTA over scrolling content rule for forms and major actions.",
+    "Lineup Builder: The pitch must be visually distinct but not overly bright. Use a dark frosted glass effect or surfaceSecondary with subtle field markings. Players on the pitch should be represented by small tinted icons/kits or circular badges with their role (P/D/C/A).",
+    "Leaderboards must display high contrast. Ensure the active user's row is highlighted subtly, and the winner always gets the brandSecondary Trophy icon.",
+    "Images MUST use the gradient scrim pattern (transparent to >=70% surfaceInverse) when text is overlaid.",
+    "Make sure haptics are integrated for drag-and-drop actions in the lineup builder and when tapping chip filters."
+  ]
+}
