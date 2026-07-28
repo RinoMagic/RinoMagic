@@ -1,60 +1,605 @@
-from fastapi import FastAPI, APIRouter
+import os
+import uuid
+import logging
+import string
+import random
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+
+import jwt
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
-from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import List
-import uuid
-from datetime import datetime
+from passlib.context import CryptContext
+from pydantic import BaseModel, EmailStr, Field
 
+from seed_data import PLAYERS, TEAMS
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# --- Config ---
+MONGO_URL = os.environ["MONGO_URL"]
+DB_NAME = os.environ["DB_NAME"]
+JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "10080"))
+ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 
-# Create the main app without a prefix
-app = FastAPI()
+# --- DB ---
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+# --- App ---
+app = FastAPI(title="FantaGiornata API")
+api = APIRouter(prefix="/api")
+security = HTTPBearer(auto_error=False)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+DUMMY_HASH = pwd_context.hash("dummy-password-for-timing")
+
+logger = logging.getLogger("fantagiornata")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+# ============ Models ============
+class RegisterIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    username: str = Field(min_length=2, max_length=24)
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserOut(BaseModel):
+    id: str
+    email: EmailStr
+    username: str
+
+
+class Player(BaseModel):
+    id: str
+    name: str
+    team: str
+    role: str  # P D C A
+
+
+class LeagueCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=40)
+
+
+class LeagueJoin(BaseModel):
+    code: str
+
+
+class League(BaseModel):
+    id: str
+    name: str
+    code: str
+    owner_id: str
+    created_at: datetime
+    members_count: int = 0
+    is_owner: bool = False
+    current_matchday: int = 1
+
+
+class MatchdayCreate(BaseModel):
+    number: int = Field(ge=1, le=38)
+
+
+class LineupIn(BaseModel):
+    matchday: int
+    module: str  # e.g. "4-3-3"
+    starters: List[str]  # 11 player ids
+    bench: List[str] = []
+
+
+class VoteIn(BaseModel):
+    player_id: str
+    voto: float = 6.0
+    gol: int = 0
+    assist: int = 0
+    ammoniz: bool = False
+    espuls: bool = False
+    autogol: int = 0
+    gol_subiti: int = 0  # for portiere
+    rigore_segnato: int = 0
+    rigore_sbagliato: int = 0
+
+
+class VotesSubmit(BaseModel):
+    matchday: int
+    votes: List[VoteIn]
+
+
+# ============ Helpers ============
+def hash_password(p: str) -> str:
+    return pwd_context.hash(p)
+
+
+def verify_password(p: str, h: str) -> bool:
+    return pwd_context.verify(p, h)
+
+
+def create_token(user_id: str) -> str:
+    exp = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_MINUTES)
+    return jwt.encode({"sub": user_id, "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def gen_code(n: int = 6) -> str:
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=n))
+
+
+def fantavoto_from_vote(v: dict, role: str) -> float:
+    """Compute fantavoto with bonus/malus."""
+    fv = float(v.get("voto", 6.0))
+    fv += 3 * v.get("gol", 0)
+    fv += 1 * v.get("assist", 0)
+    fv += 3 * v.get("rigore_segnato", 0)
+    fv -= 3 * v.get("rigore_sbagliato", 0)
+    fv -= 0.5 if v.get("ammoniz") else 0
+    fv -= 1 if v.get("espuls") else 0
+    fv -= 2 * v.get("autogol", 0)
+    if role == "P":
+        # portiere: -1 ogni 2 gol subiti (arrotondato)
+        gs = v.get("gol_subiti", 0)
+        fv -= (gs // 2) * 1
+    return round(fv, 2)
+
+
+async def get_current_user(cred: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> dict:
+    if not cred:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(cred.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("sub")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+# ============ Startup ============
+@app.on_event("startup")
+async def startup():
+    await db.users.create_index("email", unique=True)
+    await db.users.create_index("id", unique=True)
+    await db.players.create_index("id", unique=True)
+    await db.leagues.create_index("id", unique=True)
+    await db.leagues.create_index("code", unique=True)
+    await db.memberships.create_index([("league_id", 1), ("user_id", 1)], unique=True)
+    await db.lineups.create_index([("league_id", 1), ("user_id", 1), ("matchday", 1)], unique=True)
+    await db.votes.create_index([("league_id", 1), ("matchday", 1), ("player_id", 1)], unique=True)
+
+    # Seed admin
+    existing_admin = await db.users.find_one({"email": ADMIN_EMAIL})
+    if not existing_admin:
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": ADMIN_EMAIL,
+            "username": "admin",
+            "password_hash": hash_password(ADMIN_PASSWORD),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info("Admin user seeded")
+
+    # Seed players idempotently
+    count = await db.players.count_documents({})
+    if count == 0:
+        docs = []
+        for name, team, role in PLAYERS:
+            docs.append({
+                "id": str(uuid.uuid4()),
+                "name": name,
+                "team": team,
+                "role": role,
+            })
+        if docs:
+            await db.players.insert_many(docs)
+            logger.info(f"Seeded {len(docs)} Serie A players")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    client.close()
+
+
+# ============ Auth ============
+@api.post("/auth/register", response_model=TokenOut, status_code=201)
+async def register(data: RegisterIn):
+    existing = await db.users.find_one({"email": data.email})
+    if existing:
+        raise HTTPException(status_code=409, detail="Email gia registrata")
+    user_id = str(uuid.uuid4())
+    await db.users.insert_one({
+        "id": user_id,
+        "email": data.email,
+        "username": data.username,
+        "password_hash": hash_password(data.password),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return TokenOut(access_token=create_token(user_id))
+
+
+@api.post("/auth/login", response_model=TokenOut)
+async def login(data: LoginIn):
+    user = await db.users.find_one({"email": data.email})
+    if not user:
+        verify_password(data.password, DUMMY_HASH)
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+    if not verify_password(data.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+    return TokenOut(access_token=create_token(user["id"]))
+
+
+@api.get("/auth/me", response_model=UserOut)
+async def me(user: dict = Depends(get_current_user)):
+    return UserOut(id=user["id"], email=user["email"], username=user["username"])
+
+
+# ============ Players ============
+@api.get("/players", response_model=List[Player])
+async def list_players(
+    role: Optional[str] = None,
+    team: Optional[str] = None,
+    q: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    query = {}
+    if role and role in ("P", "D", "C", "A"):
+        query["role"] = role
+    if team:
+        query["team"] = team
+    if q:
+        query["name"] = {"$regex": q, "$options": "i"}
+    cursor = db.players.find(query, {"_id": 0}).limit(500)
+    return [Player(**p) async for p in cursor]
+
+
+@api.get("/teams", response_model=List[str])
+async def list_teams(user: dict = Depends(get_current_user)):
+    return TEAMS
+
+
+# ============ Leagues ============
+async def _league_public(league: dict, user_id: str) -> dict:
+    members_count = await db.memberships.count_documents({"league_id": league["id"]})
+    return {
+        "id": league["id"],
+        "name": league["name"],
+        "code": league["code"],
+        "owner_id": league["owner_id"],
+        "created_at": league["created_at"],
+        "members_count": members_count,
+        "is_owner": league["owner_id"] == user_id,
+        "current_matchday": league.get("current_matchday", 1),
+    }
+
+
+@api.post("/leagues", response_model=League)
+async def create_league(data: LeagueCreate, user: dict = Depends(get_current_user)):
+    # Generate unique code
+    for _ in range(10):
+        code = gen_code()
+        if not await db.leagues.find_one({"code": code}):
+            break
+    league_id = str(uuid.uuid4())
+    doc = {
+        "id": league_id,
+        "name": data.name,
+        "code": code,
+        "owner_id": user["id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "current_matchday": 1,
+    }
+    await db.leagues.insert_one(doc)
+    await db.memberships.insert_one({
+        "league_id": league_id,
+        "user_id": user["id"],
+        "joined_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return League(**await _league_public(doc, user["id"]))
+
+
+@api.post("/leagues/join", response_model=League)
+async def join_league(data: LeagueJoin, user: dict = Depends(get_current_user)):
+    league = await db.leagues.find_one({"code": data.code.upper()}, {"_id": 0})
+    if not league:
+        raise HTTPException(status_code=404, detail="Codice lega non trovato")
+    existing = await db.memberships.find_one({"league_id": league["id"], "user_id": user["id"]})
+    if not existing:
+        await db.memberships.insert_one({
+            "league_id": league["id"],
+            "user_id": user["id"],
+            "joined_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return League(**await _league_public(league, user["id"]))
+
+
+@api.get("/leagues", response_model=List[League])
+async def list_leagues(user: dict = Depends(get_current_user)):
+    memberships = db.memberships.find({"user_id": user["id"]}, {"_id": 0})
+    league_ids = [m["league_id"] async for m in memberships]
+    if not league_ids:
+        return []
+    cursor = db.leagues.find({"id": {"$in": league_ids}}, {"_id": 0})
+    out = []
+    async for lg in cursor:
+        out.append(League(**await _league_public(lg, user["id"])))
+    return out
+
+
+@api.get("/leagues/{league_id}", response_model=League)
+async def get_league(league_id: str, user: dict = Depends(get_current_user)):
+    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
+    if not league:
+        raise HTTPException(status_code=404, detail="Lega non trovata")
+    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
+    if not member:
+        raise HTTPException(status_code=403, detail="Non sei membro di questa lega")
+    return League(**await _league_public(league, user["id"]))
+
+
+@api.get("/leagues/{league_id}/members")
+async def league_members(league_id: str, user: dict = Depends(get_current_user)):
+    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
+    if not member:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    cursor = db.memberships.find({"league_id": league_id}, {"_id": 0})
+    users_ids = [m["user_id"] async for m in cursor]
+    users = db.users.find({"id": {"$in": users_ids}}, {"_id": 0, "password_hash": 0})
+    return [{"id": u["id"], "username": u["username"]} async for u in users]
+
+
+@api.post("/leagues/{league_id}/advance", response_model=League)
+async def advance_matchday(league_id: str, user: dict = Depends(get_current_user)):
+    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
+    if not league:
+        raise HTTPException(status_code=404, detail="Lega non trovata")
+    if league["owner_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Solo il proprietario puo avanzare la giornata")
+    new_md = league.get("current_matchday", 1) + 1
+    await db.leagues.update_one({"id": league_id}, {"$set": {"current_matchday": new_md}})
+    league["current_matchday"] = new_md
+    return League(**await _league_public(league, user["id"]))
+
+
+# ============ Lineups ============
+@api.post("/leagues/{league_id}/lineups")
+async def submit_lineup(league_id: str, data: LineupIn, user: dict = Depends(get_current_user)):
+    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
+    if not league:
+        raise HTTPException(status_code=404, detail="Lega non trovata")
+    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
+    if not member:
+        raise HTTPException(status_code=403, detail="Non membro")
+    if len(data.starters) != 11:
+        raise HTTPException(status_code=400, detail="Devi selezionare esattamente 11 titolari")
+    if len(set(data.starters)) != 11:
+        raise HTTPException(status_code=400, detail="Giocatori duplicati")
+
+    # Validate player ids exist
+    count = await db.players.count_documents({"id": {"$in": data.starters}})
+    if count != 11:
+        raise HTTPException(status_code=400, detail="Alcuni giocatori non esistono")
+
+    await db.lineups.update_one(
+        {"league_id": league_id, "user_id": user["id"], "matchday": data.matchday},
+        {"$set": {
+            "league_id": league_id,
+            "user_id": user["id"],
+            "matchday": data.matchday,
+            "module": data.module,
+            "starters": data.starters,
+            "bench": data.bench,
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.get("/leagues/{league_id}/lineups/{matchday}")
+async def get_my_lineup(league_id: str, matchday: int, user: dict = Depends(get_current_user)):
+    lineup = await db.lineups.find_one(
+        {"league_id": league_id, "user_id": user["id"], "matchday": matchday},
+        {"_id": 0},
+    )
+    return lineup or {"empty": True}
+
+
+# ============ Votes / Results ============
+@api.post("/leagues/{league_id}/votes")
+async def submit_votes(league_id: str, data: VotesSubmit, user: dict = Depends(get_current_user)):
+    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
+    if not league:
+        raise HTTPException(status_code=404, detail="Lega non trovata")
+    if league["owner_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Solo il proprietario puo inserire i voti")
+
+    for v in data.votes:
+        player = await db.players.find_one({"id": v.player_id}, {"_id": 0})
+        if not player:
+            continue
+        vd = v.model_dump()
+        fv = fantavoto_from_vote(vd, player["role"])
+        await db.votes.update_one(
+            {"league_id": league_id, "matchday": data.matchday, "player_id": v.player_id},
+            {"$set": {
+                "league_id": league_id,
+                "matchday": data.matchday,
+                "player_id": v.player_id,
+                "voto": vd["voto"],
+                "gol": vd["gol"],
+                "assist": vd["assist"],
+                "ammoniz": vd["ammoniz"],
+                "espuls": vd["espuls"],
+                "autogol": vd["autogol"],
+                "gol_subiti": vd["gol_subiti"],
+                "rigore_segnato": vd["rigore_segnato"],
+                "rigore_sbagliato": vd["rigore_sbagliato"],
+                "fantavoto": fv,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+    return {"ok": True, "count": len(data.votes)}
+
+
+@api.get("/leagues/{league_id}/votes/{matchday}")
+async def get_votes(league_id: str, matchday: int, user: dict = Depends(get_current_user)):
+    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
+    if not member:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    cursor = db.votes.find({"league_id": league_id, "matchday": matchday}, {"_id": 0})
+    return [v async for v in cursor]
+
+
+@api.get("/leagues/{league_id}/results/{matchday}")
+async def matchday_results(league_id: str, matchday: int, user: dict = Depends(get_current_user)):
+    """Return leaderboard for a matchday: user total score + per-player breakdown."""
+    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
+    if not member:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+
+    # Build vote map
+    votes = {v["player_id"]: v async for v in db.votes.find(
+        {"league_id": league_id, "matchday": matchday}, {"_id": 0}
+    )}
+
+    lineups_cursor = db.lineups.find(
+        {"league_id": league_id, "matchday": matchday}, {"_id": 0}
+    )
+    results = []
+    async for lineup in lineups_cursor:
+        starter_ids = lineup.get("starters", [])
+        total = 0.0
+        breakdown = []
+        for pid in starter_ids:
+            v = votes.get(pid)
+            fv = v["fantavoto"] if v else 0.0
+            total += fv
+            breakdown.append({"player_id": pid, "fantavoto": fv, "has_vote": v is not None})
+        user_doc = await db.users.find_one({"id": lineup["user_id"]}, {"_id": 0, "password_hash": 0})
+        results.append({
+            "user_id": lineup["user_id"],
+            "username": user_doc["username"] if user_doc else "?",
+            "total": round(total, 2),
+            "module": lineup.get("module"),
+            "breakdown": breakdown,
+        })
+    results.sort(key=lambda x: x["total"], reverse=True)
+    for i, r in enumerate(results):
+        r["rank"] = i + 1
+        r["is_winner"] = i == 0 and r["total"] > 0
+    return {"matchday": matchday, "results": results}
+
+
+@api.get("/leagues/{league_id}/leaderboard")
+async def overall_leaderboard(league_id: str, user: dict = Depends(get_current_user)):
+    """Total points across all played matchdays. Each matchday winner gets 3 points, 2nd 2, 3rd 1."""
+    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
+    if not member:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+
+    # Get all matchdays that have votes
+    matchdays = await db.votes.distinct("matchday", {"league_id": league_id})
+
+    # Get all members
+    memberships = db.memberships.find({"league_id": league_id}, {"_id": 0})
+    member_ids = [m["user_id"] async for m in memberships]
+    users_map = {}
+    users_cur = db.users.find({"id": {"$in": member_ids}}, {"_id": 0, "password_hash": 0})
+    async for u in users_cur:
+        users_map[u["id"]] = u["username"]
+
+    scores = {uid: {"user_id": uid, "username": users_map.get(uid, "?"),
+                    "total_fantavoto": 0.0, "wins": 0, "points": 0, "matchdays_played": 0}
+              for uid in member_ids}
+
+    for md in matchdays:
+        # compute per matchday
+        votes = {v["player_id"]: v async for v in db.votes.find(
+            {"league_id": league_id, "matchday": md}, {"_id": 0}
+        )}
+        md_results = []
+        lineups_cur = db.lineups.find({"league_id": league_id, "matchday": md}, {"_id": 0})
+        async for lineup in lineups_cur:
+            total = sum(votes.get(pid, {}).get("fantavoto", 0.0) for pid in lineup.get("starters", []))
+            md_results.append((lineup["user_id"], total))
+        md_results.sort(key=lambda x: x[1], reverse=True)
+        for i, (uid, total) in enumerate(md_results):
+            if uid in scores:
+                scores[uid]["total_fantavoto"] += total
+                scores[uid]["matchdays_played"] += 1
+                if i == 0 and total > 0:
+                    scores[uid]["wins"] += 1
+                    scores[uid]["points"] += 3
+                elif i == 1:
+                    scores[uid]["points"] += 2
+                elif i == 2:
+                    scores[uid]["points"] += 1
+
+    out = list(scores.values())
+    for r in out:
+        r["total_fantavoto"] = round(r["total_fantavoto"], 2)
+    out.sort(key=lambda x: (x["points"], x["total_fantavoto"]), reverse=True)
+    for i, r in enumerate(out):
+        r["rank"] = i + 1
+    return {"leaderboard": out, "matchdays_played": len(matchdays)}
+
+
+@api.get("/leagues/{league_id}/history")
+async def matchday_history(league_id: str, user: dict = Depends(get_current_user)):
+    """List all played matchdays with their winners."""
+    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
+    if not member:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    matchdays = sorted(await db.votes.distinct("matchday", {"league_id": league_id}))
+    out = []
+    for md in matchdays:
+        votes = {v["player_id"]: v async for v in db.votes.find(
+            {"league_id": league_id, "matchday": md}, {"_id": 0}
+        )}
+        best = None
+        lineups_cur = db.lineups.find({"league_id": league_id, "matchday": md}, {"_id": 0})
+        async for lineup in lineups_cur:
+            total = sum(votes.get(pid, {}).get("fantavoto", 0.0) for pid in lineup.get("starters", []))
+            if best is None or total > best[1]:
+                best = (lineup["user_id"], total)
+        winner_name = None
+        if best:
+            u = await db.users.find_one({"id": best[0]}, {"_id": 0, "password_hash": 0})
+            winner_name = u["username"] if u else "?"
+        out.append({
+            "matchday": md,
+            "winner_username": winner_name,
+            "winner_score": round(best[1], 2) if best else 0,
+        })
+    return {"history": out}
+
+
+# ============ Health ============
+@api.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"service": "FantaGiornata", "status": "ok"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.dict()
-    status_obj = StatusCheck(**status_dict)
-    _ = await db.status_checks.insert_one(status_obj.dict())
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**status_check) for status_check in status_checks]
-
-# Include the router in the main app
-app.include_router(api_router)
-
+# Mount
+app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -62,14 +607,3 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

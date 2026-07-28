@@ -1,0 +1,35 @@
+{
+  "summary": "Backend-only testing for FantaGiornata (Italian fantacalcio) API. 36/36 tests PASSED covering auth (register/login/me + 401/409), players (200+ seeded, filters role/team/q), 20 teams, league CRUD (create/join/list/get, 6-char code, is_owner flag, membership 403), lineups (submit, 11-players validation, dupes, invalid IDs), votes (owner-only, fantavoto formula verified including P role -1 per 2 goals conceded), matchday results (sorted desc, winner flag, ranks), overall leaderboard (3/2/1 points), history, and matchday advance (owner-only). Fantavoto formula validated end-to-end.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_fantagiornata.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py uses deprecated FastAPI @app.on_event('startup'/'shutdown'); consider migrating to lifespan context manager (non-blocking, but will emit DeprecationWarnings in newer FastAPI).",
+    "server.py is ~610 lines; still under 700 threshold but approaching. If more features are added consider splitting routers (auth, leagues, votes) into modules.",
+    "CORS middleware is added AFTER app.include_router; still works because Starlette applies middleware app-wide, but conventional order is to add middleware before mounting routers.",
+    "join_league() auto-adds membership silently if code matches even after user already joined; consider returning 200 with a hint or 409 for idempotency clarity (currently returns success either way, which is acceptable)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py (new)",
+    "/app/backend/tests/test_fantagiornata.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Test users created dynamically with TEST_ prefix and UUID suffix (TEST_user1_*, TEST_user2_*, TEST_user3_*). One test league 'TEST_Lega Test' created per run. Admin (admin@fantagiornata.it) is seeded by backend startup and reused.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend uses pytest-xdist with --dist loadscope (2 workers). Tests that share state (create league -> join -> lineup -> vote -> result) MUST live in the SAME class or same module-level state so loadscope keeps them on one worker. All such tests are in class TestLeagueFullFlow ordered by numeric prefix (test_01 -> test_21). A module-level dict _STATE carries shared IDs between ordered tests. Base URL is EXPO_PUBLIC_BACKEND_URL = https://fantasy-calcio-15.preview.emergentagent.com.",
+  "rca_of_issue": "First run had 3 failures (results/leaderboard/history returning empty). RCA: pytest-xdist loadscope split TestLineups, TestVotesAndResults, TestLeaderboardHistoryAdvance across different workers; each worker's session-scoped fixtures created a DIFFERENT league/user pair. Lineups were submitted to worker0's league while votes were submitted to worker1's league -> results endpoint queried worker1's league which had votes but no lineups -> empty results. FIX: Consolidated all interdependent tests into a single class TestLeagueFullFlow so loadscope keeps them on the same worker; used module-level _STATE dict for cross-test data sharing. Second run: 36/36 passed."
+}
