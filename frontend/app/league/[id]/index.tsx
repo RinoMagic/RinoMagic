@@ -33,16 +33,6 @@ type LeaderRow = {
   is_winner: boolean;
 };
 
-type OverallRow = {
-  user_id: string;
-  username: string;
-  points: number;
-  wins: number;
-  total_fantavoto: number;
-  matchdays_played: number;
-  rank: number;
-};
-
 type HistoryItem = { matchday: number; winner_username: string | null; winner_score: number };
 
 export default function LeagueDetail() {
@@ -50,9 +40,8 @@ export default function LeagueDetail() {
   const router = useRouter();
   const { user } = useAuth();
   const [league, setLeague] = useState<League | null>(null);
-  const [tab, setTab] = useState<'current' | 'overall' | 'history'>('current');
+  const [tab, setTab] = useState<'current' | 'history'>('current');
   const [currentResults, setCurrentResults] = useState<LeaderRow[]>([]);
-  const [overall, setOverall] = useState<OverallRow[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -66,8 +55,6 @@ export default function LeagueDetail() {
         `/leagues/${id}/results/${lg.current_matchday}`
       );
       setCurrentResults(cr.results);
-      const ov = await api<{ leaderboard: OverallRow[] }>(`/leagues/${id}/leaderboard`);
-      setOverall(ov.leaderboard);
       const h = await api<{ history: HistoryItem[] }>(`/leagues/${id}/history`);
       setHistory(h.history);
     } catch {} finally {
@@ -167,7 +154,7 @@ export default function LeagueDetail() {
 
         {/* Segmented control */}
         <View style={styles.segments}>
-          {(['current', 'overall', 'history'] as const).map((t) => (
+          {(['current', 'history'] as const).map((t) => (
             <Pressable
               key={t}
               testID={`segment-${t}`}
@@ -180,7 +167,7 @@ export default function LeagueDetail() {
                   tab === t && { color: theme.colors.onBrand, fontWeight: '800' },
                 ]}
               >
-                {t === 'current' ? 'Giornata' : t === 'overall' ? 'Classifica' : 'Storico'}
+                {t === 'current' ? 'Giornata' : 'Storico'}
               </Text>
             </Pressable>
           ))}
@@ -224,39 +211,6 @@ export default function LeagueDetail() {
                 </View>
               ))
             )}
-          </View>
-        )}
-
-        {tab === 'overall' && (
-          <View style={styles.listWrap}>
-            <Text style={styles.sectionTitle}>Classifica generale</Text>
-            <Text style={styles.hint}>
-              +3 per vittoria giornata, +2 secondo, +1 terzo posto
-            </Text>
-            {overall.map((row) => (
-              <View
-                key={row.user_id}
-                testID={`overall-row-${row.user_id}`}
-                style={[
-                  styles.leaderRow,
-                  row.user_id === user?.id && { backgroundColor: theme.colors.brandTertiary },
-                ]}
-              >
-                <Text style={styles.rank}>{row.rank}</Text>
-                <View style={styles.miniAv}>
-                  <Text style={styles.miniAvText}>
-                    {row.username.slice(0, 2).toUpperCase()}
-                  </Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.leaderName}>{row.username}</Text>
-                  <Text style={styles.leaderSub}>
-                    {row.wins} vittorie · {row.matchdays_played} giornate
-                  </Text>
-                </View>
-                <Text style={styles.leaderScore}>{row.points} pt</Text>
-              </View>
-            ))}
           </View>
         )}
 

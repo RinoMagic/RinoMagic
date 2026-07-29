@@ -167,10 +167,10 @@ class TestLeagueFullFlow:
     def test_09_submit_lineup_user1(self, session, user1):
         league = _STATE["league"]
         starters = _STATE["player_ids"][0:11]
-        bench = _STATE["player_ids"][11:15]
+        # Use empty bench (backward compat) - full bench composition tested in test_bench_and_subs.py
         r = session.post(
             f"{API}/leagues/{league['id']}/lineups",
-            json={"matchday": 1, "module": "4-3-3", "starters": starters, "bench": bench},
+            json={"matchday": 1, "module": "4-3-3", "starters": starters, "bench": []},
             headers=auth_headers(user1["token"]),
         )
         assert r.status_code == 200

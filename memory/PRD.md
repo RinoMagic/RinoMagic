@@ -10,13 +10,18 @@ Un'app mobile fantacalcio in cui ogni giornata i partecipanti creano una formazi
 ## Funzionalita MVP (implementate)
 1. **Autenticazione JWT** — registrazione/login email+password con bcrypt
 2. **Leghe** — creazione lega, invito con codice a 6 caratteri, listing leghe personali
-3. **Rosa Serie A** — 200+ giocatori 2024/25 (10 per squadra, 20 squadre) con filtri ruolo/squadra/ricerca
-4. **Costruzione Formazione** — 6 moduli (4-3-3, 4-4-2, 3-5-2, 3-4-3, 4-5-1, 5-3-2), pitch grafico, selezione via bottom sheet, salvataggio per giornata
-5. **Gestione Voti (admin)** — inserimento voto + bonus (gol, assist, rigori) + malus (ammoniz., espuls., autogol, gol subiti portiere); calcolo fantavoto server-side
-6. **Classifica giornata** — punteggi ordinati, evidenzia vincitore con trofeo dorato
-7. **Classifica generale** — 3/2/1 punti per top3 giornata, tie-break su fantavoto totale
-8. **Storico vincitori giornate**
+3. **Rosa Serie A** — 200+ giocatori 2024/25 (10 per squadra, 20 squadre) con filtri ruolo/squadra/ricerca. Pulsante "Aggiorna" per sync completo da API-Football (~500 giocatori).
+4. **Costruzione Formazione** — 6 moduli (4-3-3, 4-4-2, 3-5-2, 3-4-3, 4-5-1, 5-3-2), pitch grafico, 11 titolari + 8 panchina (2P+2D+2C+2A), selezione via bottom sheet
+5. **Sostituzioni automatiche**: se un titolare non ha voto (non ha giocato), viene sostituito automaticamente dal primo giocatore di panchina dello stesso ruolo che ha giocato
+6. **Voti**:
+   - **Sync automatico**: pulsante "Scarica voti da API" (owner) che scarica i voti reali dalla API-Football per la giornata
+   - **Inserimento manuale**: alternativa completa (voto + gol/assist/rigori/ammoniz/espuls/autogol/gol_subiti)
+7. **Classifica giornata** — punteggi ordinati con sostituzioni applicate, vincitore evidenziato con trofeo dorato
+8. **Storico vincitori giornate** — lista giornate giocate con vincitori
 9. **Avanzamento giornata** — l'admin di lega puo passare alla giornata successiva
+
+## Rimosso dall'MVP
+- ~~Classifica generale~~ (il gioco e basato su ogni singola giornata, non c'e classifica cumulativa)
 
 ## Regole Fantavoto
 - Base: 6.0

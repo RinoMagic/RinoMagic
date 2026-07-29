@@ -39,13 +39,16 @@ const ROLE_COLOR: Record<string, string> = {
 
 type SlotRole = 'P' | 'D' | 'C' | 'A';
 
+// Bench composition: 2P + 2D + 2C + 2A (indices 11-18 in slots array)
+const BENCH_ROLES: SlotRole[] = ['P', 'P', 'D', 'D', 'C', 'C', 'A', 'A'];
+
 export default function LineupBuilder() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [league, setLeague] = useState<League | null>(null);
   const [mod, setMod] = useState<Module>(MODULES[0]);
-  // slots: [1 P, d D, c C, a A]
-  const [slots, setSlots] = useState<(Player | null)[]>(() => Array(11).fill(null));
+  // 0..10 = starters (module-driven), 11..18 = bench (fixed 2P+2D+2C+2A)
+  const [slots, setSlots] = useState<(Player | null)[]>(() => Array(19).fill(null));
   const [pickerRole, setPickerRole] = useState<SlotRole | null>(null);
   const [pickerIndex, setPickerIndex] = useState<number>(-1);
   const [players, setPlayers] = useState<Player[]>([]);
@@ -65,17 +68,23 @@ export default function LineupBuilder() {
         if (prev && prev.starters && !prev.empty) {
           const found = MODULES.find((m) => m.name === prev.module);
           if (found) setMod(found);
-          // Fetch player docs for these ids
           const allPlayers = await api<Player[]>('/players');
           const byId = new Map(allPlayers.map((p) => [p.id, p]));
-          setSlots(prev.starters.map((pid: string) => byId.get(pid) || null));
+          const next: (Player | null)[] = Array(19).fill(null);
+          prev.starters.forEach((pid: string, i: number) => {
+            next[i] = byId.get(pid) || null;
+          });
+          (prev.bench || []).forEach((pid: string, i: number) => {
+            next[11 + i] = byId.get(pid) || null;
+          });
+          setSlots(next);
         }
       } catch {}
       setLoading(false);
     })();
   }, [id]);
 
-  const slotRoles: SlotRole[] = useMemo(() => {
+  const starterRoles: SlotRole[] = useMemo(() => {
     const arr: SlotRole[] = ['P'];
     for (let i = 0; i < mod.d; i++) arr.push('D');
     for (let i = 0; i < mod.c; i++) arr.push('C');
@@ -83,13 +92,14 @@ export default function LineupBuilder() {
     return arr;
   }, [mod]);
 
-  // when module changes, restructure slots by role preserving picks
+  // when module changes, restructure STARTER slots preserving picks (bench untouched)
   useEffect(() => {
     setSlots((prev) => {
       const byRole: Record<SlotRole, Player[]> = { P: [], D: [], C: [], A: [] };
-      prev.forEach((p) => { if (p) byRole[p.role as SlotRole]?.push(p); });
-      const next: (Player | null)[] = slotRoles.map((r) => byRole[r].shift() || null);
-      return next;
+      // only starter slots (0..10) get reshuffled
+      prev.slice(0, 11).forEach((p) => { if (p) byRole[p.role as SlotRole]?.push(p); });
+      const nextStarters: (Player | null)[] = starterRoles.map((r) => byRole[r].shift() || null);
+      return [...nextStarters, ...prev.slice(11, 19)];
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mod.name]);
@@ -122,7 +132,6 @@ export default function LineupBuilder() {
   const pickPlayer = (p: Player) => {
     setSlots((prev) => {
       const copy = [...prev];
-      // Avoid duplicates: remove player from any other slot
       const dupIdx = copy.findIndex((x) => x?.id === p.id);
       if (dupIdx >= 0) copy[dupIdx] = null;
       copy[pickerIndex] = p;
@@ -139,12 +148,18 @@ export default function LineupBuilder() {
     });
   };
 
-  const filledCount = slots.filter(Boolean).length;
+  const startersFilled = slots.slice(0, 11).filter(Boolean).length;
+  const benchFilled = slots.slice(11, 19).filter(Boolean).length;
+  const filledCount = startersFilled + benchFilled;
 
   const save = async () => {
     if (!league) return;
-    if (filledCount !== 11) {
+    if (startersFilled !== 11) {
       setSavedMsg('Devi selezionare 11 titolari');
+      return;
+    }
+    if (benchFilled !== 8) {
+      setSavedMsg('Devi selezionare 8 giocatori in panchina (2P+2D+2C+2A)');
       return;
     }
     setBusy(true);
@@ -154,8 +169,8 @@ export default function LineupBuilder() {
         body: {
           matchday: league.current_matchday,
           module: mod.name,
-          starters: slots.map((p) => p!.id),
-          bench: [],
+          starters: slots.slice(0, 11).map((p) => p!.id),
+          bench: slots.slice(11, 19).map((p) => p!.id),
         },
       });
       setSavedMsg('Formazione salvata!');
@@ -201,7 +216,7 @@ export default function LineupBuilder() {
             <Text style={styles.headerBig}>Giornata {league.current_matchday}</Text>
           </View>
           <View style={styles.counter}>
-            <Text style={styles.counterText}>{filledCount}/11</Text>
+            <Text style={styles.counterText}>{startersFilled}/11 · {benchFilled}/8</Text>
           </View>
         </View>
       </SafeAreaView>
@@ -265,6 +280,31 @@ export default function LineupBuilder() {
             </View>
           </View>
           <Text style={styles.hint}>Tocca per scegliere · tieni premuto per rimuovere</Text>
+        </View>
+
+        {/* Panchina */}
+        <View style={styles.benchWrap}>
+          <View style={styles.benchHeader}>
+            <Ionicons name="people" size={16} color={theme.colors.brand} />
+            <Text style={styles.benchTitle}>Panchina</Text>
+            <Text style={styles.benchSub}>2P · 2D · 2C · 2A</Text>
+          </View>
+          <View style={styles.benchGrid}>
+            {BENCH_ROLES.map((role, i) => {
+              const idx = 11 + i;
+              const player = slots[idx];
+              return (
+                <SlotDot
+                  key={idx}
+                  slot={player}
+                  role={role}
+                  onPress={() => openPicker(idx, role)}
+                  onLongPress={() => clearSlot(idx)}
+                  testID={`bench-slot-${idx}`}
+                />
+              );
+            })}
+          </View>
         </View>
 
         {/* Save */}
@@ -526,6 +566,39 @@ const styles = StyleSheet.create({
     maxWidth: 74,
   },
   hint: { color: theme.colors.muted, fontSize: 11, textAlign: 'center', marginTop: theme.spacing.sm },
+  benchWrap: {
+    marginHorizontal: theme.spacing.lg,
+    marginTop: theme.spacing.lg,
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  benchHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.md,
+  },
+  benchTitle: {
+    color: theme.colors.onSurface,
+    fontWeight: '800',
+    fontSize: 14,
+    flex: 1,
+  },
+  benchSub: {
+    color: theme.colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  benchGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-around',
+    rowGap: theme.spacing.md,
+  },
   saveBtn: {
     backgroundColor: theme.colors.brand,
     height: 52,

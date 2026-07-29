@@ -108,7 +108,7 @@ class LineupIn(BaseModel):
     matchday: int
     module: str  # e.g. "4-3-3"
     starters: List[str]  # 11 player ids
-    bench: List[str] = []
+    bench: List[str] = []  # 8 bench: 2P + 2D + 2C + 2A
 
 
 class VoteIn(BaseModel):
@@ -543,12 +543,33 @@ async def submit_lineup(league_id: str, data: LineupIn, user: dict = Depends(get
     if len(data.starters) != 11:
         raise HTTPException(status_code=400, detail="Devi selezionare esattamente 11 titolari")
     if len(set(data.starters)) != 11:
-        raise HTTPException(status_code=400, detail="Giocatori duplicati")
+        raise HTTPException(status_code=400, detail="Titolari duplicati")
 
-    # Validate player ids exist
+    # Validate starter player ids exist
     count = await db.players.count_documents({"id": {"$in": data.starters}})
     if count != 11:
-        raise HTTPException(status_code=400, detail="Alcuni giocatori non esistono")
+        raise HTTPException(status_code=400, detail="Alcuni titolari non esistono")
+
+    # Bench validation: allow empty (backward compat) OR exactly 8 with 2P+2D+2C+2A composition
+    if data.bench:
+        if len(data.bench) != 8:
+            raise HTTPException(status_code=400, detail="La panchina deve avere 8 giocatori (2P + 2D + 2C + 2A)")
+        if len(set(data.bench)) != 8:
+            raise HTTPException(status_code=400, detail="Panchina: giocatori duplicati")
+        # No overlap between starters and bench
+        if set(data.bench) & set(data.starters):
+            raise HTTPException(status_code=400, detail="Un giocatore non puo essere sia titolare che panchina")
+        bench_docs = [p async for p in db.players.find({"id": {"$in": data.bench}}, {"_id": 0})]
+        if len(bench_docs) != 8:
+            raise HTTPException(status_code=400, detail="Alcuni giocatori di panchina non esistono")
+        counts = {"P": 0, "D": 0, "C": 0, "A": 0}
+        for p in bench_docs:
+            counts[p["role"]] = counts.get(p["role"], 0) + 1
+        if counts != {"P": 2, "D": 2, "C": 2, "A": 2}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Composizione panchina errata: servono 2P+2D+2C+2A, ricevuto {counts}",
+            )
 
     await db.lineups.update_one(
         {"league_id": league_id, "user_id": user["id"], "matchday": data.matchday},
@@ -622,31 +643,184 @@ async def get_votes(league_id: str, matchday: int, user: dict = Depends(get_curr
     return [v async for v in cursor]
 
 
+@api.post("/leagues/{league_id}/votes/sync/{matchday}")
+async def sync_votes_from_api(
+    league_id: str,
+    matchday: int,
+    season: Optional[int] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Auto-fetch player statistics from API-Football for a matchday and compute fantavoto.
+
+    Only lega owner can trigger. Uses api-football fixtures + fixtures/players endpoints.
+    """
+    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
+    if not league:
+        raise HTTPException(status_code=404, detail="Lega non trovata")
+    if league["owner_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Solo il proprietario puo sincronizzare i voti")
+    if not API_FOOTBALL_KEY:
+        raise HTTPException(status_code=400, detail="API_FOOTBALL_KEY non configurata")
+
+    target_season = season or CURRENT_SEASON
+
+    # Build external_id → local player id map
+    ext_to_local: dict[str, str] = {}
+    async for p in db.players.find({"external_id": {"$exists": True}}, {"_id": 0}):
+        if p.get("external_id"):
+            ext_to_local[str(p["external_id"])] = p["id"]
+
+    if not ext_to_local:
+        raise HTTPException(
+            status_code=400,
+            detail="La rosa non e sincronizzata dall'API. Sincronizza prima la rosa dalla tab Rosa.",
+        )
+
+    async with httpx.AsyncClient() as http_client:
+        # 1) Get fixtures for the matchday
+        fixtures_data = await _apifootball_get(
+            http_client,
+            "/fixtures",
+            {"league": SERIE_A_LEAGUE_ID, "season": target_season, "round": f"Regular Season - {matchday}"},
+        )
+        fixtures = fixtures_data.get("response", [])
+        if not fixtures:
+            raise HTTPException(status_code=400, detail=f"Nessuna partita trovata per giornata {matchday}")
+
+        collected_votes = 0
+        for f in fixtures:
+            fixture_id = f.get("fixture", {}).get("id")
+            if not fixture_id:
+                continue
+            try:
+                stats_data = await _apifootball_get(
+                    http_client, "/fixtures/players", {"fixture": fixture_id}
+                )
+            except HTTPException as e:
+                logger.warning(f"Failed stats for fixture {fixture_id}: {e.detail}")
+                continue
+            for team_stats in stats_data.get("response", []):
+                for pdata in team_stats.get("players", []):
+                    ext_pid = str(pdata.get("player", {}).get("id"))
+                    local_id = ext_to_local.get(ext_pid)
+                    if not local_id:
+                        continue
+                    stats = (pdata.get("statistics") or [{}])[0]
+                    rating_str = stats.get("games", {}).get("rating")
+                    if rating_str is None:
+                        continue  # did not play
+                    try:
+                        voto = float(rating_str)
+                    except (TypeError, ValueError):
+                        continue
+                    goals = stats.get("goals", {}) or {}
+                    cards = stats.get("cards", {}) or {}
+                    penalty = stats.get("penalty", {}) or {}
+                    passes = stats.get("passes", {}) or {}
+                    vote_dict = {
+                        "voto": voto,
+                        "gol": int(goals.get("total") or 0),
+                        "assist": int(passes.get("assists") or goals.get("assists") or 0),
+                        "ammoniz": bool(cards.get("yellow")),
+                        "espuls": bool(cards.get("red")),
+                        "autogol": int(goals.get("conceded") if False else 0),  # not reliably available
+                        "gol_subiti": int(goals.get("conceded") or 0),
+                        "rigore_segnato": int(penalty.get("scored") or 0),
+                        "rigore_sbagliato": int(penalty.get("missed") or 0),
+                    }
+                    player_doc = await db.players.find_one({"id": local_id}, {"_id": 0})
+                    role = player_doc.get("role") if player_doc else "C"
+                    fv = fantavoto_from_vote(vote_dict, role)
+                    await db.votes.update_one(
+                        {"league_id": league_id, "matchday": matchday, "player_id": local_id},
+                        {"$set": {
+                            "league_id": league_id,
+                            "matchday": matchday,
+                            "player_id": local_id,
+                            **vote_dict,
+                            "fantavoto": fv,
+                            "source": "api-football",
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }},
+                        upsert=True,
+                    )
+                    collected_votes += 1
+            await asyncio.sleep(0.1)
+    return {"ok": True, "matchday": matchday, "votes_synced": collected_votes, "season": target_season}
+
+
+def _compute_user_total(lineup: dict, votes: dict[str, dict], players_map: dict[str, dict]) -> tuple[float, list, list]:
+    """Compute user total for a matchday applying auto-substitutions from bench.
+
+    Returns (total, breakdown, substitutions).
+    """
+    starter_ids = list(lineup.get("starters", []))
+    bench_ids = list(lineup.get("bench", []))
+    used_bench: set[str] = set()
+    total = 0.0
+    breakdown = []
+    substitutions = []
+    for pid in starter_ids:
+        v = votes.get(pid)
+        player = players_map.get(pid)
+        role = player.get("role") if player else None
+        if v:
+            total += v["fantavoto"]
+            breakdown.append({"player_id": pid, "fantavoto": v["fantavoto"], "has_vote": True, "substituted": False})
+            continue
+        sub_pid = None
+        if role:
+            for bp in bench_ids:
+                if bp in used_bench:
+                    continue
+                bp_player = players_map.get(bp)
+                if not bp_player or bp_player.get("role") != role:
+                    continue
+                if bp in votes:
+                    sub_pid = bp
+                    break
+        if sub_pid:
+            sub_vote = votes[sub_pid]
+            used_bench.add(sub_pid)
+            total += sub_vote["fantavoto"]
+            breakdown.append({
+                "player_id": pid,
+                "fantavoto": sub_vote["fantavoto"],
+                "has_vote": True,
+                "substituted": True,
+                "sub_player_id": sub_pid,
+            })
+            substitutions.append({"out": pid, "in": sub_pid})
+        else:
+            breakdown.append({"player_id": pid, "fantavoto": 0.0, "has_vote": False, "substituted": False})
+    return total, breakdown, substitutions
+
+
 @api.get("/leagues/{league_id}/results/{matchday}")
 async def matchday_results(league_id: str, matchday: int, user: dict = Depends(get_current_user)):
-    """Return leaderboard for a matchday: user total score + per-player breakdown."""
+    """Return leaderboard for a matchday with auto-substitution from bench."""
     member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
     if not member:
         raise HTTPException(status_code=403, detail="Accesso negato")
 
-    # Build vote map
     votes = {v["player_id"]: v async for v in db.votes.find(
         {"league_id": league_id, "matchday": matchday}, {"_id": 0}
     )}
-
-    lineups_cursor = db.lineups.find(
+    lineups_docs = [ln async for ln in db.lineups.find(
         {"league_id": league_id, "matchday": matchday}, {"_id": 0}
-    )
+    )]
+    all_ids: set[str] = set()
+    for ln in lineups_docs:
+        all_ids.update(ln.get("starters", []))
+        all_ids.update(ln.get("bench", []))
+    players_map: dict[str, dict] = {}
+    if all_ids:
+        async for p in db.players.find({"id": {"$in": list(all_ids)}}, {"_id": 0}):
+            players_map[p["id"]] = p
+
     results = []
-    async for lineup in lineups_cursor:
-        starter_ids = lineup.get("starters", [])
-        total = 0.0
-        breakdown = []
-        for pid in starter_ids:
-            v = votes.get(pid)
-            fv = v["fantavoto"] if v else 0.0
-            total += fv
-            breakdown.append({"player_id": pid, "fantavoto": fv, "has_vote": v is not None})
+    for lineup in lineups_docs:
+        total, breakdown, substitutions = _compute_user_total(lineup, votes, players_map)
         user_doc = await db.users.find_one({"id": lineup["user_id"]}, {"_id": 0, "password_hash": 0})
         results.append({
             "user_id": lineup["user_id"],
@@ -654,6 +828,7 @@ async def matchday_results(league_id: str, matchday: int, user: dict = Depends(g
             "total": round(total, 2),
             "module": lineup.get("module"),
             "breakdown": breakdown,
+            "substitutions": substitutions,
         })
     results.sort(key=lambda x: x["total"], reverse=True)
     for i, r in enumerate(results):
@@ -718,7 +893,7 @@ async def overall_leaderboard(league_id: str, user: dict = Depends(get_current_u
 
 @api.get("/leagues/{league_id}/history")
 async def matchday_history(league_id: str, user: dict = Depends(get_current_user)):
-    """List all played matchdays with their winners."""
+    """List all played matchdays with their winners (using bench substitutions)."""
     member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
     if not member:
         raise HTTPException(status_code=403, detail="Accesso negato")
@@ -728,10 +903,20 @@ async def matchday_history(league_id: str, user: dict = Depends(get_current_user
         votes = {v["player_id"]: v async for v in db.votes.find(
             {"league_id": league_id, "matchday": md}, {"_id": 0}
         )}
+        lineups_docs = [ln async for ln in db.lineups.find(
+            {"league_id": league_id, "matchday": md}, {"_id": 0}
+        )]
+        all_ids: set[str] = set()
+        for ln in lineups_docs:
+            all_ids.update(ln.get("starters", []))
+            all_ids.update(ln.get("bench", []))
+        players_map: dict[str, dict] = {}
+        if all_ids:
+            async for p in db.players.find({"id": {"$in": list(all_ids)}}, {"_id": 0}):
+                players_map[p["id"]] = p
         best = None
-        lineups_cur = db.lineups.find({"league_id": league_id, "matchday": md}, {"_id": 0})
-        async for lineup in lineups_cur:
-            total = sum(votes.get(pid, {}).get("fantavoto", 0.0) for pid in lineup.get("starters", []))
+        for lineup in lineups_docs:
+            total, _, _ = _compute_user_total(lineup, votes, players_map)
             if best is None or total > best[1]:
                 best = (lineup["user_id"], total)
         winner_name = None

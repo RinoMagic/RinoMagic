@@ -165,6 +165,25 @@ export default function AdminVotes() {
     }
   };
 
+  const syncVotesFromApi = async () => {
+    if (!league) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await api<{ ok: boolean; votes_synced: number; matchday: number; season: number }>(
+        `/leagues/${league.id}/votes/sync/${matchday}`,
+        { method: 'POST' }
+      );
+      setMsg(`Sincronizzati ${res.votes_synced} voti (stagione ${res.season})`);
+      await loadVotesForMatchday(matchday);
+      setTimeout(() => setMsg(null), 3500);
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (loading || !league) {
     return (
       <View style={styles.center}>
@@ -217,6 +236,20 @@ export default function AdminVotes() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: theme.spacing.lg, paddingBottom: 160 }}>
+        <Pressable
+          testID="sync-votes-api"
+          onPress={syncVotesFromApi}
+          disabled={busy}
+          style={[styles.syncApiBtn, busy && { opacity: 0.5 }]}
+        >
+          <Ionicons name="cloud-download" size={18} color={theme.colors.brandSecondary} />
+          <Text style={styles.syncApiBtnText}>
+            Scarica voti da API (auto)
+          </Text>
+        </Pressable>
+
+        <Text style={styles.orText}>oppure inseriscili manualmente</Text>
+
         <Pressable
           testID="add-player-vote"
           onPress={() => setPickerOpen(true)}
@@ -455,6 +488,29 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.md,
   },
   addBtnText: { color: theme.colors.brand, fontWeight: '700' },
+  syncApiBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.brandSecondary + '15',
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.brandSecondary,
+    marginBottom: theme.spacing.md,
+  },
+  syncApiBtnText: {
+    color: theme.colors.brandSecondary,
+    fontWeight: '800',
+    fontSize: 14,
+  },
+  orText: {
+    color: theme.colors.muted,
+    textAlign: 'center',
+    fontSize: 12,
+    marginBottom: theme.spacing.md,
+  },
   empty: {
     padding: theme.spacing.xl,
     backgroundColor: theme.colors.surfaceSecondary,
