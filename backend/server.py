@@ -7,6 +7,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 import jwt
@@ -35,6 +36,19 @@ API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY", "").strip()
 API_FOOTBALL_BASE = os.environ.get("API_FOOTBALL_BASE", "https://v3.football.api-sports.io").rstrip("/")
 SERIE_A_LEAGUE_ID = int(os.environ.get("SERIE_A_LEAGUE_ID", "135"))
 CURRENT_SEASON = int(os.environ.get("CURRENT_SEASON", "2024"))
+SCHEDULER_ENABLED = os.environ.get("SCHEDULER_ENABLED", "true").lower() == "true"
+SCHEDULER_INTERVAL_SECS = int(os.environ.get("SCHEDULER_INTERVAL_SECS", "300"))  # 5 min
+SCHEDULER_MIN_GAP_SECS = int(os.environ.get("SCHEDULER_MIN_GAP_SECS", "1800"))  # 30 min
+
+# Serie A match windows in Europe/Rome local time (weekday: [(start_hhmm, end_hhmm), ...])
+# Monday=0 ... Sunday=6
+MATCH_WINDOWS: dict[int, list[tuple[str, str]]] = {
+    0: [("20:00", "23:30")],   # Monday
+    4: [("20:00", "23:30")],   # Friday
+    5: [("14:30", "23:30")],   # Saturday
+    6: [("12:00", "23:30")],   # Sunday
+}
+ROME_TZ = ZoneInfo("Europe/Rome")
 
 # --- DB ---
 client = AsyncIOMotorClient(MONGO_URL)
@@ -178,6 +192,13 @@ async def get_current_user(cred: Optional[HTTPAuthorizationCredentials] = Depend
     return user
 
 
+async def require_system_admin(user: dict = Depends(get_current_user)) -> dict:
+    """Only the seeded admin (by ADMIN_EMAIL) can call system-wide endpoints."""
+    if user.get("email") != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Solo l'admin di sistema puo eseguire questa azione")
+    return user
+
+
 # ============ Startup ============
 @app.on_event("startup")
 async def startup():
@@ -189,6 +210,20 @@ async def startup():
     await db.memberships.create_index([("league_id", 1), ("user_id", 1)], unique=True)
     await db.lineups.create_index([("league_id", 1), ("user_id", 1), ("matchday", 1)], unique=True)
     await db.votes.create_index([("league_id", 1), ("matchday", 1), ("player_id", 1)], unique=True)
+    await db.api_votes.create_index([("matchday", 1), ("player_id", 1)], unique=True)
+    await db.system.create_index("key", unique=True)
+
+    # Init system defaults
+    await db.system.update_one(
+        {"key": "current_matchday"},
+        {"$setOnInsert": {"key": "current_matchday", "value": 1}},
+        upsert=True,
+    )
+    await db.system.update_one(
+        {"key": "scheduler_enabled"},
+        {"$setOnInsert": {"key": "scheduler_enabled", "value": SCHEDULER_ENABLED}},
+        upsert=True,
+    )
 
     # Seed admin
     existing_admin = await db.users.find_one({"email": ADMIN_EMAIL})
@@ -216,6 +251,12 @@ async def startup():
         if docs:
             await db.players.insert_many(docs)
             logger.info(f"Seeded {len(docs)} Serie A players")
+
+    # Start background scheduler if enabled and API key present
+    if SCHEDULER_ENABLED and API_FOOTBALL_KEY:
+        asyncio.create_task(_scheduler_loop())
+        logger.info("Scheduler started (interval=%ss, min-gap=%ss)",
+                    SCHEDULER_INTERVAL_SECS, SCHEDULER_MIN_GAP_SECS)
 
 
 @app.on_event("shutdown")
@@ -313,6 +354,162 @@ async def _apifootball_get(client: httpx.AsyncClient, path: str, params: dict) -
         if isinstance(errors, list) and errors:
             raise HTTPException(status_code=400, detail=f"API-Football: {errors[0]}")
     return data
+
+
+# ============ Global API votes cache + scheduler ============
+async def _system_get(key: str, default=None):
+    doc = await db.system.find_one({"key": key}, {"_id": 0})
+    return doc["value"] if doc else default
+
+
+async def _system_set(key: str, value) -> None:
+    await db.system.update_one(
+        {"key": key}, {"$set": {"key": key, "value": value}}, upsert=True
+    )
+
+
+def _in_match_window(dt_local: datetime) -> bool:
+    """Return True if the given Europe/Rome datetime is inside a Serie A match window."""
+    windows = MATCH_WINDOWS.get(dt_local.weekday(), [])
+    for start_str, end_str in windows:
+        sh, sm = (int(x) for x in start_str.split(":"))
+        eh, em = (int(x) for x in end_str.split(":"))
+        start = dt_local.replace(hour=sh, minute=sm, second=0, microsecond=0)
+        end = dt_local.replace(hour=eh, minute=em, second=0, microsecond=0)
+        if start <= dt_local <= end:
+            return True
+    return False
+
+
+async def _sync_matchday_votes_global(matchday: int, season: int) -> int:
+    """Fetch fixtures + player stats for a Serie A matchday and upsert into api_votes (global).
+
+    Returns number of votes upserted. Raises HTTPException on API error.
+    """
+    if not API_FOOTBALL_KEY:
+        raise HTTPException(status_code=400, detail="API_FOOTBALL_KEY non configurata")
+
+    # Build external_id -> local id map
+    ext_to_local: dict[str, str] = {}
+    async for p in db.players.find({"external_id": {"$exists": True, "$ne": None}}, {"_id": 0}):
+        if p.get("external_id"):
+            ext_to_local[str(p["external_id"])] = p["id"]
+    if not ext_to_local:
+        raise HTTPException(
+            status_code=400,
+            detail="La rosa non e sincronizzata dall'API. Sincronizza prima la rosa dalla tab Rosa.",
+        )
+
+    collected = 0
+    async with httpx.AsyncClient() as http_client:
+        fixtures_data = await _apifootball_get(
+            http_client,
+            "/fixtures",
+            {"league": SERIE_A_LEAGUE_ID, "season": season, "round": f"Regular Season - {matchday}"},
+        )
+        fixtures = fixtures_data.get("response", [])
+        if not fixtures:
+            raise HTTPException(status_code=400, detail=f"Nessuna partita trovata per giornata {matchday}")
+
+        for f in fixtures:
+            fixture_id = f.get("fixture", {}).get("id")
+            if not fixture_id:
+                continue
+            try:
+                stats_data = await _apifootball_get(
+                    http_client, "/fixtures/players", {"fixture": fixture_id}
+                )
+            except HTTPException as e:
+                logger.warning(f"Failed stats for fixture {fixture_id}: {e.detail}")
+                continue
+            for team_stats in stats_data.get("response", []):
+                for pdata in team_stats.get("players", []):
+                    ext_pid = str(pdata.get("player", {}).get("id"))
+                    local_id = ext_to_local.get(ext_pid)
+                    if not local_id:
+                        continue
+                    stats = (pdata.get("statistics") or [{}])[0]
+                    rating_str = stats.get("games", {}).get("rating")
+                    if rating_str is None:
+                        continue
+                    try:
+                        voto = float(rating_str)
+                    except (TypeError, ValueError):
+                        continue
+                    goals = stats.get("goals", {}) or {}
+                    cards = stats.get("cards", {}) or {}
+                    penalty = stats.get("penalty", {}) or {}
+                    passes = stats.get("passes", {}) or {}
+                    vote_dict = {
+                        "voto": voto,
+                        "gol": int(goals.get("total") or 0),
+                        "assist": int(passes.get("assists") or goals.get("assists") or 0),
+                        "ammoniz": bool(cards.get("yellow")),
+                        "espuls": bool(cards.get("red")),
+                        "autogol": 0,
+                        "gol_subiti": int(goals.get("conceded") or 0),
+                        "rigore_segnato": int(penalty.get("scored") or 0),
+                        "rigore_sbagliato": int(penalty.get("missed") or 0),
+                    }
+                    player_doc = await db.players.find_one({"id": local_id}, {"_id": 0})
+                    role = player_doc.get("role") if player_doc else "C"
+                    fv = fantavoto_from_vote(vote_dict, role)
+                    await db.api_votes.update_one(
+                        {"matchday": matchday, "player_id": local_id},
+                        {"$set": {
+                            "matchday": matchday,
+                            "player_id": local_id,
+                            **vote_dict,
+                            "fantavoto": fv,
+                            "season": season,
+                            "source": "api-football",
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }},
+                        upsert=True,
+                    )
+                    collected += 1
+            await asyncio.sleep(0.1)
+    return collected
+
+
+async def _scheduler_loop() -> None:
+    """Background loop: every SCHEDULER_INTERVAL_SECS check whether we should sync votes."""
+    logger.info("Scheduler loop running")
+    while True:
+        try:
+            await asyncio.sleep(SCHEDULER_INTERVAL_SECS)
+            enabled = await _system_get("scheduler_enabled", True)
+            if not enabled:
+                continue
+            now_local = datetime.now(ROME_TZ)
+            if not _in_match_window(now_local):
+                continue
+            last_at_iso = await _system_get("last_scheduled_sync_at")
+            if last_at_iso:
+                try:
+                    last_at = datetime.fromisoformat(last_at_iso)
+                    if (datetime.now(timezone.utc) - last_at).total_seconds() < SCHEDULER_MIN_GAP_SECS:
+                        continue
+                except ValueError:
+                    pass
+            matchday = int(await _system_get("current_matchday", 1))
+            season = int(await _system_get("current_season", CURRENT_SEASON))
+            try:
+                count = await _sync_matchday_votes_global(matchday, season)
+                await _system_set("last_scheduled_sync_at", datetime.now(timezone.utc).isoformat())
+                await _system_set("last_scheduled_sync_count", count)
+                await _system_set("last_scheduled_sync_error", None)
+                logger.info("Scheduled sync ok: matchday=%s votes=%s", matchday, count)
+            except HTTPException as e:
+                await _system_set("last_scheduled_sync_error", str(e.detail))
+                logger.warning("Scheduled sync failed: %s", e.detail)
+            except Exception as e:
+                await _system_set("last_scheduled_sync_error", f"{type(e).__name__}: {e}")
+                logger.exception("Scheduler tick error")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Unhandled scheduler error")
 
 
 @api.post("/players/sync")
@@ -749,11 +946,17 @@ async def sync_votes_from_api(
     return {"ok": True, "matchday": matchday, "votes_synced": collected_votes, "season": target_season}
 
 
-def _compute_user_total(lineup: dict, votes: dict[str, dict], players_map: dict[str, dict]) -> tuple[float, list, list]:
+def _compute_user_total(lineup: dict, votes: dict[str, dict], players_map: dict[str, dict], api_votes: dict[str, dict] | None = None) -> tuple[float, list, list]:
     """Compute user total for a matchday applying auto-substitutions from bench.
 
+    Vote resolution priority: league-specific manual votes > global api_votes cache.
     Returns (total, breakdown, substitutions).
     """
+    api_votes = api_votes or {}
+
+    def _get_vote(pid: str) -> Optional[dict]:
+        return votes.get(pid) or api_votes.get(pid)
+
     starter_ids = list(lineup.get("starters", []))
     bench_ids = list(lineup.get("bench", []))
     used_bench: set[str] = set()
@@ -761,7 +964,7 @@ def _compute_user_total(lineup: dict, votes: dict[str, dict], players_map: dict[
     breakdown = []
     substitutions = []
     for pid in starter_ids:
-        v = votes.get(pid)
+        v = _get_vote(pid)
         player = players_map.get(pid)
         role = player.get("role") if player else None
         if v:
@@ -776,11 +979,11 @@ def _compute_user_total(lineup: dict, votes: dict[str, dict], players_map: dict[
                 bp_player = players_map.get(bp)
                 if not bp_player or bp_player.get("role") != role:
                     continue
-                if bp in votes:
+                if _get_vote(bp):
                     sub_pid = bp
                     break
         if sub_pid:
-            sub_vote = votes[sub_pid]
+            sub_vote = _get_vote(sub_pid)
             used_bench.add(sub_pid)
             total += sub_vote["fantavoto"]
             breakdown.append({
@@ -798,13 +1001,19 @@ def _compute_user_total(lineup: dict, votes: dict[str, dict], players_map: dict[
 
 @api.get("/leagues/{league_id}/results/{matchday}")
 async def matchday_results(league_id: str, matchday: int, user: dict = Depends(get_current_user)):
-    """Return leaderboard for a matchday with auto-substitution from bench."""
+    """Return leaderboard for a matchday with auto-substitution from bench.
+
+    Vote sources: league-specific manual votes (admin override) + global api_votes cache.
+    """
     member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
     if not member:
         raise HTTPException(status_code=403, detail="Accesso negato")
 
     votes = {v["player_id"]: v async for v in db.votes.find(
         {"league_id": league_id, "matchday": matchday}, {"_id": 0}
+    )}
+    api_votes = {v["player_id"]: v async for v in db.api_votes.find(
+        {"matchday": matchday}, {"_id": 0}
     )}
     lineups_docs = [ln async for ln in db.lineups.find(
         {"league_id": league_id, "matchday": matchday}, {"_id": 0}
@@ -820,7 +1029,7 @@ async def matchday_results(league_id: str, matchday: int, user: dict = Depends(g
 
     results = []
     for lineup in lineups_docs:
-        total, breakdown, substitutions = _compute_user_total(lineup, votes, players_map)
+        total, breakdown, substitutions = _compute_user_total(lineup, votes, players_map, api_votes)
         user_doc = await db.users.find_one({"id": lineup["user_id"]}, {"_id": 0, "password_hash": 0})
         results.append({
             "user_id": lineup["user_id"],
@@ -893,15 +1102,23 @@ async def overall_leaderboard(league_id: str, user: dict = Depends(get_current_u
 
 @api.get("/leagues/{league_id}/history")
 async def matchday_history(league_id: str, user: dict = Depends(get_current_user)):
-    """List all played matchdays with their winners (using bench substitutions)."""
+    """List all played matchdays with their winners (using bench substitutions).
+
+    Matchdays with either league-specific votes OR global api_votes are considered played.
+    """
     member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
     if not member:
         raise HTTPException(status_code=403, detail="Accesso negato")
-    matchdays = sorted(await db.votes.distinct("matchday", {"league_id": league_id}))
+    md_set = set(await db.votes.distinct("matchday", {"league_id": league_id}))
+    md_set.update(await db.api_votes.distinct("matchday"))
+    matchdays = sorted(md_set)
     out = []
     for md in matchdays:
         votes = {v["player_id"]: v async for v in db.votes.find(
             {"league_id": league_id, "matchday": md}, {"_id": 0}
+        )}
+        api_votes = {v["player_id"]: v async for v in db.api_votes.find(
+            {"matchday": md}, {"_id": 0}
         )}
         lineups_docs = [ln async for ln in db.lineups.find(
             {"league_id": league_id, "matchday": md}, {"_id": 0}
@@ -916,19 +1133,86 @@ async def matchday_history(league_id: str, user: dict = Depends(get_current_user
                 players_map[p["id"]] = p
         best = None
         for lineup in lineups_docs:
-            total, _, _ = _compute_user_total(lineup, votes, players_map)
+            total, _, _ = _compute_user_total(lineup, votes, players_map, api_votes)
             if best is None or total > best[1]:
                 best = (lineup["user_id"], total)
-        winner_name = None
-        if best:
-            u = await db.users.find_one({"id": best[0]}, {"_id": 0, "password_hash": 0})
-            winner_name = u["username"] if u else "?"
+        if not best:
+            continue
+        u = await db.users.find_one({"id": best[0]}, {"_id": 0, "password_hash": 0})
+        winner_name = u["username"] if u else "?"
         out.append({
             "matchday": md,
             "winner_username": winner_name,
-            "winner_score": round(best[1], 2) if best else 0,
+            "winner_score": round(best[1], 2),
         })
     return {"history": out}
+
+
+# ============ System / Scheduler admin ============
+class SystemMatchdayIn(BaseModel):
+    matchday: int = Field(ge=1, le=38)
+
+
+class SystemSchedulerIn(BaseModel):
+    enabled: bool
+
+
+@api.get("/system")
+async def get_system(user: dict = Depends(get_current_user)):
+    """Public system status (any authenticated user can read)."""
+    md = await _system_get("current_matchday", 1)
+    enabled = await _system_get("scheduler_enabled", SCHEDULER_ENABLED)
+    last_at = await _system_get("last_scheduled_sync_at")
+    last_count = await _system_get("last_scheduled_sync_count", 0)
+    last_err = await _system_get("last_scheduled_sync_error")
+    api_votes_by_md = {}
+    async for doc in db.api_votes.aggregate([{"$group": {"_id": "$matchday", "n": {"$sum": 1}}}]):
+        api_votes_by_md[str(doc["_id"])] = doc["n"]
+    now_local = datetime.now(ROME_TZ)
+    return {
+        "current_matchday": md,
+        "current_season": CURRENT_SEASON,
+        "scheduler_enabled": enabled,
+        "scheduler_running": SCHEDULER_ENABLED and bool(API_FOOTBALL_KEY),
+        "in_match_window": _in_match_window(now_local),
+        "server_time_rome": now_local.strftime("%Y-%m-%d %H:%M %Z"),
+        "last_scheduled_sync_at": last_at,
+        "last_scheduled_sync_count": last_count,
+        "last_scheduled_sync_error": last_err,
+        "api_votes_by_matchday": api_votes_by_md,
+        "match_windows": {str(k): v for k, v in MATCH_WINDOWS.items()},
+    }
+
+
+@api.post("/system/matchday")
+async def set_current_matchday(
+    data: SystemMatchdayIn, admin: dict = Depends(require_system_admin)
+):
+    await _system_set("current_matchday", data.matchday)
+    return {"ok": True, "current_matchday": data.matchday}
+
+
+@api.post("/system/scheduler")
+async def set_scheduler_enabled(
+    data: SystemSchedulerIn, admin: dict = Depends(require_system_admin)
+):
+    await _system_set("scheduler_enabled", data.enabled)
+    return {"ok": True, "scheduler_enabled": data.enabled}
+
+
+@api.post("/system/sync-now")
+async def system_sync_now(admin: dict = Depends(require_system_admin)):
+    """Trigger an immediate sync of the current matchday votes (respects gap check).
+
+    Returns votes_synced or upstream error.
+    """
+    matchday = int(await _system_get("current_matchday", 1))
+    season = int(await _system_get("current_season", CURRENT_SEASON))
+    count = await _sync_matchday_votes_global(matchday, season)
+    await _system_set("last_scheduled_sync_at", datetime.now(timezone.utc).isoformat())
+    await _system_set("last_scheduled_sync_count", count)
+    await _system_set("last_scheduled_sync_error", None)
+    return {"ok": True, "matchday": matchday, "votes_synced": count}
 
 
 # ============ Health ============
