@@ -267,8 +267,11 @@ class TestLeagueFullFlow:
         expected -= 0.5 if sample["ammoniz"] else 0
         expected -= 1 if sample["espuls"] else 0
         expected -= 2 * sample["autogol"]
+        expected += 1 * sample.get("gol_vittoria", 0)
+        expected += 0.5 * sample.get("gol_pareggio", 0)
         if role == "P":
-            expected -= (sample["gol_subiti"] // 2) * 1
+            expected -= 1 * sample["gol_subiti"]
+            expected += 3 * sample.get("rigore_parato", 0)
         expected = round(expected, 2)
         assert row["fantavoto"] == expected, f"formula mismatch got {row['fantavoto']} expected {expected}"
 

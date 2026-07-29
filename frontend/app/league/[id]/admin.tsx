@@ -31,6 +31,9 @@ type Vote = {
   gol_subiti: number;
   rigore_segnato: number;
   rigore_sbagliato: number;
+  rigore_parato: number;
+  gol_vittoria: number;
+  gol_pareggio: number;
   fantavoto: number;
 };
 
@@ -45,6 +48,9 @@ const emptyVote = (pid: string): Vote => ({
   gol_subiti: 0,
   rigore_segnato: 0,
   rigore_sbagliato: 0,
+  rigore_parato: 0,
+  gol_vittoria: 0,
+  gol_pareggio: 0,
   fantavoto: 6.0,
 });
 
@@ -302,11 +308,16 @@ export default function AdminVotes() {
 
               <NumRow label="Gol" value={v.gol} onChange={(n) => updateVote(p.id, { gol: n })} testID={`gol-${p.id}`} />
               <NumRow label="Assist" value={v.assist} onChange={(n) => updateVote(p.id, { assist: n })} testID={`assist-${p.id}`} />
+              <NumRow label="Gol vittoria" value={v.gol_vittoria} onChange={(n) => updateVote(p.id, { gol_vittoria: n })} testID={`golvit-${p.id}`} />
+              <NumRow label="Gol pareggio" value={v.gol_pareggio} onChange={(n) => updateVote(p.id, { gol_pareggio: n })} testID={`golpar-${p.id}`} />
               <NumRow label="Rig. segnati" value={v.rigore_segnato} onChange={(n) => updateVote(p.id, { rigore_segnato: n })} testID={`rigseg-${p.id}`} />
               <NumRow label="Rig. sbagliati" value={v.rigore_sbagliato} onChange={(n) => updateVote(p.id, { rigore_sbagliato: n })} testID={`rigsba-${p.id}`} />
               <NumRow label="Autogol" value={v.autogol} onChange={(n) => updateVote(p.id, { autogol: n })} testID={`autog-${p.id}`} />
               {p.role === 'P' && (
-                <NumRow label="Gol subiti" value={v.gol_subiti} onChange={(n) => updateVote(p.id, { gol_subiti: n })} testID={`golsub-${p.id}`} />
+                <>
+                  <NumRow label="Gol subiti" value={v.gol_subiti} onChange={(n) => updateVote(p.id, { gol_subiti: n })} testID={`golsub-${p.id}`} />
+                  <NumRow label="Rig. parati" value={v.rigore_parato} onChange={(n) => updateVote(p.id, { rigore_parato: n })} testID={`rigpar-${p.id}`} />
+                </>
               )}
               <View style={styles.toggleRow}>
                 <Pressable

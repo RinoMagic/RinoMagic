@@ -26,8 +26,9 @@ Un'app mobile fantacalcio in cui ogni giornata i partecipanti creano una formazi
 ## Regole Fantavoto
 - Base: 6.0
 - Gol: +3 · Assist: +1 · Rigore segnato: +3 · Rigore sbagliato: -3
+- Gol vittoria: +1 · Gol pareggio: +0.5 (bonus sopra al gol)
 - Ammonizione: -0.5 · Espulsione: -1 · Autogol: -2
-- Portiere: -1 ogni 2 gol subiti
+- Portiere: -1 per ogni gol subito · +3 per rigore parato
 
 ## Stack Tecnico
 - **Backend**: FastAPI + MongoDB (motor async), JWT (PyJWT + bcrypt/passlib)

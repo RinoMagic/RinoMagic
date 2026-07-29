@@ -136,6 +136,9 @@ class VoteIn(BaseModel):
     gol_subiti: int = 0  # for portiere
     rigore_segnato: int = 0
     rigore_sbagliato: int = 0
+    rigore_parato: int = 0  # for portiere
+    gol_vittoria: int = 0  # winning goal bonus
+    gol_pareggio: int = 0  # tying goal bonus
 
 
 class VotesSubmit(BaseModel):
@@ -171,10 +174,12 @@ def fantavoto_from_vote(v: dict, role: str) -> float:
     fv -= 0.5 if v.get("ammoniz") else 0
     fv -= 1 if v.get("espuls") else 0
     fv -= 2 * v.get("autogol", 0)
+    fv += 1 * v.get("gol_vittoria", 0)
+    fv += 0.5 * v.get("gol_pareggio", 0)
     if role == "P":
-        # portiere: -1 ogni 2 gol subiti (arrotondato)
-        gs = v.get("gol_subiti", 0)
-        fv -= (gs // 2) * 1
+        # portiere: -1 per ogni gol subito, +3 per rigore parato
+        fv -= 1 * v.get("gol_subiti", 0)
+        fv += 3 * v.get("rigore_parato", 0)
     return round(fv, 2)
 
 
@@ -450,6 +455,9 @@ async def _sync_matchday_votes_global(matchday: int, season: int) -> int:
                         "gol_subiti": int(goals.get("conceded") or 0),
                         "rigore_segnato": int(penalty.get("scored") or 0),
                         "rigore_sbagliato": int(penalty.get("missed") or 0),
+                        "rigore_parato": int(penalty.get("saved") or 0),
+                        "gol_vittoria": 0,
+                        "gol_pareggio": 0,
                     }
                     player_doc = await db.players.find_one({"id": local_id}, {"_id": 0})
                     role = player_doc.get("role") if player_doc else "C"
@@ -823,6 +831,9 @@ async def submit_votes(league_id: str, data: VotesSubmit, user: dict = Depends(g
                 "gol_subiti": vd["gol_subiti"],
                 "rigore_segnato": vd["rigore_segnato"],
                 "rigore_sbagliato": vd["rigore_sbagliato"],
+                "rigore_parato": vd["rigore_parato"],
+                "gol_vittoria": vd["gol_vittoria"],
+                "gol_pareggio": vd["gol_pareggio"],
                 "fantavoto": fv,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }},
@@ -920,10 +931,13 @@ async def sync_votes_from_api(
                         "assist": int(passes.get("assists") or goals.get("assists") or 0),
                         "ammoniz": bool(cards.get("yellow")),
                         "espuls": bool(cards.get("red")),
-                        "autogol": int(goals.get("conceded") if False else 0),  # not reliably available
+                        "autogol": 0,
                         "gol_subiti": int(goals.get("conceded") or 0),
                         "rigore_segnato": int(penalty.get("scored") or 0),
                         "rigore_sbagliato": int(penalty.get("missed") or 0),
+                        "rigore_parato": int(penalty.get("saved") or 0),
+                        "gol_vittoria": 0,
+                        "gol_pareggio": 0,
                     }
                     player_doc = await db.players.find_one({"id": local_id}, {"_id": 0})
                     role = player_doc.get("role") if player_doc else "C"

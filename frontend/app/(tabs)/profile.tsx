@@ -132,13 +132,16 @@ export default function Profile() {
           <View style={styles.card}>
             <Rule label="Voto base" value="6.0 di partenza" />
             <Rule label="Gol" value="+3" />
+            <Rule label="Gol vittoria" value="+1" />
+            <Rule label="Gol pareggio" value="+0.5" />
             <Rule label="Assist" value="+1" />
             <Rule label="Rigore segnato" value="+3" />
             <Rule label="Rigore sbagliato" value="-3" />
             <Rule label="Ammonizione" value="-0.5" />
             <Rule label="Espulsione" value="-1" />
             <Rule label="Autogol" value="-2" />
-            <Rule label="Portiere: gol subito" value="-1 ogni 2" last />
+            <Rule label="Portiere: gol subito" value="-1 per ogni" />
+            <Rule label="Portiere: rigore parato" value="+3" last />
           </View>
         </View>
 

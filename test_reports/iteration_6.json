@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 6 backend verification — updated fantavoto rules. Full pytest regression: 88/88 PASSED in ~10s against the public preview URL. All 8 tests in test_fantavoto_rules.py pass (gol_vittoria +1, gol_pareggio +0.5, portiere gol_subiti -1 each, portiere rigore_parato +3, non-portiere ignores gol_subiti and rigore_parato, complex striker scenario). All 6 formula scenarios from the review request validated directly against server.fantavoto_from_vote (P v6/3sub=3.0, P v6/1sub/1par=8.0, A v7/1gol/1vittoria=11.0, A v7/1gol/1pareggio=10.5, non-P gol_subiti/rigore_parato ignored). Non-regression: auth, players/teams, leagues, lineups, bench validation, substitutions, /system endpoints, players sync all still green. Persistence path (submit_votes) writes all 3 new fields plus fantavoto to the votes doc (server.py:822-837). Both api-football sync paths (_sync_matchday_votes_global L458, sync_votes_from_api L938) map penalty.saved → rigore_parato and default gol_vittoria/gol_pareggio to 0 as specified. No frontend testing performed (backend-only review request).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_fantavoto_rules.py",
+    "/app/backend/tests/test_fantagiornata.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "fantavoto_from_vote (server.py:167-183) implementation matches the specified formula exactly, including new gol_vittoria (+1), gol_pareggio (+0.5), portiere gol_subiti (-1 per gol, previously per 2), and rigore_parato (+3 for P).",
+    "VoteIn model (server.py:128-141) correctly declares the 3 new optional fields with default 0, so existing clients that do not send them stay backward-compatible.",
+    "submit_votes (server.py:806-842) persists rigore_parato, gol_vittoria, gol_pareggio alongside fantavoto — verified via test_15 which asserts formula match end-to-end.",
+    "Both sync paths correctly source rigore_parato from api-football penalty.saved and default the manual bonuses to 0, as specified.",
+    "Minor (non-blocking): FastAPI @app.on_event('startup'/'shutdown') is deprecated — consider migrating to lifespan handlers in a future cleanup pass (not required for this iteration)."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (88/88)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "None. Tests use existing conftest fixtures which register unique TEST_userN_<uuid> accounts per session.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend fantavoto scoring rules (iteration 6) are fully validated. Full suite is 88 tests split across tests/test_fantagiornata.py (integration), tests/test_fantavoto_rules.py (unit for formula), tests/test_bench_and_subs.py, tests/test_no_id_leak.py, tests/test_players_sync.py, tests/test_system_endpoints.py. Suite is stable and runs in ~10s with pytest-xdist. If future changes touch fantavoto formula, add cases to test_fantavoto_rules.py first. Public URL from EXPO_PUBLIC_BACKEND_URL or default https://fantasy-calcio-15.preview.emergentagent.com. Admin creds in /app/memory/test_credentials.md.",
+  "rca_of_issue": "N/A — no bugs found. All acceptance criteria in the review request pass."
+}

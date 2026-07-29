@@ -150,7 +150,6 @@ export default function LineupBuilder() {
 
   const startersFilled = slots.slice(0, 11).filter(Boolean).length;
   const benchFilled = slots.slice(11, 19).filter(Boolean).length;
-  const filledCount = startersFilled + benchFilled;
 
   const save = async () => {
     if (!league) return;
