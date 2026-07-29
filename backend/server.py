@@ -296,17 +296,22 @@ async def _apifootball_get(client: httpx.AsyncClient, path: str, params: dict) -
     if not API_FOOTBALL_KEY:
         raise HTTPException(status_code=400, detail="API_FOOTBALL_KEY non configurata")
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
-    r = await client.get(f"{API_FOOTBALL_BASE}{path}", params=params, headers=headers, timeout=20.0)
-    r.raise_for_status()
-    data = r.json()
+    try:
+        r = await client.get(f"{API_FOOTBALL_BASE}{path}", params=params, headers=headers, timeout=20.0)
+        r.raise_for_status()
+        data = r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=400, detail=f"API-Football: HTTP {e.response.status_code}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"API-Football: connessione fallita ({type(e).__name__})")
     errors = data.get("errors")
     if errors:
         # api-football returns errors as dict or list
         if isinstance(errors, dict) and errors:
             msg = next(iter(errors.values()))
-            raise HTTPException(status_code=502, detail=f"API-Football: {msg}")
+            raise HTTPException(status_code=400, detail=f"API-Football: {msg}")
         if isinstance(errors, list) and errors:
-            raise HTTPException(status_code=502, detail=f"API-Football: {errors[0]}")
+            raise HTTPException(status_code=400, detail=f"API-Football: {errors[0]}")
     return data
 
 
@@ -332,7 +337,7 @@ async def sync_players(
         )
         teams = teams_data.get("response", [])
         if not teams:
-            raise HTTPException(status_code=502, detail="Nessuna squadra ricevuta dall'API")
+            raise HTTPException(status_code=400, detail="Nessuna squadra ricevuta dall'API")
 
         collected: list[dict] = []
         team_names: list[str] = []

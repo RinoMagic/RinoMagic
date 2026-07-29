@@ -1,41 +1,16 @@
 """
-Tests for the new API-Football sync endpoints.
+Tests for the API-Football sync endpoints (iteration 4).
 - GET /api/players/sync/status  (auth required)
 - POST /api/players/sync[?dry_run=true] (auth required)
 
 The user's api-football account is currently SUSPENDED (external condition).
-So we expect POST /players/sync to return HTTP 502 with a detail string
-prefixed by "API-Football:". The endpoint must NOT crash (no 500).
+So we expect POST /players/sync to return HTTP 400 with a JSON detail string
+prefixed by "API-Football:". The endpoint must NOT crash (no 500) and the
+JSON body must be preserved through Cloudflare (previous 502 was replaced by
+Cloudflare with an HTML "Bad gateway" page).
 """
 import requests
-import pytest
-from conftest import API, auth_headers, _login, ADMIN_EMAIL, ADMIN_PASSWORD
-
-INTERNAL_API = "http://localhost:8001/api"
-
-
-def _assert_internal_sync_error_shape(query: str):
-    """Directly hit the FastAPI process on 127.0.0.1:8001 (bypasses Cloudflare
-    which mangles 5xx bodies) and verify the JSON error shape."""
-    s = requests.Session()
-    s.headers.update({"Content-Type": "application/json"})
-    r = s.post(
-        f"{INTERNAL_API}/auth/login",
-        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-        timeout=10,
-    )
-    assert r.status_code == 200
-    tok = r.json()["access_token"]
-    url = f"{INTERNAL_API}/players/sync"
-    if query:
-        url += f"?{query}"
-    resp = s.post(url, headers={"Authorization": f"Bearer {tok}"}, timeout=60)
-    assert resp.status_code == 502, f"internal expected 502 got {resp.status_code} {resp.text[:200]}"
-    body = resp.json()
-    detail = body.get("detail", "")
-    assert isinstance(detail, str)
-    assert "API-Football:" in detail, f"missing prefix, got {detail!r}"
-    assert "suspend" in detail.lower(), f"expected 'suspended' hint, got {detail!r}"
+from conftest import API, auth_headers
 
 
 class TestPlayersSyncStatus:
@@ -54,7 +29,6 @@ class TestPlayersSyncStatus:
         r = session.get(f"{API}/players/sync/status", headers=auth_headers(admin_token))
         assert r.status_code == 200, f"{r.status_code} {r.text}"
         data = r.json()
-        # Shape checks
         for key in ("total", "api_synced", "seasons", "api_key_configured", "current_season_env"):
             assert key in data, f"missing key {key} in {data}"
         assert isinstance(data["total"], int)
@@ -63,12 +37,12 @@ class TestPlayersSyncStatus:
         assert isinstance(data["api_key_configured"], bool)
         assert data["api_key_configured"] is True, "API_FOOTBALL_KEY should be configured in .env"
         assert isinstance(data["current_season_env"], int)
-        # We seeded ~200+ players before any real sync
         assert data["total"] >= 1, f"expected some seeded players, got total={data['total']}"
 
 
 class TestPlayersSyncEndpoint:
-    """The upstream api-football account is suspended -> endpoint must return 502."""
+    """Upstream api-football account is suspended -> endpoint must return HTTP 400
+    with a clean JSON body {'detail': 'API-Football: ...'} preserved through Cloudflare."""
 
     def test_sync_requires_auth(self):
         r = requests.post(f"{API}/players/sync?dry_run=true")
@@ -81,35 +55,41 @@ class TestPlayersSyncEndpoint:
         )
         assert r.status_code == 401
 
-    def test_sync_dry_run_returns_502_when_upstream_suspended(self, session, admin_token):
+    def test_sync_dry_run_returns_400_json_via_public_url(self, session, admin_token):
         r = session.post(
             f"{API}/players/sync?dry_run=true",
             headers=auth_headers(admin_token),
         )
-        # Backend must translate upstream error to 502 (not crash)
-        assert r.status_code == 502, f"expected 502 got {r.status_code} {r.text[:200]}"
-        # Note: Cloudflare intercepts 5xx responses from origin and replaces the JSON body
-        # with an HTML 'Bad gateway' page. So detail can only be verified via internal port.
-        try:
-            detail = r.json().get("detail", "")
-            assert "API-Football:" in detail
-        except Exception:
-            # Public edge returned HTML - verify via internal port instead
-            _assert_internal_sync_error_shape("dry_run=true")
+        assert r.status_code == 400, f"expected 400 got {r.status_code} body={r.text[:300]}"
+        # Ensure Cloudflare did NOT swap JSON for HTML.
+        ct = r.headers.get("content-type", "")
+        assert "application/json" in ct.lower(), f"expected JSON content-type got {ct!r} body={r.text[:300]}"
+        body = r.json()
+        detail = body.get("detail", "")
+        assert isinstance(detail, str), f"detail must be a string, got {body!r}"
+        assert detail.startswith("API-Football:"), f"expected 'API-Football:' prefix, got {detail!r}"
 
-    def test_sync_no_dry_run_returns_502_when_upstream_suspended(self, session, admin_token):
+    def test_sync_no_dry_run_returns_400_json_via_public_url(self, session, admin_token):
         r = session.post(f"{API}/players/sync", headers=auth_headers(admin_token))
-        assert r.status_code == 502, f"expected 502 got {r.status_code} {r.text[:200]}"
-        try:
-            detail = r.json().get("detail", "")
-            assert "API-Football:" in detail
-        except Exception:
-            _assert_internal_sync_error_shape("")
+        assert r.status_code == 400, f"expected 400 got {r.status_code} body={r.text[:300]}"
+        ct = r.headers.get("content-type", "")
+        assert "application/json" in ct.lower(), f"expected JSON content-type got {ct!r} body={r.text[:300]}"
+        body = r.json()
+        detail = body.get("detail", "")
+        assert isinstance(detail, str)
+        assert detail.startswith("API-Football:"), f"expected 'API-Football:' prefix, got {detail!r}"
 
-    def test_sync_error_detail_via_internal_backend(self):
-        """Verify the FastAPI JSON error shape directly on 127.0.0.1:8001 (bypasses
-        Cloudflare which replaces 5xx bodies with an HTML error page)."""
-        _assert_internal_sync_error_shape("dry_run=true")
+    def test_sync_error_body_is_not_html(self, session, admin_token):
+        """Regression for the previous Cloudflare 502-body-replacement bug:
+        response must be JSON, not HTML."""
+        r = session.post(
+            f"{API}/players/sync?dry_run=true",
+            headers=auth_headers(admin_token),
+        )
+        text = r.text.lstrip().lower()
+        assert not text.startswith("<!doctype"), "Cloudflare returned HTML instead of JSON"
+        assert not text.startswith("<html"), "Cloudflare returned HTML instead of JSON"
+        assert "bad gateway" not in text, "Cloudflare hijacked the body with a Bad gateway page"
 
     def test_sync_does_not_wipe_seed_data_on_upstream_error(self, session, admin_token):
         """After a failed sync attempt, seed players must still exist (endpoint must fail
@@ -118,11 +98,9 @@ class TestPlayersSyncEndpoint:
         assert r.status_code == 200
         total_before = r.json()["total"]
 
-        # trigger a failed sync
         r2 = session.post(f"{API}/players/sync", headers=auth_headers(admin_token))
-        assert r2.status_code == 502
+        assert r2.status_code == 400
 
-        # verify players are still there
         r3 = session.get(f"{API}/players/sync/status", headers=auth_headers(admin_token))
         assert r3.status_code == 200
         total_after = r3.json()["total"]
@@ -132,8 +110,7 @@ class TestPlayersSyncEndpoint:
 
 
 class TestRegressionAfterSyncRefactor:
-    """Ensure the /teams refactor (uses db.players.distinct('team')) and other
-    endpoints still work after the sync refactor."""
+    """Ensure /teams (uses db.players.distinct('team')) and other endpoints still work."""
 
     def test_teams_still_returns_20(self, session, admin_token):
         r = session.get(f"{API}/teams", headers=auth_headers(admin_token))
