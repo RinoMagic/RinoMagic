@@ -3,10 +3,12 @@ import uuid
 import logging
 import string
 import random
+import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+import httpx
 import jwt
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -29,6 +31,10 @@ JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "10080"))
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY", "").strip()
+API_FOOTBALL_BASE = os.environ.get("API_FOOTBALL_BASE", "https://v3.football.api-sports.io").rstrip("/")
+SERIE_A_LEAGUE_ID = int(os.environ.get("SERIE_A_LEAGUE_ID", "135"))
+CURRENT_SEASON = int(os.environ.get("CURRENT_SEASON", "2024"))
 
 # --- DB ---
 client = AsyncIOMotorClient(MONGO_URL)
@@ -271,7 +277,150 @@ async def list_players(
 
 @api.get("/teams", response_model=List[str])
 async def list_teams(user: dict = Depends(get_current_user)):
+    teams_from_db = await db.players.distinct("team")
+    if teams_from_db:
+        return sorted(teams_from_db)
     return TEAMS
+
+
+# ============ API-Football sync ============
+POSITION_MAP = {
+    "Goalkeeper": "P",
+    "Defender": "D",
+    "Midfielder": "C",
+    "Attacker": "A",
+}
+
+
+async def _apifootball_get(client: httpx.AsyncClient, path: str, params: dict) -> dict:
+    if not API_FOOTBALL_KEY:
+        raise HTTPException(status_code=400, detail="API_FOOTBALL_KEY non configurata")
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    r = await client.get(f"{API_FOOTBALL_BASE}{path}", params=params, headers=headers, timeout=20.0)
+    r.raise_for_status()
+    data = r.json()
+    errors = data.get("errors")
+    if errors:
+        # api-football returns errors as dict or list
+        if isinstance(errors, dict) and errors:
+            msg = next(iter(errors.values()))
+            raise HTTPException(status_code=502, detail=f"API-Football: {msg}")
+        if isinstance(errors, list) and errors:
+            raise HTTPException(status_code=502, detail=f"API-Football: {errors[0]}")
+    return data
+
+
+@api.post("/players/sync")
+async def sync_players(
+    season: Optional[int] = None,
+    dry_run: bool = False,
+    user: dict = Depends(get_current_user),
+):
+    """Sync Serie A players from API-Football into MongoDB.
+
+    Any authenticated user can trigger sync (idempotent replace).
+    Uses `season` query param, or CURRENT_SEASON from env.
+    """
+    if not API_FOOTBALL_KEY:
+        raise HTTPException(status_code=400, detail="API key non configurata")
+    target_season = season or CURRENT_SEASON
+
+    async with httpx.AsyncClient() as http_client:
+        # 1) Get all Serie A teams for the season
+        teams_data = await _apifootball_get(
+            http_client, "/teams", {"league": SERIE_A_LEAGUE_ID, "season": target_season}
+        )
+        teams = teams_data.get("response", [])
+        if not teams:
+            raise HTTPException(status_code=502, detail="Nessuna squadra ricevuta dall'API")
+
+        collected: list[dict] = []
+        team_names: list[str] = []
+
+        # 2) For each team get the squad
+        for t in teams:
+            team_info = t.get("team", {})
+            team_id = team_info.get("id")
+            team_name = team_info.get("name") or "Unknown"
+            team_names.append(team_name)
+            if not team_id:
+                continue
+            try:
+                squad_data = await _apifootball_get(
+                    http_client, "/players/squads", {"team": team_id}
+                )
+            except HTTPException as e:
+                logger.warning(f"Failed squad for {team_name}: {e.detail}")
+                continue
+            resp = squad_data.get("response", [])
+            if not resp:
+                continue
+            players_list = resp[0].get("players", [])
+            for p in players_list:
+                pos = p.get("position") or ""
+                role = POSITION_MAP.get(pos)
+                if not role:
+                    continue
+                collected.append({
+                    "external_id": str(p.get("id")),
+                    "name": p.get("name") or "?",
+                    "team": team_name,
+                    "role": role,
+                    "photo": p.get("photo"),
+                    "number": p.get("number"),
+                    "age": p.get("age"),
+                    "source": "api-football",
+                    "season": target_season,
+                })
+            # small delay to be nice
+            await asyncio.sleep(0.15)
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "season": target_season,
+            "teams_found": len(team_names),
+            "players_ready": len(collected),
+        }
+
+    # 3) Replace players collection atomically-ish:
+    # Preserve stability of ids: match by external_id if present, else regenerate
+    existing = {}
+    async for doc in db.players.find({}, {"_id": 0}):
+        ext = doc.get("external_id")
+        if ext:
+            existing[ext] = doc.get("id")
+
+    docs_to_insert = []
+    for c in collected:
+        pid = existing.get(c["external_id"]) or str(uuid.uuid4())
+        docs_to_insert.append({"id": pid, **c})
+
+    # Drop and reinsert
+    await db.players.delete_many({})
+    if docs_to_insert:
+        await db.players.insert_many(docs_to_insert)
+
+    return {
+        "ok": True,
+        "season": target_season,
+        "teams": len(team_names),
+        "players_synced": len(docs_to_insert),
+    }
+
+
+@api.get("/players/sync/status")
+async def sync_status(user: dict = Depends(get_current_user)):
+    total = await db.players.count_documents({})
+    api_synced = await db.players.count_documents({"source": "api-football"})
+    seasons = sorted(await db.players.distinct("season") or [])
+    return {
+        "total": total,
+        "api_synced": api_synced,
+        "seasons": seasons,
+        "api_key_configured": bool(API_FOOTBALL_KEY),
+        "current_season_env": CURRENT_SEASON,
+    }
 
 
 # ============ Leagues ============

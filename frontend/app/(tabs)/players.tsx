@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -38,15 +38,39 @@ export default function Players() {
   const [team, setTeam] = useState<string | null>(null);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  const loadTeams = useCallback(async () => {
+    try {
+      const t = await api<string[]>('/teams');
+      setTeams(t);
+    } catch {}
+  }, []);
+
+  const runSync = async () => {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await api<{ ok: boolean; players_synced: number; teams: number; season: number }>(
+        '/players/sync',
+        { method: 'POST' }
+      );
+      setSyncMsg(`Rosa aggiornata: ${res.players_synced} giocatori (stagione ${res.season})`);
+      await loadTeams();
+      // Trigger reload of current filter
+      setQ((v) => v);
+    } catch (e: any) {
+      setSyncMsg(e.message || 'Errore sync');
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setSyncMsg(null), 5000);
+    }
+  };
 
   useEffect(() => {
-    (async () => {
-      try {
-        const t = await api<string[]>('/teams');
-        setTeams(t);
-      } catch {}
-    })();
-  }, []);
+    loadTeams();
+  }, [loadTeams]);
 
   useEffect(() => {
     (async () => {
@@ -70,9 +94,30 @@ export default function Players() {
     <View style={styles.wrap}>
       <SafeAreaView edges={['top']}>
         <View style={styles.header}>
-          <Text style={styles.title}>Rosa Serie A</Text>
-          <Text style={styles.subtitle}>{players.length} giocatori</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Rosa Serie A</Text>
+            <Text style={styles.subtitle}>{players.length} giocatori</Text>
+          </View>
+          <Pressable
+            testID="sync-players-button"
+            onPress={runSync}
+            disabled={syncing}
+            style={[styles.syncBtn, syncing && { opacity: 0.5 }]}
+            hitSlop={10}
+          >
+            {syncing ? (
+              <ActivityIndicator color={theme.colors.brand} size="small" />
+            ) : (
+              <Ionicons name="refresh" size={18} color={theme.colors.brand} />
+            )}
+            <Text style={styles.syncBtnText}>Aggiorna</Text>
+          </Pressable>
         </View>
+        {syncMsg && (
+          <View testID="sync-message" style={styles.syncMsgBox}>
+            <Text style={styles.syncMsgText}>{syncMsg}</Text>
+          </View>
+        )}
         <View style={styles.searchWrap}>
           <Ionicons name="search" size={18} color={theme.colors.muted} />
           <TextInput
@@ -189,7 +234,31 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
   },
+  syncBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.surfaceSecondary,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.brand,
+  },
+  syncBtnText: { color: theme.colors.brand, fontWeight: '700', fontSize: 12 },
+  syncMsgBox: {
+    marginHorizontal: theme.spacing.lg,
+    marginTop: theme.spacing.sm,
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  syncMsgText: { color: theme.colors.onSurfaceSecondary, fontSize: 12 },
   title: { color: theme.colors.onSurface, fontSize: 26, fontWeight: '800' },
   subtitle: { color: theme.colors.muted, fontSize: 13, marginTop: 2 },
   searchWrap: {
