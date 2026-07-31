@@ -258,6 +258,17 @@ def display_name(user: dict) -> str:
     return email.split("@")[0] if email else "admin"
 
 
+# ---------- ScoreAndLive mini-game (RinoMagic umbrella) ----------
+from scoreandlive import build_router as _build_sal_router, ensure_indexes as _sal_ensure_indexes  # noqa: E402
+_sal_router = _build_sal_router(
+    db=db,
+    current_user=current_user,
+    require_admin=require_admin,
+    display_name=display_name,
+)
+api.include_router(_sal_router)
+
+
 def _norm_team(name: str) -> str:
     """Aggressive team-name normalization for matching predictions vs results.
 
@@ -727,6 +738,8 @@ async def startup():
     await db.reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.invites.create_index("code", unique=True)
     await db.invites.create_index([("room_id", 1), ("used_by_user_id", 1)])
+    # ScoreAndLive indexes
+    await _sal_ensure_indexes(db)
     # Backfill: every existing room/invite belongs to TheBestTiket (the game
     # that existed before the multi-game refactor). New rooms/invites carry
     # the field explicitly.
