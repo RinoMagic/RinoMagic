@@ -483,9 +483,22 @@ def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
             return "NOGOL"
         return None
 
-    # Over / Under (threshold-aware)
-    if "U/O" in market or "O/U" in market or "OVER" in market or "UNDER" in market:
-        thr_match = re.search(r"(\d(?:\.\d)?)", market)
+    # Over / Under (threshold-aware). Tolerate the very common OCR misread
+    # where the letter "O" is picked up as the digit "0" (e.g. "U/0 1,5").
+    if (
+        "U/O" in market or "O/U" in market
+        or "U/0" in market or "0/U" in market
+        or "OVER" in market or "UNDER" in market
+        or "0VER" in market or "0/O" in market
+    ):
+        # Normalise "0" (digit) back to "O" (letter) inside the market label
+        # so the threshold detection below doesn't accidentally pick up that
+        # zero as the goals threshold.
+        market_norm = (
+            market.replace("U/0", "U/O").replace("0/U", "O/U")
+            .replace("0VER", "OVER").replace("0/O", "O/O")
+        )
+        thr_match = re.search(r"(\d(?:\.\d)?)", market_norm)
         threshold = thr_match.group(1) if thr_match else "2.5"
         # normalise threshold to "X.5" or integer
         if "." not in threshold:
@@ -608,6 +621,11 @@ async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
             logger.warning("OCR failure: %s", exc)
             continue
         events = _parse_staryes_slip(text)
+        # Debug logging: helps diagnose why a market is flagged as
+        # "MERCATO NON AMMESSO" — writes the raw OCR text and the parsed
+        # events (with market_raw) to the backend log.
+        logger.info("OCR raw text (%d chars):\n%s", len(text), text)
+        logger.info("OCR parsed events: %s", events)
         if len(events) > len(best_events):
             best_events = events
             best_text = text
