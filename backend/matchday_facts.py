@@ -398,3 +398,69 @@ def build_router(
         return {"matchday": matchday, "deleted": r.deleted_count}
 
     return router
+
+
+# =========================================================================
+# Risultati PDF router (STUB — parser to be built when a real sample lands)
+# =========================================================================
+
+def build_risultati_router(
+    db,
+    current_user: Callable,
+    require_admin: Callable,
+) -> APIRouter:
+    """Placeholder router for the "Risultati Serie A" PDF ingestion.
+
+    The parser is not implemented yet because we don't have a reference PDF
+    sample. This router exposes a single endpoint that:
+      * validates the upload is a PDF,
+      * extracts the raw text preview (first ~40 lines),
+      * returns it back to the admin so we can iterate on the parser without
+        blocking the UI wiring.
+    """
+    router = APIRouter(prefix="/admin/risultati")
+
+    @router.post("/upload-pdf")
+    async def upload_risultati_pdf(
+        file: UploadFile = File(...),
+        user: dict = Depends(require_admin),
+    ):
+        if not file.filename or not file.filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Serve un file .pdf")
+        raw = await file.read()
+        if len(raw) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="PDF troppo grande (max 20MB)")
+        try:
+            import pdfplumber
+        except ImportError as e:
+            raise HTTPException(status_code=500, detail=f"pdfplumber non installato: {e}") from e
+
+        preview_lines: List[str] = []
+        page_count = 0
+        with pdfplumber.open(io.BytesIO(raw)) as pdf:
+            page_count = len(pdf.pages)
+            for page in pdf.pages[:3]:
+                text = page.extract_text() or ""
+                for line in text.split("\n"):
+                    ln = line.strip()
+                    if ln:
+                        preview_lines.append(ln)
+                    if len(preview_lines) >= 40:
+                        break
+                if len(preview_lines) >= 40:
+                    break
+
+        return {
+            "parser_ready": False,
+            "message": (
+                "Parser Risultati non ancora implementato. Il file è stato letto "
+                "correttamente — inviaci il PDF di esempio via chat così costruiamo "
+                "il parser sulla struttura reale."
+            ),
+            "filename": file.filename,
+            "size_bytes": len(raw),
+            "pages": page_count,
+            "preview_lines": preview_lines,
+        }
+
+    return router

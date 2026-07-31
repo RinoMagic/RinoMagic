@@ -271,6 +271,7 @@ api.include_router(_sal_router)
 # ---------- Matchday Facts (universal Voti/Marcatori PDF ingestion) ----------
 from matchday_facts import (  # noqa: E402
     build_router as _build_facts_router,
+    build_risultati_router as _build_risultati_router,
     ensure_indexes as _facts_ensure_indexes,
 )
 _facts_router = _build_facts_router(
@@ -279,6 +280,12 @@ _facts_router = _build_facts_router(
     require_admin=require_admin,
 )
 api.include_router(_facts_router)
+_risultati_router = _build_risultati_router(
+    db=db,
+    current_user=current_user,
+    require_admin=require_admin,
+)
+api.include_router(_risultati_router)
 
 
 def _norm_team(name: str) -> str:

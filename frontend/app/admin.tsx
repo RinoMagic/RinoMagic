@@ -145,6 +145,13 @@ export default function AdminHome() {
           </View>
           <View style={{ flexDirection: 'row', gap: theme.spacing.md, alignItems: 'center' }}>
             <Pressable
+              onPress={() => router.push('/pdf-admin')}
+              hitSlop={12}
+              testID="admin-pdf-imports"
+            >
+              <Ionicons name="document-text-outline" size={22} color={theme.colors.onSurface} />
+            </Pressable>
+            <Pressable
               onPress={() => router.push('/settings')}
               hitSlop={12}
               testID="admin-settings"
