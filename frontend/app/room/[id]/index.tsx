@@ -28,6 +28,8 @@ type Room = {
   admin_user_id: string;
   status: string;
   members_count: number;
+  invites_total: number;
+  invites_available: number;
   is_admin: boolean;
 };
 
@@ -100,16 +102,10 @@ export default function RoomDetail() {
 
   const shareInvite = async () => {
     if (!room) return;
-    const APP_URL = process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/api\/?$/, '')
-      || (typeof window !== 'undefined' ? window.location.origin : '');
-    const link = `${APP_URL}/invite/${room.invite_code}`;
-    const text = `Entra nella stanza "${room.name}" su SchedinaBar!\n${link}`;
-    if (Platform.OS === 'web') {
-      try { await (navigator as any).clipboard?.writeText(link); } catch {}
-      if (typeof window !== 'undefined') window.alert(`Link copiato:\n${link}`);
-      return;
+    // Only admins can generate/share invite codes now (one-shot invites).
+    if (room.is_admin) {
+      router.push(`/room/${room.id}/invites`);
     }
-    try { await Share.share({ message: text }); } catch {}
   };
 
   const logout = async () => {
@@ -150,8 +146,8 @@ export default function RoomDetail() {
               Giornata {room.matchday} · {room.max_events} pronostici
             </Text>
           </View>
-          <Pressable onPress={shareInvite} hitSlop={12} testID="room-share">
-            <Ionicons name="share-social" size={22} color={theme.colors.onSurface} />
+          <Pressable onPress={shareInvite} hitSlop={12} testID="room-share" style={!room.is_admin && { opacity: 0 }} disabled={!room.is_admin}>
+            <Ionicons name="people" size={22} color={theme.colors.onSurface} />
           </Pressable>
         </View>
       </SafeAreaView>
@@ -162,12 +158,40 @@ export default function RoomDetail() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.brand} />
         }
       >
-        {/* Invite code hero */}
-        <View style={[styles.hero, { backgroundColor: room.color + '15', borderColor: room.color }]}>
-          <Text style={styles.heroLabel}>CODICE INVITO</Text>
-          <Text style={[styles.heroCode, { color: room.color }]}>{room.invite_code}</Text>
-          <Text style={styles.heroSub}>{room.members_count} partecipanti</Text>
-        </View>
+        {/* Invites section (admin only) / Participants summary (everyone) */}
+        {room.is_admin ? (
+          <Pressable
+            testID="manage-invites"
+            onPress={() => router.push(`/room/${room.id}/invites`)}
+            style={({ pressed }) => [
+              styles.hero,
+              { backgroundColor: room.color + '15', borderColor: room.color },
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <View style={styles.heroRow}>
+              <View style={styles.heroCol}>
+                <Text style={[styles.heroBigNum, { color: room.color }]}>{room.invites_available}</Text>
+                <Text style={styles.heroColLabel}>Inviti disponibili</Text>
+              </View>
+              <View style={styles.heroDivider} />
+              <View style={styles.heroCol}>
+                <Text style={[styles.heroBigNum, { color: theme.colors.onSurface }]}>{room.members_count}</Text>
+                <Text style={styles.heroColLabel}>Partecipanti</Text>
+              </View>
+            </View>
+            <View style={styles.heroCtaRow}>
+              <Ionicons name="add-circle" size={18} color={room.color} />
+              <Text style={[styles.heroCta, { color: room.color }]}>Gestisci inviti · un codice per ogni giocatore</Text>
+              <Ionicons name="chevron-forward" size={18} color={room.color} />
+            </View>
+          </Pressable>
+        ) : (
+          <View style={[styles.hero, { backgroundColor: room.color + '15', borderColor: room.color, paddingVertical: theme.spacing.lg }]}>
+            <Text style={[styles.heroBigNum, { color: room.color }]}>{room.members_count}</Text>
+            <Text style={styles.heroColLabel}>Partecipanti nella stanza</Text>
+          </View>
+        )}
 
         {/* Schedina CTA */}
         <View style={{ paddingHorizontal: theme.spacing.lg }}>
@@ -559,6 +583,34 @@ const styles = StyleSheet.create({
     letterSpacing: 8,
   },
   heroSub: { color: theme.colors.onSurfaceSecondary, fontSize: 13 },
+  heroRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    alignSelf: 'stretch',
+  },
+  heroCol: { alignItems: 'center', flex: 1, gap: 4 },
+  heroDivider: { width: 1, alignSelf: 'stretch', backgroundColor: theme.colors.border, marginVertical: 4 },
+  heroBigNum: { fontSize: 36, fontWeight: '800' },
+  heroColLabel: {
+    color: theme.colors.muted,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    textAlign: 'center',
+  },
+  heroCtaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+  },
+  heroCta: { fontSize: 12, fontWeight: '800', letterSpacing: 0.3 },
   uploadCta: {
     flexDirection: 'row',
     alignItems: 'center',

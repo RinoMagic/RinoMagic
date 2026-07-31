@@ -71,10 +71,21 @@ export default function InvitePage() {
     return <View style={styles.center}><ActivityIndicator color={theme.colors.brand} /></View>;
   }
   if (!room) {
+    // Distinguish "already used / revoked" (410) from truly invalid codes.
+    const usedOrRevoked = msg && /già utilizzato|revocat/i.test(msg);
     return (
       <View style={styles.center}>
-        <Ionicons name="alert-circle" size={40} color={theme.colors.error} />
+        <Ionicons
+          name={usedOrRevoked ? 'ban' : 'alert-circle'}
+          size={40}
+          color={theme.colors.error}
+        />
         <Text style={styles.err}>{msg || 'Codice invito non valido'}</Text>
+        {usedOrRevoked && (
+          <Text style={[styles.help, { textAlign: 'center' }]}>
+            Ogni codice invito è valido per una sola persona. Chiedi all&apos;admin di generarne uno nuovo per te.
+          </Text>
+        )}
         <Pressable style={styles.cta} onPress={() => router.replace('/')}>
           <Text style={styles.ctaText}>Torna alla home</Text>
         </Pressable>
@@ -94,8 +105,9 @@ export default function InvitePage() {
             <Text style={styles.roomName}>{room.name}</Text>
             <Text style={styles.sub}>Giornata {room.matchday} · Max {room.max_events} pronostici</Text>
             <View style={styles.codeBox}>
-              <Text style={styles.codeLabel}>CODICE INVITO</Text>
+              <Text style={styles.codeLabel}>INVITO PERSONALE</Text>
               <Text style={[styles.code, { color: room.color }]}>{room.invite_code}</Text>
+              <Text style={[styles.sub, { marginTop: 4 }]}>Valido una sola volta</Text>
             </View>
           </View>
 

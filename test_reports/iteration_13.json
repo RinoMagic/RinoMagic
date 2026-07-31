@@ -1,0 +1,41 @@
+{
+  "summary": "End-to-end backend test of the one-shot invite system on SchedinaBar. Created /app/backend/tests/test_one_shot_invites.py with 19 pytest cases covering ALL 10 requirements from the review request. Result: 19/19 PASSED in 9.3s (pytest-xdist parallel, 2 workers). Also re-ran the pre-existing test_invite_flow.py → 9/9 PASSED (no regressions). Key results: (1) POST /api/rooms returns invites_available=1, invites_total=1 in response body; (2) GET /api/rooms/{id}/invites returns the auto-generated first invite (matches room.invite_code, used_by_user_id=null, revoked_at=null); requires admin (player → 403); unknown room → 404. (3) POST /api/rooms/{id}/invites creates a fresh single-use code distinct from the initial one, correctly with used_by_user_id=null and revoked_at=null; requires admin. (4) GET /api/rooms/by-code/{code} public preview: 200 for valid unused non-revoked code, 404 for unknown, 410 with detail 'Codice invito già utilizzato' for used, 410 with detail containing 'revocat' for revoked. No admin_user_id leak. (5) POST /api/rooms/join: first user succeeds (200), invite doc atomically updated with used_by_user_id and used_at; second user with same code → HTTP 410 detail == 'Codice invito già utilizzato' (exact match). Invalid code → 404. (6) Idempotence verified: same user retrying the used code gets 200 (returns the room dict), NOT 410. (7) DELETE /api/rooms/{id}/invites/{invite_id}: revokes unused invite (200, sets revoked_at); revoking a used invite → 400 with detail 'Impossibile revocare: invito già utilizzato'; revoke is idempotent (second call returns 200 without changing state); requires admin. (8) Preview of revoked invite → 410 with 'revocat' in detail (case-insensitive). (9) Race-condition: two threads calling POST /rooms/join concurrently → exactly one 200 and one 410 (find_one_and_update with ReturnDocument.AFTER guarantees atomicity). (10) GET /api/rooms/{id} exposes both invites_available and invites_total; correctly updates after create-invite (2/2), after join (2/1), and after revoking the spare (1/0 — invites_total excludes revoked). DB cleanup: fixtures teardown deletes rooms and players; a final orphan-sweep confirmed 0 stragglers.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/rooms/{id}", "issue": "invites_total counts only non-revoked docs (server.py:700), so 'total' semantically means 'active total' rather than 'ever created'. Behavior is consistent — just worth documenting."},
+      {"endpoint": "DELETE /api/rooms/{id}/invites/{invite_id}", "issue": "Second revoke call on an already-revoked invite returns 200 (idempotent). Not a bug, but the response body's revoked_at is the ORIGINAL timestamp because the code returns early; consistent behavior."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_one_shot_invites.py",
+    "/app/test_reports/pytest/one_shot_invites_results.xml"
+  ],
+  "action_items": [
+    "None required — one-shot invite system is fully working end-to-end. Frontend (admin invites panel) can now be built/tested against these endpoints with confidence."
+  ],
+  "critical_code_review_comments": [
+    "server.py:820-824 uses db.invites.find_one_and_update with ReturnDocument.AFTER on the composite filter {code, used_by_user_id:None, revoked_at:None} — this is the correct atomic single-writer pattern and was verified race-safe by the concurrent threading test.",
+    "server.py:834-837 explicit idempotence branch (same user re-joining) returns 200 with the room dict — cleanly handled.",
+    "server.py:842-845 correctly rolls back the claim if the room turned out to be settled between claim and read.",
+    "server.py:889 delete_room cascades db.invites.delete_many({room_id}) — good.",
+    "server.py:700-701 invites_total/invites_available both filter revoked_at:None. Semantic caveat noted in minor issues.",
+    "server.py:664 db.invites.create_index('code', unique=True) prevents duplicate codes across all rooms — matches gen_code + double-check logic in create_room/create_invite.",
+    "server.py:669-680 backfill loop for legacy rooms is idempotent (checks existing before insert)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_one_shot_invites.py — NEW: 19 pytest cases covering the 10 review-request requirements + admin-guard negatives + idempotence + race condition."
+  ],
+  "success_rate": {"backend": "100% (19/19 new + 9/9 pre-existing invite tests)", "frontend": "n/a (backend-only per review request)"},
+  "seed_data_creation": "All test data ephemeral: 8 rooms and ~15 players created and deleted during the run. Final orphan-sweep confirmed 0 residual TEST_OSI_ rooms and 0 TEST_osi_ users in DB.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "One-shot invite backend is production-ready. Endpoint contract: (a) POST /api/rooms → returns full room dict incl. invites_available:1, invites_total:1, invite_code (the code of the first invite). (b) GET /api/rooms/{id}/invites (admin) returns list sorted by created_at; each item: {id, code, used_by_user_id, used_by_nickname, used_at, revoked_at, created_at}. (c) POST /api/rooms/{id}/invites (admin) → single invite object. (d) DELETE /api/rooms/{id}/invites/{invite_id} (admin) → 200 or 400 if used. (e) GET /api/rooms/by-code/{code} public — 200 / 404 (invalid) / 410 (used or revoked, detail explicit). (f) POST /api/rooms/join — 200 (success or idempotent same-user) / 404 (invalid) / 410 (used or revoked). Note for future frontend work: the admin invite panel should call GET /rooms/{id}/invites for the list and POST /rooms/{id}/invites to add more; the 'invites_available'/'invites_total' counters in GET /rooms/{id} are the source of truth for UI badges. `used_by_nickname` is provided to render 'used by @mario' rows without extra lookups. Tests use pytest-xdist safely: each test creates its own room+players and cleans up.",
+  "rca_of_issue": "n/a — no bugs found in the one-shot invite implementation. All 10 requirements from the review request behave exactly as specified."
+}

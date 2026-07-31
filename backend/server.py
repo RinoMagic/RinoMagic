@@ -30,6 +30,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 from pydantic import BaseModel, Field, field_validator
 
 ROOT_DIR = Path(__file__).parent
@@ -660,6 +661,24 @@ async def startup():
     )
     await db.reset_tokens.create_index("token", unique=True)
     await db.reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    await db.invites.create_index("code", unique=True)
+    await db.invites.create_index([("room_id", 1), ("used_by_user_id", 1)])
+    # Backfill: for legacy rooms that still have a single `invite_code` field
+    # but no invite doc, create the corresponding invite record. This keeps
+    # existing invite links working after the "one-shot invite" migration.
+    async for r in db.rooms.find({"invite_code": {"$exists": True}}, {"id": 1, "invite_code": 1, "admin_user_id": 1, "created_at": 1, "_id": 0}):
+        existing = await db.invites.find_one({"code": r["invite_code"]})
+        if not existing:
+            await db.invites.insert_one({
+                "id": str(uuid.uuid4()),
+                "room_id": r["id"],
+                "code": r["invite_code"],
+                "used_by_user_id": None,
+                "used_at": None,
+                "created_at": r.get("created_at") or datetime.now(timezone.utc).isoformat(),
+                "created_by": r.get("admin_user_id"),
+                "revoked_at": None,
+            })
     await seed_admin_if_missing(db)
     logger.info("SchedinaBar API started")
 
@@ -677,17 +696,22 @@ async def _room_dict(room: dict, viewer: Optional[dict] = None) -> dict:
     if viewer:
         # Any user with role=admin controls all rooms; also room creators are admins.
         is_admin_of_room = viewer["role"] == "admin" or viewer["id"] == room.get("admin_user_id")
+    # Invite stats: how many single-use invites exist and how many are still available.
+    invites_total = await db.invites.count_documents({"room_id": room["id"], "revoked_at": None})
+    invites_available = await db.invites.count_documents({"room_id": room["id"], "revoked_at": None, "used_by_user_id": None})
     return {
         "id": room["id"],
         "name": room["name"],
         "matchday": room["matchday"],
         "max_events": room["max_events"],
         "color": room["color"],
-        "invite_code": room["invite_code"],
+        "invite_code": room["invite_code"],  # legacy: initial code, may be used
         "admin_user_id": room.get("admin_user_id"),
         "status": room.get("status", "open"),
         "created_at": room["created_at"],
         "members_count": members_count,
+        "invites_total": invites_total,
+        "invites_available": invites_available,
         "settled": settled,
         "is_admin": is_admin_of_room,
     }
@@ -707,28 +731,40 @@ async def _ensure_member(room_id: str, user: dict) -> None:
 async def create_room(data: RoomCreate, user: dict = Depends(require_admin)):
     for _ in range(10):
         code = gen_code()
-        if not await db.rooms.find_one({"invite_code": code}):
+        if not await db.rooms.find_one({"invite_code": code}) and not await db.invites.find_one({"code": code}):
             break
     room_id = str(uuid.uuid4())
     color = data.color if data.color in ROOM_COLORS else random.choice(ROOM_COLORS)
+    now = datetime.now(timezone.utc).isoformat()
     doc = {
         "id": room_id,
         "name": data.name,
         "matchday": data.matchday,
         "max_events": data.max_events,
         "color": color,
-        "invite_code": code,
+        "invite_code": code,  # legacy field, still populated for backward compat
         "admin_user_id": user["id"],
         "status": "open",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now,
     }
     await db.rooms.insert_one(doc)
+    # Create the first single-use invite (using the room's initial code)
+    await db.invites.insert_one({
+        "id": str(uuid.uuid4()),
+        "room_id": room_id,
+        "code": code,
+        "used_by_user_id": None,
+        "used_at": None,
+        "created_at": now,
+        "created_by": user["id"],
+        "revoked_at": None,
+    })
     # Auto-join the creating admin
     await db.memberships.insert_one({
         "room_id": room_id,
         "user_id": user["id"],
         "display_name": display_name(user),
-        "joined_at": datetime.now(timezone.utc).isoformat(),
+        "joined_at": now,
     })
     return await _room_dict(doc, user)
 
@@ -750,27 +786,62 @@ async def list_my_rooms(user: dict = Depends(current_user)):
 @api.get("/rooms/by-code/{invite_code}")
 async def preview_room(invite_code: str):
     """Public preview of a room by invite code — used by the invite landing page.
-    Does NOT require authentication. Returns only non-sensitive info."""
-    room = await db.rooms.find_one({"invite_code": invite_code.upper().strip()}, {"_id": 0})
-    if not room:
+    Does NOT require authentication. Returns only non-sensitive info.
+    Rejects codes that are already used or revoked."""
+    code = invite_code.upper().strip()
+    invite = await db.invites.find_one({"code": code})
+    if not invite:
         raise HTTPException(status_code=404, detail="Codice invito non valido")
+    if invite.get("revoked_at"):
+        raise HTTPException(status_code=410, detail="Codice invito revocato")
+    if invite.get("used_by_user_id"):
+        raise HTTPException(status_code=410, detail="Codice invito già utilizzato")
+    room = await db.rooms.find_one({"id": invite["room_id"]}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
     return {
         "id": room["id"],
         "name": room["name"],
         "matchday": room["matchday"],
         "max_events": room["max_events"],
         "color": room["color"],
-        "invite_code": room["invite_code"],
+        "invite_code": code,
         "status": room.get("status", "open"),
     }
 
 
 @api.post("/rooms/join")
 async def join_room(data: RoomJoin, user: dict = Depends(current_user)):
-    room = await db.rooms.find_one({"invite_code": data.invite_code.upper().strip()}, {"_id": 0})
+    code = data.invite_code.upper().strip()
+    # Atomically claim the invite: find one that is unused & unrevoked, and
+    # mark it as used by the current user in a single operation. This makes
+    # the "one-shot invite" contract race-safe even under concurrent joins.
+    now = datetime.now(timezone.utc).isoformat()
+    claimed = await db.invites.find_one_and_update(
+        {"code": code, "used_by_user_id": None, "revoked_at": None},
+        {"$set": {"used_by_user_id": user["id"], "used_at": now}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not claimed:
+        # Distinguish "not found" from "already used" for a clearer message
+        invite = await db.invites.find_one({"code": code})
+        if not invite:
+            raise HTTPException(status_code=404, detail="Codice invito non valido")
+        if invite.get("revoked_at"):
+            raise HTTPException(status_code=410, detail="Codice invito revocato")
+        # Idempotence: if the current user is the one who already used this
+        # invite, allow re-entry into the room (they might just be refreshing).
+        if invite.get("used_by_user_id") == user["id"]:
+            room = await db.rooms.find_one({"id": invite["room_id"]}, {"_id": 0})
+            if room:
+                return await _room_dict(room, user)
+        raise HTTPException(status_code=410, detail="Codice invito già utilizzato")
+    room = await db.rooms.find_one({"id": claimed["room_id"]}, {"_id": 0})
     if not room:
-        raise HTTPException(status_code=404, detail="Codice invito non valido")
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
     if room.get("status") == "settled":
+        # Roll back the claim if the room is closed
+        await db.invites.update_one({"id": claimed["id"]}, {"$set": {"used_by_user_id": None, "used_at": None}})
         raise HTTPException(status_code=400, detail="Stanza già chiusa")
     existing = await db.memberships.find_one({"room_id": room["id"], "user_id": user["id"]})
     if not existing:
@@ -778,7 +849,7 @@ async def join_room(data: RoomJoin, user: dict = Depends(current_user)):
             "room_id": room["id"],
             "user_id": user["id"],
             "display_name": display_name(user),
-            "joined_at": datetime.now(timezone.utc).isoformat(),
+            "joined_at": now,
         })
     return await _room_dict(room, user)
 
@@ -815,7 +886,77 @@ async def delete_room(room_id: str, user: dict = Depends(require_admin)):
     await db.memberships.delete_many({"room_id": room_id})
     await db.schedine.delete_many({"room_id": room_id})
     await db.fixtures.delete_many({"room_id": room_id})
+    await db.invites.delete_many({"room_id": room_id})
     return {"ok": True}
+
+
+# ---------- ROOM: INVITES (one-shot) ----------
+async def _invite_dict(inv: dict) -> dict:
+    used_by_nickname = None
+    if inv.get("used_by_user_id"):
+        u = await db.users.find_one({"id": inv["used_by_user_id"]}, {"_id": 0, "password_hash": 0})
+        if u:
+            used_by_nickname = u.get("username") or u.get("email")
+    return {
+        "id": inv["id"],
+        "code": inv["code"],
+        "used_by_user_id": inv.get("used_by_user_id"),
+        "used_by_nickname": used_by_nickname,
+        "used_at": inv.get("used_at"),
+        "revoked_at": inv.get("revoked_at"),
+        "created_at": inv.get("created_at"),
+    }
+
+
+@api.get("/rooms/{room_id}/invites")
+async def list_invites(room_id: str, user: dict = Depends(require_admin)):
+    room = await db.rooms.find_one({"id": room_id}, {"id": 1, "_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
+    invites = [i async for i in db.invites.find({"room_id": room_id}, {"_id": 0}).sort("created_at", 1)]
+    return [await _invite_dict(i) for i in invites]
+
+
+@api.post("/rooms/{room_id}/invites")
+async def create_invite(room_id: str, user: dict = Depends(require_admin)):
+    room = await db.rooms.find_one({"id": room_id}, {"id": 1, "_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
+    # Generate a unique code
+    for _ in range(20):
+        code = gen_code()
+        if not await db.invites.find_one({"code": code}) and not await db.rooms.find_one({"invite_code": code}):
+            break
+    else:
+        raise HTTPException(status_code=500, detail="Impossibile generare un codice univoco, riprova")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "room_id": room_id,
+        "code": code,
+        "used_by_user_id": None,
+        "used_at": None,
+        "created_at": now,
+        "created_by": user["id"],
+        "revoked_at": None,
+    }
+    await db.invites.insert_one(doc)
+    return await _invite_dict(doc)
+
+
+@api.delete("/rooms/{room_id}/invites/{invite_id}")
+async def revoke_invite(room_id: str, invite_id: str, user: dict = Depends(require_admin)):
+    inv = await db.invites.find_one({"id": invite_id, "room_id": room_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invito non trovato")
+    if inv.get("used_by_user_id"):
+        raise HTTPException(status_code=400, detail="Impossibile revocare: invito già utilizzato")
+    if inv.get("revoked_at"):
+        return await _invite_dict(inv)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.invites.update_one({"id": invite_id}, {"$set": {"revoked_at": now}})
+    inv["revoked_at"] = now
+    return await _invite_dict(inv)
 
 
 @api.get("/rooms/{room_id}/members")

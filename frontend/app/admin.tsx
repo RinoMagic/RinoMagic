@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, TextInput,
-  ActivityIndicator, RefreshControl, Modal, Platform, Alert, Share,
+  ActivityIndicator, RefreshControl, Modal, Platform, Alert,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -13,11 +13,8 @@ import { theme } from '@/src/theme';
 type Room = {
   id: string; name: string; matchday: number; max_events: number;
   color: string; invite_code: string; status: string; members_count: number;
+  invites_available: number; invites_total: number;
 };
-
-const APP_URL =
-  process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/api\/?$/, '') ||
-  (typeof window !== 'undefined' ? window.location.origin : '');
 
 function confirmDialog(title: string, message: string): Promise<boolean> {
   if (Platform.OS === 'web') {
@@ -96,14 +93,9 @@ export default function AdminHome() {
   };
 
   const shareInvite = async (r: Room) => {
-    const link = `${APP_URL}/invite/${r.invite_code}`;
-    const text = `Entra nella stanza "${r.name}" su SchedinaBar!\n${link}`;
-    if (Platform.OS === 'web') {
-      await copyText(link);
-      window.alert(`Link copiato negli appunti:\n${link}`);
-    } else {
-      try { await Share.share({ message: text }); } catch {}
-    }
+    // Navigate to the invite management screen where the admin can generate
+    // a one-shot invite code per player.
+    router.push(`/room/${r.id}/invites`);
   };
 
   const toggleBlock = async (u: User) => {
@@ -179,10 +171,12 @@ export default function AdminHome() {
               <View key={r.id} style={[styles.row, { borderColor: r.color + '80' }]}>
                 <Pressable style={{ flex: 1 }} onPress={() => router.push(`/room/${r.id}`)}>
                   <Text style={styles.rowName}>{r.name}</Text>
-                  <Text style={styles.rowMeta}>Giornata {r.matchday} · {r.members_count} partecipanti · Cod. {r.invite_code}</Text>
+                  <Text style={styles.rowMeta}>
+                    Giornata {r.matchday} · {r.members_count} partecipanti · {r.invites_available}/{r.invites_total} inviti
+                  </Text>
                 </Pressable>
                 <Pressable onPress={() => shareInvite(r)} hitSlop={8} testID={`share-${r.id}`}>
-                  <Ionicons name="share-social" size={18} color={theme.colors.brand} />
+                  <Ionicons name="people" size={18} color={theme.colors.brand} />
                 </Pressable>
                 <Pressable onPress={() => deleteRoom(r.id, r.name)} hitSlop={8} testID={`delete-${r.id}`}>
                   <Ionicons name="trash" size={18} color={theme.colors.error} />
