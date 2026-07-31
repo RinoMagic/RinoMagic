@@ -90,9 +90,7 @@ ROOM_COLORS = ["#00D95F", "#FFB300", "#EF4444", "#3B82F6", "#A855F7", "#EC4899",
 
 # Prediction codes we accept.
 # Simple markets:
-#   1  X  2  1X  X2  12          -> 1X2 + Double chance FT
-#   HT-1  HT-X  HT-2              -> 1X2 first half
-#   HT-1X  HT-X2  HT-12           -> Double chance first half
+#   1  X  2  1X  X2  12          -> 1X2 + Double chance (final score)
 #   GOL  NOGOL                     -> Both teams to score
 #   OVER-0.5..OVER-4.5             -> Over goals with threshold
 #   UNDER-0.5..UNDER-4.5           -> Under goals with threshold
@@ -104,10 +102,10 @@ ROOM_COLORS = ["#00D95F", "#FFB300", "#EF4444", "#3B82F6", "#A855F7", "#EC4899",
 #   1+GOL          X+OVER-2.5      1X+MG-1-3       12+GOL+OVER-1.5
 _SIMPLE_ATOM_RE = re.compile(
     r"^(?:"
-    r"(?:HT-)?(?:1X|X2|12|1|X|2)"       # 1X2 / DC (optionally HT)
+    r"1X|X2|12|1|X|2"                    # 1X2 / Double chance (final score)
     r"|GOL|NOGOL"
-    r"|(?:OVER|UNDER)-\d(?:\.\d)?"      # Over/Under with threshold
-    r"|MG[HA]?-\d-\d(?:-NO)?"           # Multigol total/home/away (SI default, or NO)
+    r"|(?:OVER|UNDER)-\d(?:\.\d)?"       # Over/Under with threshold
+    r"|MG[HA]?-\d-\d(?:-NO)?"            # Multigol total/home/away
     r")$"
 )
 
@@ -139,7 +137,7 @@ def _validate_prediction_code(code: str) -> str:
     canonical = "+".join(atoms)
     for a in atoms:
         if not _SIMPLE_ATOM_RE.match(a):
-            raise ValueError(f"Pronostico non valido: {code}")
+            raise ValueError(f"Mercato non ammesso: {code}")
     return canonical
 
 
@@ -178,8 +176,6 @@ class FixtureIn(BaseModel):
     home_score: int = Field(ge=0)
     away_score: int = Field(ge=0)
     both_scored: Optional[bool] = None  # if None, computed from scores
-    ht_home_score: Optional[int] = Field(default=None, ge=0)
-    ht_away_score: Optional[int] = Field(default=None, ge=0)
 
 
 class FixturesIn(BaseModel):
@@ -249,28 +245,19 @@ def _team_match(a: str, b: str) -> bool:
 
 
 def _evaluate_prediction(pred: str, fx: dict) -> bool:
-    """Return True if `pred` is correct given the fixture result.
+    """Return True if `pred` is correct given the fixture final score.
 
     Supports combos: multiple atoms joined by '+' — all must be true.
-    `fx` must contain: home_score, away_score. Optional: ht_home_score, ht_away_score.
-    HT markets require the HT scores; if absent the pick is considered lost.
+    `fx` must contain: home_score, away_score.
     """
     if not pred:
         return False
     home = int(fx.get("home_score", 0))
     away = int(fx.get("away_score", 0))
     total = home + away
-    ht_home = fx.get("ht_home_score")
-    ht_away = fx.get("ht_away_score")
 
     def eval_atom(atom: str) -> bool:
         atom = atom.upper().strip()
-        # First-half markets
-        if atom.startswith("HT-"):
-            if ht_home is None or ht_away is None:
-                return False
-            core = atom[3:]
-            return _eval_1x2_dc(core, ht_home, ht_away)
         # Multigol (total / home / away, optional NO suffix)
         m = re.match(r"^(MG|MGH|MGA)-(\d)-(\d)(-NO)?$", atom)
         if m:
@@ -293,7 +280,7 @@ def _evaluate_prediction(pred: str, fx: dict) -> bool:
             return home > 0 and away > 0
         if atom == "NOGOL":
             return home == 0 or away == 0
-        # 1X2 / Double chance (full time)
+        # 1X2 / Double chance (final score)
         return _eval_1x2_dc(atom, home, away)
 
     for a in pred.split("+"):
@@ -433,9 +420,10 @@ def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
             codes.append(code)
         return "+".join(codes)
 
-    # Detect first-half markets
-    is_ht = any(tag in market for tag in ("1TEMPO", "1 TEMPO", "PRIMO TEMPO", "1T", "HT", "1H"))
-    ht_prefix = "HT-" if is_ht else ""
+    # Detect first-half markets — NOT SUPPORTED: any HT market returns None
+    # so the frontend flags it as "MERCATO NON AMMESSO".
+    if any(tag in market for tag in ("1TEMPO", "1 TEMPO", "PRIMO TEMPO", "1T ", " 1T", "1H", " HT ")):
+        return None
 
     # Multigol (total / home / away). Accept both "1-3" and "1 3" separators;
     # tolerate OCR losing the separator entirely ("MULTIGOL 13" -> range 1-3).
@@ -491,13 +479,12 @@ def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
             return f"UNDER-{threshold}"
         return None
 
-    # 1X2 / Double chance — both full-time and half-time
+    # 1X2 / Double chance (final score only — no HT markets supported)
     # Market label may be "1X2", "1X", "X2", "12", "IX" (OCR of "1X"), etc.
     if pick in {"1", "X", "2"}:
-        return f"{ht_prefix}{pick}"
+        return pick
     if pick in {"1X", "X2", "12", "IX"}:
-        canonical = "1X" if pick == "IX" else pick
-        return f"{ht_prefix}{canonical}"
+        return "1X" if pick == "IX" else pick
     # As a last resort, if the pick is GOL/NOGOL alone
     if pick in {"GOL", "NOGOL"}:
         return pick
