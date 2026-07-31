@@ -351,11 +351,24 @@ def _normalize_ocr_token(token: str) -> str:
     if not token:
         return token
     t = token
-    # Common OCR errors on the '1' character: often read as '4', 'l' or 'I'.
-    # Apply the fix ONLY on typical bet tokens so we don't clobber legit digits.
-    for wrong in ("4X", "IX", "LX"):
+    # Common OCR errors on the '1' character in double-chance tokens: the
+    # digit "1" is frequently misread by tesseract depending on the font
+    # weight and anti-aliasing. Observed real cases on staryes.it slips:
+    #   1X -> 4X, IX, LX, TX, DX, JX, |X, iX, lX
+    #   X1 -> X4, XI, XL, XT
+    #   12 -> 42, I2, L2, T2, J2, |2
+    # Apply the fix ONLY on typical bet tokens so we don't clobber legit
+    # digits inside team names or odds.
+    for wrong in ("4X", "IX", "LX", "TX", "DX", "JX", "|X", "iX", "lX"):
         if wrong in t:
             t = t.replace(wrong, "1X")
+    for wrong in ("X4", "XI", "XL", "XT", "XJ", "X|"):
+        if wrong in t:
+            t = t.replace(wrong, "X1")
+    for wrong in ("42", "I2", "L2", "T2", "J2", "|2"):
+        # Only inside short bet tokens (avoid clobbering odds like "42.00")
+        if wrong in t and len(t) <= 4:
+            t = t.replace(wrong, "12")
     # 'O' misread as '0' when followed by other capitals ("0V" -> "OV").
     t = re.sub(r"\b0([A-Z])", r"O\1", t)
     return t
@@ -481,6 +494,14 @@ def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
             return f"OVER-{threshold}"
         if pick.startswith("UNDER") or pick in {"U", "UN"}:
             return f"UNDER-{threshold}"
+        return None
+
+    # Draw No Bet (aka DNB): pick "1" -> home wins (draw refunded, treated as
+    # loss in our binary win/loss model but semantically the closest code is
+    # "1"). Same for "2". A pick of "X" makes no sense for DNB.
+    if "DRAW NO BET" in market or market in {"DNB", "DRAW-NO-BET"}:
+        if pick in {"1", "2"}:
+            return pick
         return None
 
     # 1X2 / Double chance (final score only — no HT markets supported)
@@ -609,8 +630,16 @@ async def startup():
     await db.schedine.create_index([("room_id", 1), ("user_id", 1)], unique=True)
     await db.fixtures.create_index([("room_id", 1), ("home_team", 1), ("away_team", 1)], unique=True)
     await db.users.create_index("id", unique=True)
-    await db.users.create_index("email", unique=True, sparse=True)
-    await db.users.create_index("username", unique=True, sparse=True)
+    # Enforce uniqueness only when email/username are non-empty strings, so
+    # missing fields never collide. This is safer than unique+sparse.
+    await db.users.create_index(
+        "email", unique=True,
+        partialFilterExpression={"email": {"$type": "string"}},
+    )
+    await db.users.create_index(
+        "username", unique=True,
+        partialFilterExpression={"username": {"$type": "string"}},
+    )
     await db.reset_tokens.create_index("token", unique=True)
     await db.reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await seed_admin_if_missing(db)
