@@ -199,14 +199,6 @@ def _evaluate_prediction(pred: str, home: int, away: int) -> bool:
 
 
 # ============ OCR ============
-BOOKMAKER_TEAM_HINTS = [
-    "inter", "milan", "juventus", "juve", "napoli", "roma", "lazio", "atalanta",
-    "fiorentina", "bologna", "torino", "udinese", "genoa", "verona", "hellas",
-    "cagliari", "lecce", "parma", "empoli", "como", "monza", "venezia",
-    "sassuolo", "salernitana", "spezia", "cremonese", "pisa",
-]
-
-
 def _preprocess_image(raw_bytes: bytes) -> Image.Image:
     img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
     # Resize up if small
@@ -221,75 +213,120 @@ def _preprocess_image(raw_bytes: bytes) -> Image.Image:
     return gray
 
 
-ODD_RE = re.compile(r"\b([1-9]\d?[.,]\d{1,3})\b")
-PRED_RE = re.compile(r"\b(1X|X2|12|GOL|NOGOL|NO\s*GOL|OVER\s*\d?[.,]?\d?|UNDER\s*\d?[.,]?\d?|[1X2])\b", re.IGNORECASE)
+# ---- staryes.it bet-slip parser --------------------------------------------
+# Each event block on staryes.it looks like:
+#   CALCIO - SERIE A | 18:30           <-- header line (competition + kickoff)
+#   7965  FROSINONE  -  JUVENTUS       <-- optional event id + teams
+#   1X2: 2                       1.46  <-- market + prediction + odd
+STARYES_HEADER_RE = re.compile(
+    r"CALCIO\s*[-–]\s*SERIE\s*A", re.IGNORECASE
+)
+# Team line: optional 3-5 digit event id, then TEAM_A - TEAM_B (uppercase words).
+STARYES_TEAMS_RE = re.compile(
+    r"^\s*(?:\d{3,5}\s+)?([A-ZÀ-Ú][A-ZÀ-Ú\s.'’]+?)\s+[-–]\s+([A-ZÀ-Ú][A-ZÀ-Ú\s.'’]+?)\s*$"
+)
+STARYES_ODD_TAIL_RE = re.compile(r"([1-9]\d?[.,]\d{1,3})\s*$")
 
 
-def _extract_events_from_text(text: str) -> List[dict]:
-    """Best-effort parser: split text into candidate lines, look for
-    lines with two team-hint tokens + a prediction + an odd."""
+def _titleize(name: str) -> str:
+    """FROSINONE -> Frosinone;  HELLAS VERONA -> Hellas Verona."""
+    parts = re.split(r"(\s+)", name.strip())
+    return "".join(p if p.isspace() else (p[:1].upper() + p[1:].lower()) for p in parts)
+
+
+def _normalize_prediction(fragment: str) -> Optional[str]:
+    """Given a fragment like '1X2: 2', 'G/NG: GOL' or 'U/O 1,5: UNDER'
+    return the normalized prediction code (1/X/2/1X/X2/12/GOL/NOGOL/OVER/UNDER)."""
+    if not fragment:
+        return None
+    text = fragment.upper()
+    # Take part after the last colon if present, otherwise the last token.
+    if ":" in text:
+        pred = text.rsplit(":", 1)[1]
+    else:
+        tokens = text.replace(",", " ").split()
+        pred = tokens[-1] if tokens else ""
+    pred = re.sub(r"[^A-Z0-9]", "", pred)
+    # Common OCR aliases
+    if pred in {"NOGOL", "NG"}:
+        return "NOGOL"
+    if pred in {"GOL", "GG"}:
+        return "GOL"
+    if pred.startswith("NO"):
+        return "NOGOL"
+    if pred.startswith("OVER") or pred == "O":
+        return "OVER"
+    if pred.startswith("UNDER") or pred == "U":
+        return "UNDER"
+    if pred in {"1", "2", "X"}:
+        return pred
+    if pred in {"1X", "X1"}:
+        return "1X"
+    if pred in {"X2", "2X"}:
+        return "X2"
+    if pred in {"12", "21"}:
+        return "12"
+    return None
+
+
+def _parse_staryes_slip(raw_text: str) -> List[dict]:
+    """Parse a staryes.it bet slip out of raw OCR text.
+
+    Strategy:
+      1. Split OCR text in trimmed non-empty lines.
+      2. Locate `CALCIO - SERIE A` header lines as block anchors.
+      3. Within each block (until next header), look for a `TEAM - TEAM` line
+         and a bet line ending with an odd. Missing anchors are tolerated
+         (some slips only show teams+bet without a re-printed header).
+    """
+    lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+    if not lines:
+        return []
+
+    # Indexes of header lines act as event separators.
+    header_idx = [i for i, ln in enumerate(lines) if STARYES_HEADER_RE.search(ln)]
+    if not header_idx:
+        # Fallback: treat the whole text as one block
+        header_idx = [0]
+
     events: List[dict] = []
-    # First, try line-per-line matching
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    joined_lines: List[str] = []
-    # merge very short lines with the next one (OCR often splits)
-    buffer = ""
-    for ln in lines:
-        if len(ln) < 3:
-            continue
-        buffer = (buffer + " " + ln).strip() if buffer else ln
-        # if buffer looks complete (has an odd) close it
-        if ODD_RE.search(buffer):
-            joined_lines.append(buffer)
-            buffer = ""
-    if buffer:
-        joined_lines.append(buffer)
+    for i, hi in enumerate(header_idx):
+        end = header_idx[i + 1] if i + 1 < len(header_idx) else len(lines)
+        block = lines[hi:end]
+        home = away = prediction = None
+        odd: Optional[float] = None
+        for ln in block:
+            if home is None:
+                m = STARYES_TEAMS_RE.match(ln)
+                if m:
+                    home, away = m.group(1).strip(), m.group(2).strip()
+                    continue
+            if odd is None:
+                om = STARYES_ODD_TAIL_RE.search(ln)
+                if om:
+                    try:
+                        candidate = float(om.group(1).replace(",", "."))
+                    except ValueError:
+                        candidate = 0.0
+                    if 1.01 <= candidate <= 999:
+                        pred_fragment = ln[: om.start()].strip()
+                        pred = _normalize_prediction(pred_fragment)
+                        if pred:
+                            odd = candidate
+                            prediction = pred
+        if home and away and prediction and odd:
+            events.append({
+                "home_team": _titleize(home),
+                "away_team": _titleize(away),
+                "prediction": prediction,
+                "odd": round(odd, 3),
+            })
 
-    for line in joined_lines:
-        lower = line.lower()
-        found_teams = [t for t in BOOKMAKER_TEAM_HINTS if t in lower]
-        if len(found_teams) < 2:
-            continue
-
-        # extract 2 team names as originally typed (best-effort by index)
-        team_positions = []
-        for team_hint in found_teams[:2]:
-            idx = lower.find(team_hint)
-            team_positions.append((idx, team_hint))
-        team_positions.sort()
-        home = team_positions[0][1].capitalize()
-        away = team_positions[1][1].capitalize()
-
-        pred_match = PRED_RE.search(line)
-        prediction = pred_match.group(1).upper().replace(" ", "") if pred_match else "1"
-        if prediction.startswith("OVER"):
-            prediction = "OVER"
-        elif prediction.startswith("UNDER"):
-            prediction = "UNDER"
-        elif prediction == "NOGOL" or "NOGOL" in prediction:
-            prediction = "NOGOL"
-
-        odds = ODD_RE.findall(line)
-        # Use the LAST odd on line (usually the total/moltiplicatore is at the end)
-        try:
-            odd = float(odds[-1].replace(",", ".")) if odds else 0.0
-        except ValueError:
-            odd = 0.0
-        if odd <= 1.0:
-            continue
-
-        events.append({
-            "home_team": home,
-            "away_team": away,
-            "prediction": prediction,
-            "odd": odd,
-        })
-
-    # Dedup by (home, away)
+    # Dedup by (home, away, prediction)
     seen = set()
-    dedup = []
+    dedup: List[dict] = []
     for e in events:
-        key = (e["home_team"].lower(), e["away_team"].lower())
+        key = (e["home_team"].lower(), e["away_team"].lower(), e["prediction"])
         if key in seen:
             continue
         seen.add(key)
@@ -298,10 +335,28 @@ def _extract_events_from_text(text: str) -> List[dict]:
 
 
 async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
-    img = _preprocess_image(image_bytes)
-    text = pytesseract.image_to_string(img, lang=TESSERACT_LANG)
-    events = _extract_events_from_text(text)
-    return {"raw_text": text, "events": events}
+    """Run OCR with two strategies (raw + preprocessed) and pick the best
+    parsed result. The staryes.it slip uses light blue text over a dark blue
+    background: heavy preprocessing sometimes wipes the coloured predictions,
+    so keeping the raw image as a fallback is important."""
+    original = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    processed = _preprocess_image(image_bytes)
+
+    best_text = ""
+    best_events: List[dict] = []
+    for candidate in (original, processed):
+        try:
+            text = pytesseract.image_to_string(candidate, lang=TESSERACT_LANG)
+        except Exception as exc:  # pragma: no cover - tesseract missing/bad
+            logger.warning("OCR failure: %s", exc)
+            continue
+        events = _parse_staryes_slip(text)
+        if len(events) > len(best_events):
+            best_events = events
+            best_text = text
+        elif not best_text:
+            best_text = text
+    return {"raw_text": best_text, "events": best_events}
 
 
 # ============ Startup ============
