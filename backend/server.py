@@ -154,6 +154,8 @@ class RoomUpdate(BaseModel):
     matchday: Optional[int] = Field(default=None, ge=1, le=38)
     max_events: Optional[int] = Field(default=None, ge=1, le=10)
     color: Optional[str] = None
+    # ISO-8601 datetime string. Send an empty string to clear the deadline.
+    deadline_at: Optional[str] = None
 
 
 class RoomJoin(BaseModel):
@@ -699,6 +701,9 @@ async def _room_dict(room: dict, viewer: Optional[dict] = None) -> dict:
     # Invite stats: how many single-use invites exist and how many are still available.
     invites_total = await db.invites.count_documents({"room_id": room["id"], "revoked_at": None})
     invites_available = await db.invites.count_documents({"room_id": room["id"], "revoked_at": None, "used_by_user_id": None})
+    # Deadline: after this instant, players cannot submit new bet slips.
+    deadline_at = room.get("deadline_at")
+    submissions_locked = _is_deadline_passed(deadline_at)
     return {
         "id": room["id"],
         "name": room["name"],
@@ -712,9 +717,44 @@ async def _room_dict(room: dict, viewer: Optional[dict] = None) -> dict:
         "members_count": members_count,
         "invites_total": invites_total,
         "invites_available": invites_available,
+        "deadline_at": deadline_at,
+        "submissions_locked": submissions_locked,
         "settled": settled,
         "is_admin": is_admin_of_room,
     }
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        # Accept "2026-09-01T18:30" (datetime-local) and full ISO variants
+        s = value.strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            # Treat naive datetimes as UTC (frontend will always send UTC ISO)
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _is_deadline_passed(deadline_at: Optional[str]) -> bool:
+    dt = _parse_iso_datetime(deadline_at)
+    if not dt:
+        return False
+    return datetime.now(timezone.utc) >= dt
+
+
+async def _ensure_submissions_open(room: dict) -> None:
+    """Raise HTTPException if the room's submission deadline has passed."""
+    if _is_deadline_passed(room.get("deadline_at")):
+        raise HTTPException(
+            status_code=403,
+            detail="Termine per l'inserimento delle schedine scaduto",
+        )
 
 
 async def _ensure_member(room_id: str, user: dict) -> None:
@@ -865,15 +905,31 @@ async def get_room(room_id: str, user: dict = Depends(current_user)):
 
 @api.patch("/rooms/{room_id}")
 async def update_room(room_id: str, data: RoomUpdate, user: dict = Depends(require_admin)):
-    patch = {k: v for k, v in data.model_dump().items() if v is not None}
+    patch = {k: v for k, v in data.model_dump(exclude_unset=True).items()}
     if not patch:
         raise HTTPException(status_code=400, detail="Nessun campo da aggiornare")
     if "color" in patch and patch["color"] not in ROOM_COLORS:
         patch.pop("color")
-    result = await db.rooms.update_one({"id": room_id}, {"$set": patch})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Stanza non trovata")
+    # Handle deadline_at: empty string / None means "clear"; otherwise validate ISO
+    if "deadline_at" in patch:
+        raw = patch["deadline_at"]
+        if raw in (None, ""):
+            # Use $unset via a separate call for clarity
+            await db.rooms.update_one({"id": room_id}, {"$unset": {"deadline_at": ""}})
+            patch.pop("deadline_at")
+        else:
+            dt = _parse_iso_datetime(raw)
+            if not dt:
+                raise HTTPException(status_code=400, detail="Data/ora termine non valida")
+            # Store normalised UTC ISO string (with timezone)
+            patch["deadline_at"] = dt.astimezone(timezone.utc).isoformat()
+    if patch:
+        result = await db.rooms.update_one({"id": room_id}, {"$set": patch})
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Stanza non trovata")
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
     return await _room_dict(room, user)
 
 
@@ -1006,6 +1062,7 @@ async def upload_schedina(room_id: str, data: ScreenshotIn, user: dict = Depends
         raise HTTPException(status_code=404, detail="Stanza non trovata")
     if room.get("status") == "settled":
         raise HTTPException(status_code=400, detail="Stanza chiusa")
+    await _ensure_submissions_open(room)
 
     b64 = data.image_base64
     if "," in b64:
@@ -1045,6 +1102,7 @@ async def confirm_schedina(room_id: str, data: SchedinaConfirm, user: dict = Dep
         raise HTTPException(status_code=404, detail="Stanza non trovata")
     if room.get("status") == "settled":
         raise HTTPException(status_code=400, detail="Stanza chiusa")
+    await _ensure_submissions_open(room)
     if not data.events:
         raise HTTPException(status_code=400, detail="La schedina deve avere almeno un pronostico")
     if len(data.events) > room["max_events"]:

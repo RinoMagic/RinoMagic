@@ -1,0 +1,39 @@
+{
+  "summary": "Backend-only test of the deadline feature (termine per inserire schedine) on SchedinaBar. Created /app/backend/tests/test_deadline.py with 14 pytest cases covering all 9 requirements from the review request + 1 extra regression (deadline preservation on partial PATCH). Result: 14/14 PASSED in 6.79s (pytest-xdist, 2 workers). Pre-existing suites (test_invite_flow.py + test_one_shot_invites.py) re-ran: 28/28 PASSED — no regressions. Key results: (R1) PATCH with deadline_at='2027-01-01T18:30' returns 200, stores UTC ISO ('2027-01-01T18:30:00+00:00'), submissions_locked=false. (R2) PATCH with 'abc' or '2027-13-99T99:99' → 400 with exact detail 'Data/ora termine non valida'. (R3) PATCH with deadline_at='' issues $unset and subsequent GET returns deadline_at=null, submissions_locked=false. (R4) Partial PATCH (name only, or matchday+max_events+color) works without touching deadline_at. (R5) Non-admin player PATCH → 403; no-auth PATCH → 403 (HTTPBearer auto_error=False + require_admin). (R6) GET /api/rooms/{id} always includes both 'deadline_at' and 'submissions_locked' — on both fresh rooms (null/false) and rooms with a deadline set. (R7) With deadline_at='2020-01-01T00:00' (past), submissions_locked=true; POST /schedina/ocr → 403 detail 'Termine per l\\'inserimento delle schedine scaduto' (EXACT); POST /schedina/confirm → 403 with the same detail. (R8) With deadline in the future, OCR and confirm both return 200 normally. (R9) Freshly-created room has deadline_at=null, submissions_locked=false; OCR + confirm both succeed. (Extra) exclude_unset in RoomUpdate is verified: PATCHing only 'name' preserves the previously-set deadline_at. DB cleanup verified: 0 orphan TEST_DL_ rooms and 0 orphan TEST_dlp_ users after the run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_deadline.py",
+    "/app/test_reports/pytest/deadline_results.xml"
+  ],
+  "action_items": [
+    "None — deadline feature is fully working end-to-end. Frontend can rely on: (a) PATCH /api/rooms/{id} body {\"deadline_at\": \"YYYY-MM-DDTHH:MM\"} or full ISO; (b) empty string clears; (c) invalid → 400; (d) 'submissions_locked' is server-authoritative (recomputed on every GET/_room_dict call); (e) OCR + confirm both return 403 with detail 'Termine per l\\'inserimento delle schedine scaduto' when locked — frontend should surface that message."
+  ],
+  "critical_code_review_comments": [
+    "server.py:727-741 _parse_iso_datetime handles both naive 'YYYY-MM-DDTHH:MM' (datetime-local from browser) and trailing 'Z' → treats naive as UTC. Correct and matches the review contract.",
+    "server.py:744-748 _is_deadline_passed uses datetime.now(timezone.utc) — timezone-safe. submissions_locked is recomputed lazily inside _room_dict on every read, so no stale state.",
+    "server.py:751-757 _ensure_submissions_open raises 403 with the exact Italian detail string required by the spec — called from both /schedina/ocr and /schedina/confirm.",
+    "server.py:906-933 update_room uses data.model_dump(exclude_unset=True) so partial patches never overwrite other fields (verified by TestDeadlinePreservation). Empty-string deadline is handled via $unset in a SEPARATE update_one call, then removed from the $set patch — clean and correct.",
+    "server.py:918 $unset uses empty string '' as the field value (MongoDB idiom) — correct.",
+    "server.py:914-925 order: 'clear via unset' happens BEFORE the parse-and-store branch, so admin cannot both set-and-clear in the same request; consistent with pydantic Optional[str] semantics.",
+    "server.py:1065 & 1105 _ensure_submissions_open called AFTER _ensure_member and settled-check — good ordering (403 for non-member, 400 for settled room, 403 for expired deadline).",
+    "Consideration: RoomUpdate.deadline_at is Optional[str] with default=None; a client sending null explicitly would be treated as 'clear'. Currently in.py:914 checks `raw in (None, \"\")` — since exclude_unset filters unset fields, only clients that explicitly send `\"deadline_at\": null` would trigger the unset branch via None. Behavior is safe and consistent."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_deadline.py — NEW: 14 pytest cases across 9 test classes covering all 9 review-request requirements + a deadline-preservation regression test."
+  ],
+  "success_rate": {"backend": "100% (14/14 new deadline + 28/28 pre-existing invite tests)", "frontend": "n/a (backend-only per review request)"},
+  "seed_data_creation": "All test data ephemeral: 12 rooms and 4 players created and deleted during the run. Post-run MongoDB sweep confirmed 0 residual TEST_DL_ rooms and 0 TEST_dlp_ users.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Deadline backend is production-ready. Endpoint contract: (a) PATCH /api/rooms/{id} accepts {\"deadline_at\": \"YYYY-MM-DDTHH:MM\"} (datetime-local) or full ISO with tz; empty string clears via $unset; invalid → 400 with 'Data/ora termine non valida'. (b) GET /api/rooms/{id} always returns both `deadline_at` (nullable ISO with UTC tz) and `submissions_locked` (bool, recomputed server-side). (c) POST /schedina/ocr and /schedina/confirm both return 403 with detail exactly 'Termine per l\\'inserimento delle schedine scaduto' when deadline is passed. (d) Non-admin PATCH → 403 (require_admin dep). (e) Naive datetimes are interpreted as UTC. Frontend needs to surface the exact 403 detail as an error banner and disable the upload/confirm buttons when GET returns submissions_locked=true.",
+  "rca_of_issue": "n/a — no bugs found. All 9 requirements plus the exclude_unset regression behave exactly as specified."
+}

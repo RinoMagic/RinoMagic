@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,9 @@ import {
   Share,
   Platform,
   Modal,
+  TextInput,
 } from 'react-native';
+import * as React from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -30,6 +32,8 @@ type Room = {
   members_count: number;
   invites_total: number;
   invites_available: number;
+  deadline_at: string | null;
+  submissions_locked: boolean;
   is_admin: boolean;
 };
 
@@ -69,6 +73,76 @@ export default function RoomDetail() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedNick, setSelectedNick] = useState<string | null>(null);
+  const [deadlineModalOpen, setDeadlineModalOpen] = useState(false);
+  const [deadlineDraft, setDeadlineDraft] = useState('');
+  const [deadlineBusy, setDeadlineBusy] = useState(false);
+  const [deadlineErr, setDeadlineErr] = useState<string | null>(null);
+  // Force a re-render each second while a deadline is set so the countdown stays live.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!room?.deadline_at) return;
+    const iv = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, [room?.deadline_at]);
+
+  const deadlineInfo = useMemo(() => {
+    if (!room?.deadline_at) return null;
+    const target = new Date(room.deadline_at).getTime();
+    if (Number.isNaN(target)) return null;
+    const diff = target - nowTick;
+    const passed = diff <= 0;
+    const abs = Math.abs(diff);
+    const days = Math.floor(abs / 86400000);
+    const hours = Math.floor((abs % 86400000) / 3600000);
+    const mins = Math.floor((abs % 3600000) / 60000);
+    const secs = Math.floor((abs % 60000) / 1000);
+    return {
+      passed,
+      target: new Date(target),
+      diffMs: diff,
+      label:
+        days > 0
+          ? `${days}g ${hours}h ${mins}m`
+          : hours > 0
+            ? `${hours}h ${mins}m ${secs}s`
+            : `${mins}m ${secs}s`,
+    };
+  }, [room?.deadline_at, nowTick]);
+
+  const openDeadlineModal = () => {
+    if (!room) return;
+    // Pre-fill the input with the existing deadline in the browser's local timezone.
+    if (room.deadline_at) {
+      const d = new Date(room.deadline_at);
+      // toISOString gives UTC; we want local for datetime-local input
+      const off = d.getTimezoneOffset();
+      const local = new Date(d.getTime() - off * 60000);
+      setDeadlineDraft(local.toISOString().slice(0, 16));
+    } else {
+      setDeadlineDraft('');
+    }
+    setDeadlineErr(null);
+    setDeadlineModalOpen(true);
+  };
+
+  const saveDeadline = async (clear = false) => {
+    if (!room) return;
+    setDeadlineBusy(true);
+    setDeadlineErr(null);
+    try {
+      const payload: any = { deadline_at: clear ? '' : deadlineDraft };
+      const updated = await api<Room>(`/rooms/${room.id}`, {
+        method: 'PATCH',
+        body: payload,
+      });
+      setRoom(updated);
+      setDeadlineModalOpen(false);
+    } catch (e: any) {
+      setDeadlineErr(e.message);
+    } finally {
+      setDeadlineBusy(false);
+    }
+  };
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -193,6 +267,73 @@ export default function RoomDetail() {
           </View>
         )}
 
+        {/* Deadline card */}
+        <View style={{ paddingHorizontal: theme.spacing.lg }}>
+          {deadlineInfo ? (
+            <View
+              style={[
+                styles.deadlineCard,
+                {
+                  borderColor: deadlineInfo.passed ? theme.colors.error : room.color,
+                  backgroundColor: (deadlineInfo.passed ? theme.colors.error : room.color) + '15',
+                },
+              ]}
+              testID="deadline-card"
+            >
+              <Ionicons
+                name={deadlineInfo.passed ? 'lock-closed' : 'time'}
+                size={22}
+                color={deadlineInfo.passed ? theme.colors.error : room.color}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.deadlineTitle}>
+                  {deadlineInfo.passed
+                    ? 'Termine scaduto · schedine bloccate'
+                    : `Termine tra ${deadlineInfo.label}`}
+                </Text>
+                <Text style={styles.deadlineSub}>
+                  {deadlineInfo.target.toLocaleString('it-IT', {
+                    weekday: 'short',
+                    day: '2-digit',
+                    month: 'short',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </Text>
+              </View>
+              {room.is_admin && (
+                <Pressable
+                  testID="edit-deadline"
+                  onPress={openDeadlineModal}
+                  hitSlop={8}
+                  style={styles.deadlineEditBtn}
+                >
+                  <Ionicons name="create-outline" size={18} color={theme.colors.onSurface} />
+                </Pressable>
+              )}
+            </View>
+          ) : (
+            room.is_admin && (
+              <Pressable
+                testID="set-deadline"
+                onPress={openDeadlineModal}
+                style={[styles.deadlineCard, { borderColor: theme.colors.border, borderStyle: 'dashed' }]}
+              >
+                <Ionicons name="time-outline" size={22} color={theme.colors.muted} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.deadlineTitle, { color: theme.colors.onSurface }]}>
+                    Imposta termine schedine
+                  </Text>
+                  <Text style={styles.deadlineSub}>
+                    Data e ora oltre cui i giocatori non potranno più caricare
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+              </Pressable>
+            )
+          )}
+        </View>
+
         {/* Schedina CTA */}
         <View style={{ paddingHorizontal: theme.spacing.lg }}>
           {mySchedina && mySchedina.status === 'confirmed' ? (
@@ -204,12 +345,24 @@ export default function RoomDetail() {
                   {mySchedina.events?.length || 0} pronostici confermati
                 </Text>
               </View>
-              <Pressable
-                testID="edit-schedina"
-                onPress={() => router.push(`/room/${room.id}/upload`)}
-              >
-                <Text style={{ color: theme.colors.brand, fontWeight: '800' }}>Modifica</Text>
-              </Pressable>
+              {!room.submissions_locked && (
+                <Pressable
+                  testID="edit-schedina"
+                  onPress={() => router.push(`/room/${room.id}/upload`)}
+                >
+                  <Text style={{ color: theme.colors.brand, fontWeight: '800' }}>Modifica</Text>
+                </Pressable>
+              )}
+            </View>
+          ) : room.submissions_locked ? (
+            <View style={[styles.uploadCta, { backgroundColor: theme.colors.surfaceTertiary, opacity: 0.85 }]}>
+              <Ionicons name="lock-closed" size={22} color={theme.colors.muted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.uploadTitle, { color: theme.colors.onSurface }]}>Termine scaduto</Text>
+                <Text style={[styles.uploadSub, { color: theme.colors.muted }]}>
+                  Non puoi più caricare o modificare la schedina
+                </Text>
+              </View>
             </View>
           ) : (
             <Pressable
@@ -365,6 +518,91 @@ export default function RoomDetail() {
         hasResults={hasResults}
         color={room.color}
       />
+
+      {/* Deadline edit modal (admin only) */}
+      <Modal
+        visible={deadlineModalOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setDeadlineModalOpen(false)}
+      >
+        <Pressable style={dlStyles.backdrop} onPress={() => setDeadlineModalOpen(false)}>
+          <Pressable style={dlStyles.card} onPress={(e) => e.stopPropagation()}>
+            <View style={dlStyles.header}>
+              <Ionicons name="time" size={22} color={room.color} />
+              <Text style={dlStyles.title}>Termine inserimento schedine</Text>
+            </View>
+            <Text style={dlStyles.sub}>
+              I giocatori non potranno più caricare o modificare le schedine dopo questa data e ora.
+              Suggerimento: 15 minuti prima del calcio d&apos;inizio della prima partita della giornata.
+            </Text>
+
+            {Platform.OS === 'web' ? (
+              // Native browser datetime picker
+              React.createElement('input', {
+                type: 'datetime-local',
+                value: deadlineDraft,
+                onChange: (e: any) => setDeadlineDraft(e.target.value),
+                style: {
+                  padding: 14,
+                  borderRadius: 12,
+                  border: `1px solid ${theme.colors.border}`,
+                  backgroundColor: theme.colors.surfaceSecondary,
+                  color: theme.colors.onSurface,
+                  fontSize: 16,
+                  colorScheme: 'dark',
+                  width: '100%',
+                  boxSizing: 'border-box',
+                },
+              })
+            ) : (
+              <TextInput
+                value={deadlineDraft}
+                onChangeText={setDeadlineDraft}
+                placeholder="YYYY-MM-DDTHH:mm"
+                placeholderTextColor={theme.colors.muted}
+                style={dlStyles.input}
+                autoCapitalize="none"
+              />
+            )}
+
+            {deadlineErr && (
+              <View style={dlStyles.errorBox}>
+                <Text style={dlStyles.errorText}>{deadlineErr}</Text>
+              </View>
+            )}
+
+            <View style={dlStyles.actions}>
+              {room.deadline_at && (
+                <Pressable
+                  testID="clear-deadline"
+                  onPress={() => saveDeadline(true)}
+                  disabled={deadlineBusy}
+                  style={[dlStyles.btn, dlStyles.btnGhost]}
+                >
+                  <Text style={[dlStyles.btnText, { color: theme.colors.error }]}>Rimuovi</Text>
+                </Pressable>
+              )}
+              <Pressable
+                testID="save-deadline"
+                onPress={() => saveDeadline(false)}
+                disabled={!deadlineDraft || deadlineBusy}
+                style={[
+                  dlStyles.btn,
+                  { backgroundColor: room.color },
+                  (!deadlineDraft || deadlineBusy) && { opacity: 0.5 },
+                ]}
+              >
+                {deadlineBusy ? (
+                  <ActivityIndicator color={theme.colors.onBrand} />
+                ) : (
+                  <Text style={[dlStyles.btnText, { color: theme.colors.onBrand }]}>Salva</Text>
+                )}
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -812,4 +1050,77 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginTop: 4,
   },
+  deadlineCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    marginBottom: theme.spacing.md,
+  },
+  deadlineTitle: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 14 },
+  deadlineSub: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
+  deadlineEditBtn: {
+    padding: 6,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surfaceSecondary,
+  },
+});
+
+const dlStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: theme.spacing.lg,
+  },
+  card: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  title: { color: theme.colors.onSurface, fontSize: 16, fontWeight: '800', flex: 1 },
+  sub: { color: theme.colors.muted, fontSize: 12, lineHeight: 18 },
+  input: {
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceSecondary,
+    color: theme.colors.onSurface,
+    fontSize: 16,
+  },
+  errorBox: {
+    backgroundColor: theme.colors.error + '22',
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.sm,
+  },
+  errorText: { color: theme.colors.error, fontSize: 12, fontWeight: '700' },
+  actions: { flexDirection: 'row', gap: theme.spacing.sm, justifyContent: 'flex-end' },
+  btn: {
+    height: 44,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 100,
+  },
+  btnGhost: {
+    backgroundColor: theme.colors.error + '15',
+    borderWidth: 1,
+    borderColor: theme.colors.error + '55',
+  },
+  btnText: { fontWeight: '800', fontSize: 14 },
 });
