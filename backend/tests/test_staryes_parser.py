@@ -24,13 +24,14 @@ EXPECTED_1 = [
     {"home_team": "Inter", "away_team": "Monza", "prediction": "X", "odd": 5.90},
 ]
 
-# Sample 2: Multigol totale + casa + ospite, 1X2 primo tempo, doppia chance 1X
+# Sample 2: Multigol totale + casa + ospite, doppia chance 1X, e un mercato
+# non supportato (1° Tempo) — deve essere emesso con prediction="".
 SAMPLE_2 = FIX / "staryes_markets.webp"
 EXPECTED_2 = [
     {"home_team": "Frosinone", "away_team": "Juventus", "prediction": "MGA-0-1", "odd": 2.15},
     {"home_team": "Parma", "away_team": "Cagliari", "prediction": "MGH-0-2", "odd": 1.08},
     {"home_team": "Genoa", "away_team": "Napoli", "prediction": "MG-1-3", "odd": 1.30},
-    {"home_team": "Udinese", "away_team": "Como", "prediction": "HT-X", "odd": 2.06},
+    {"home_team": "Udinese", "away_team": "Como", "prediction": "", "odd": 2.06},  # HT — rejected
     {"home_team": "Inter", "away_team": "Monza", "prediction": "1X", "odd": 1.04},
 ]
 
@@ -75,10 +76,9 @@ def test_classifier() -> int:
         (("U/O 1,5", "UNDER"), "UNDER-1.5"),
         (("U/O 2,5", "OVER"), "OVER-2.5"),
         (("U/O 3,5", "OVER"), "OVER-3.5"),
-        (("1X2 1°TEMPO", "X"), "HT-X"),
-        (("1X2 1°TEMPO", "1"), "HT-1"),
-        (("1X 1°TEMPO", "1X"), "HT-1X"),
-        (("12 1°TEMPO", "12"), "HT-12"),
+        # HT markets are NOT SUPPORTED anymore — must return None
+        (("1X2 1°TEMPO", "X"), None),
+        (("1X 1°TEMPO", "1X"), None),
         (("MULTIGOL 1-3", "SI"), "MG-1-3"),
         (("MULTIGOL 2-4", "SI"), "MG-2-4"),
         (("MULTIGOL 1-3", "NO"), "MG-1-3-NO"),
@@ -98,7 +98,19 @@ def test_classifier() -> int:
         (("1X + MULTIGOL 1 3", "SI"), "1X+MG-1-3"),
         (("1X2 + U/O 1.5", "1 + UN"), "1+UNDER-1.5"),
         (("U/O 2.5 + GG/NG", "GG+OV"), "OVER-2.5+GOL"),
+        # OCR errors
+        (("4X + MULTIGOL 13", "SI"), "1X+MG-1-3"),  # 4X → 1X, "13" → 1-3
+        (("U/O 2.5 + GG/NG", "GG+0V"), "OVER-2.5+GOL"),  # 0V → OV
     ]
+    fails = 0
+    for (market, pick), expected in cases:
+        got = _classify_bet(market, pick)
+        ok = got == expected
+        print(f"  {'OK' if ok else 'FAIL'}  ({market!r}, {pick!r}) -> {got!r}   expected {expected!r}")
+        if not ok:
+            fails += 1
+    print(f"Classifier: {len(cases) - fails}/{len(cases)} pass")
+    return 0 if fails == 0 else 1
     fails = 0
     for (market, pick), expected in cases:
         got = _classify_bet(market, pick)
@@ -121,8 +133,8 @@ def test_classifier() -> int:
 
 def test_evaluator() -> int:
     """Unit tests for _evaluate_prediction covering all markets."""
-    def fx(h, a, ht_h=None, ht_a=None):
-        return {"home_score": h, "away_score": a, "ht_home_score": ht_h, "ht_away_score": ht_a}
+    def fx(h, a):
+        return {"home_score": h, "away_score": a}
 
     cases = [
         # 1X2
@@ -146,15 +158,10 @@ def test_evaluator() -> int:
         ("UNDER-2.5", fx(1, 1), True),
         ("OVER-0.5", fx(0, 0), False),
         ("OVER-0.5", fx(1, 0), True),
-        # HT
-        ("HT-1", fx(2, 1, ht_h=1, ht_a=0), True),
-        ("HT-X", fx(2, 2, ht_h=1, ht_a=1), True),
-        ("HT-2", fx(2, 2, ht_h=0, ht_a=0), False),
-        ("HT-X", fx(2, 1), False),  # HT unknown -> lost
         # Multigol totale
-        ("MG-1-3", fx(1, 2), True),   # 3 gol
-        ("MG-1-3", fx(2, 2), False),  # 4 gol
-        ("MG-1-3", fx(0, 0), False),  # 0 gol
+        ("MG-1-3", fx(1, 2), True),
+        ("MG-1-3", fx(2, 2), False),
+        ("MG-1-3", fx(0, 0), False),
         ("MG-1-3-NO", fx(2, 2), True),
         # Multigol casa
         ("MGH-0-2", fx(2, 5), True),
@@ -164,19 +171,17 @@ def test_evaluator() -> int:
         ("MGA-0-1", fx(0, 2), False),
         # Combos
         ("1+GOL", fx(2, 1), True),
-        ("1+GOL", fx(2, 0), False),   # 1 win but no both-scored
+        ("1+GOL", fx(2, 0), False),
         ("1X+OVER-2.5", fx(2, 1), True),
-        ("X+UNDER-1.5", fx(1, 1), False),   # X ok but 2 goals -> NOT under 1.5
+        ("X+UNDER-1.5", fx(1, 1), False),
         ("X+UNDER-2.5", fx(1, 1), True),
-        ("HT-1+MG-1-3", fx(2, 1, ht_h=1, ht_a=0), True),
     ]
     fails = 0
     for pred, fixture, expected in cases:
         got = _evaluate_prediction(pred, fixture)
         ok = got == expected
         marker = "OK" if ok else "FAIL"
-        print(f"  {marker}  eval({pred}, {fixture['home_score']}-{fixture['away_score']}"
-              f"{' HT ' + str(fixture['ht_home_score']) + '-' + str(fixture['ht_away_score']) if fixture.get('ht_home_score') is not None else ''})"
+        print(f"  {marker}  eval({pred}, {fixture['home_score']}-{fixture['away_score']})"
               f" -> {got}   expected {expected}")
         if not ok:
             fails += 1

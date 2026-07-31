@@ -455,10 +455,6 @@ class TestUnitLogic:
         assert _evaluate_prediction("MGA-0-1", fx(4, 0)) is True
         assert _evaluate_prediction("1+GOL", fx(2, 1)) is True
         assert _evaluate_prediction("1+GOL", fx(2, 0)) is False
-        # HT markets require HT scores
-        assert _evaluate_prediction("HT-1", {"home_score": 2, "away_score": 0,
-                                             "ht_home_score": 1, "ht_away_score": 0}) is True
-        assert _evaluate_prediction("HT-1", fx(2, 0)) is False  # HT scores missing
 
 
 # ---------- Security: cross-room and no-token ----------

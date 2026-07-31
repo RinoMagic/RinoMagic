@@ -20,6 +20,7 @@ import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 import {
   formatPrediction,
+  isUnknownPrediction,
   PREDICTION_GROUPS,
 } from '@/src/utils/predictions';
 
@@ -115,6 +116,11 @@ export default function UploadSchedina() {
     for (const e of events) {
       if (!e.home_team || !e.away_team || !e.odd) {
         return setMsg('Compila tutti i campi (squadre + quota)');
+      }
+      if (isUnknownPrediction(e.prediction)) {
+        return setMsg(
+          'MERCATO NON AMMESSO su almeno un evento. Tocca "Pronostico" per sceglierne uno valido.'
+        );
       }
     }
     setBusy(true);
@@ -239,15 +245,35 @@ export default function UploadSchedina() {
                   <Pressable
                     testID={`open-market-picker-${i}`}
                     onPress={() => setPickerIndex(i)}
-                    style={styles.marketButton}
+                    style={[
+                      styles.marketButton,
+                      isUnknownPrediction(e.prediction) && styles.marketButtonError,
+                    ]}
                   >
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.marketLabel}>PRONOSTICO</Text>
-                      <Text style={styles.marketValue} numberOfLines={2}>
+                      <Text
+                        style={[
+                          styles.marketLabel,
+                          isUnknownPrediction(e.prediction) && styles.marketLabelError,
+                        ]}
+                      >
+                        {isUnknownPrediction(e.prediction) ? 'PRONOSTICO — DA SCEGLIERE' : 'PRONOSTICO'}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.marketValue,
+                          isUnknownPrediction(e.prediction) && styles.marketValueError,
+                        ]}
+                        numberOfLines={2}
+                      >
                         {formatPrediction(e.prediction)}
                       </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
+                    <Ionicons
+                      name="chevron-forward"
+                      size={18}
+                      color={isUnknownPrediction(e.prediction) ? theme.colors.error : theme.colors.muted}
+                    />
                   </Pressable>
                 </View>
                 <View style={styles.oddRow}>
@@ -466,17 +492,28 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
+  marketButtonError: {
+    backgroundColor: theme.colors.error + '18',
+    borderColor: theme.colors.error,
+    borderWidth: 2,
+  },
   marketLabel: {
     color: theme.colors.muted,
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 1.2,
   },
+  marketLabelError: {
+    color: theme.colors.error,
+  },
   marketValue: {
     color: theme.colors.onSurface,
     fontSize: 14,
     fontWeight: '800',
     marginTop: 2,
+  },
+  marketValueError: {
+    color: theme.colors.error,
   },
   oddRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
   oddLabel: { color: theme.colors.muted, fontWeight: '600' },

@@ -1,15 +1,18 @@
 /**
  * Prediction code utilities for SchedinaBar.
  *
- * Canonical prediction codes returned by the backend:
- *   Simple 1X2 / DC:    1  X  2  1X  X2  12
- *   First half:         HT-1  HT-X  HT-2  HT-1X  HT-X2  HT-12
+ * Canonical prediction codes returned by the backend (final score only):
+ *   1X2 / DC:           1  X  2  1X  X2  12
  *   Both to score:      GOL  NOGOL
  *   Over/Under:         OVER-0.5 .. OVER-4.5   UNDER-0.5 .. UNDER-4.5
  *   Multigol totale:    MG-<a>-<b>          e.g. MG-1-3 (with optional "-NO")
  *   Multigol casa:      MGH-<a>-<b>[-NO]
  *   Multigol ospite:    MGA-<a>-<b>[-NO]
  *   Combos:             any of the above joined by '+', e.g. 1+GOL, 1X+OVER-2.5
+ *
+ * If the OCR could not classify the market, the backend returns prediction = ""
+ * and the frontend must show "MERCATO NON AMMESSO" while forcing the user to
+ * pick a valid market before saving.
  */
 
 const BASE_LABELS: Record<string, string> = {
@@ -19,20 +22,14 @@ const BASE_LABELS: Record<string, string> = {
   '1X': '1X (Casa o Pareggio)',
   'X2': 'X2 (Pareggio o Trasferta)',
   '12': '12 (Casa o Trasferta)',
-  'HT-1': '1° Tempo: 1 (Casa)',
-  'HT-X': '1° Tempo: X (Pareggio)',
-  'HT-2': '1° Tempo: 2 (Trasferta)',
-  'HT-1X': '1° Tempo: 1X',
-  'HT-X2': '1° Tempo: X2',
-  'HT-12': '1° Tempo: 12',
   'GOL': 'GOL (Entrambe segnano)',
   'NOGOL': 'NO GOL',
 };
 
 /** Turn a canonical prediction code (possibly compound) into a human-readable
- *  Italian label. */
+ *  Italian label. An empty/unknown code becomes "MERCATO NON AMMESSO". */
 export function formatPrediction(code: string | undefined | null): string {
-  if (!code) return '—';
+  if (!code || !code.trim()) return 'MERCATO NON AMMESSO';
   return code
     .split('+')
     .map((atom) => {
@@ -50,6 +47,11 @@ export function formatPrediction(code: string | undefined | null): string {
       return atom;
     })
     .join(' + ');
+}
+
+/** Check if a prediction code is "unknown / rejected". */
+export function isUnknownPrediction(code: string | undefined | null): boolean {
+  return !code || !code.trim();
 }
 
 /** Category / group description used when choosing a prediction manually. */
@@ -71,17 +73,6 @@ export const PREDICTION_GROUPS: PredictionGroup[] = [
       { code: '1X', short: '1X', label: 'Casa o Pareggio' },
       { code: 'X2', short: 'X2', label: 'Pareggio o Trasferta' },
       { code: '12', short: '12', label: 'Casa o Trasferta' },
-    ],
-  },
-  {
-    title: '1° Tempo',
-    options: [
-      { code: 'HT-1', short: 'HT 1', label: 'Casa 1°T' },
-      { code: 'HT-X', short: 'HT X', label: 'Pareggio 1°T' },
-      { code: 'HT-2', short: 'HT 2', label: 'Trasferta 1°T' },
-      { code: 'HT-1X', short: 'HT 1X', label: 'Casa o Pareggio 1°T' },
-      { code: 'HT-X2', short: 'HT X2', label: 'Pareggio o Trasferta 1°T' },
-      { code: 'HT-12', short: 'HT 12', label: 'Casa o Trasferta 1°T' },
     ],
   },
   {

@@ -492,64 +492,6 @@ def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
     _ = pick_atoms  # kept for parity with combo branch
     return None
 
-    # Detect first-half markets
-    is_ht = any(tag in market for tag in ("1TEMPO", "1 TEMPO", "PRIMO TEMPO", "1T", "HT", "1H"))
-    ht_prefix = "HT-" if is_ht else ""
-
-    # Multigol (total / home / away)
-    if "MULTIGOL" in market or "MULTI GOL" in market:
-        rng = re.search(r"(\d)\s*[-–]\s*(\d)", market)
-        if not rng:
-            return None
-        a, b = rng.group(1), rng.group(2)
-        if "CASA" in market or "HOME" in market:
-            base = "MGH"
-        elif "OSPITE" in market or "AWAY" in market or "TRASF" in market:
-            base = "MGA"
-        else:
-            base = "MG"
-        code = f"{base}-{a}-{b}"
-        if pick in {"NO", "N"}:
-            code += "-NO"
-        elif pick not in {"SI", "S", "YES", "Y", "GOL", "1", ""}:
-            # Unexpected pick for multigol
-            return None
-        return code
-
-    # G/NG (both teams to score)
-    if market in {"G/NG", "GG/NG", "GG", "NG"} or "GOL/NOGOL" in market or "GOL/NO GOL" in market:
-        if pick in {"GOL", "GG", "SI", "S", "YES", "1"}:
-            return "GOL"
-        if pick in {"NOGOL", "NG", "NO", "N", "0"}:
-            return "NOGOL"
-        return None
-
-    # Over / Under (threshold-aware)
-    if "U/O" in market or "O/U" in market or "OVER" in market or "UNDER" in market:
-        thr_match = re.search(r"(\d(?:\.\d)?)", market)
-        threshold = thr_match.group(1) if thr_match else "2.5"
-        # normalise threshold to "X.5" or integer
-        if "." not in threshold:
-            threshold = f"{threshold}.5"
-        if pick.startswith("OVER") or pick in {"O", "OV"}:
-            return f"OVER-{threshold}"
-        if pick.startswith("UNDER") or pick in {"U", "UN"}:
-            return f"UNDER-{threshold}"
-        return None
-
-    # 1X2 / Double chance — both full-time and half-time
-    # Market label may be "1X2", "1X", "X2", "12", "IX" (OCR of "1X"), etc.
-    if pick in {"1", "X", "2"}:
-        return f"{ht_prefix}{pick}"
-    if pick in {"1X", "X2", "12", "IX"}:
-        canonical = "1X" if pick == "IX" else pick
-        return f"{ht_prefix}{canonical}"
-    # As a last resort, if the pick is GOL/NOGOL alone
-    if pick in {"GOL", "NOGOL"}:
-        return pick
-
-    return None
-
 
 def _parse_staryes_slip(raw_text: str) -> List[dict]:
     """Parse a staryes.it bet slip out of raw OCR text.
@@ -595,14 +537,16 @@ def _parse_staryes_slip(raw_text: str) -> List[dict]:
                 market_raw = " ".join(tokens[:-1]) if len(tokens) > 1 else ""
                 pick_raw = tokens[-1] if tokens else ""
             pred = _classify_bet(market_raw, pick_raw)
-            if pred:
-                events.append({
-                    "home_team": _titleize(home),
-                    "away_team": _titleize(away),
-                    "prediction": pred,
-                    "odd": round(candidate, 3),
-                })
-                break  # Only one bet line per event
+            events.append({
+                "home_team": _titleize(home),
+                "away_team": _titleize(away),
+                # Empty prediction signals "MERCATO NON AMMESSO" to the frontend
+                # so the user can pick a valid market manually before saving.
+                "prediction": pred or "",
+                "odd": round(candidate, 3),
+                "market_raw": pred_fragment.strip(),
+            })
+            break  # Only one bet line per event
 
     seen = set()
     dedup: List[dict] = []
@@ -889,8 +833,6 @@ async def set_fixtures(room_id: str, data: FixturesIn, session: dict = Depends(c
             "home_score": f.home_score,
             "away_score": f.away_score,
             "both_scored": both,
-            "ht_home_score": f.ht_home_score,
-            "ht_away_score": f.ht_away_score,
         })
     if docs:
         await db.fixtures.insert_many(docs)

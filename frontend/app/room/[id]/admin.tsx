@@ -19,8 +19,6 @@ type Fixture = {
   away_team: string;
   home_score: number;
   away_score: number;
-  ht_home_score?: number | null;
-  ht_away_score?: number | null;
 };
 
 export default function AdminFixtures() {
@@ -151,34 +149,6 @@ export default function AdminFixtures() {
                 style={styles.input}
               />
             </View>
-            <View style={styles.htRow}>
-              <Text style={styles.htLabel}>1° Tempo (opzionale)</Text>
-              <TextInput
-                testID={`fx-ht-hs-${i}`}
-                keyboardType="number-pad"
-                placeholder="—"
-                placeholderTextColor={theme.colors.muted}
-                value={f.ht_home_score != null ? String(f.ht_home_score) : ''}
-                onChangeText={(t) => {
-                  const n = t === '' ? null : parseInt(t, 10);
-                  updateFixture(i, { ht_home_score: isNaN(n as number) ? null : n });
-                }}
-                style={styles.scoreInputSmall}
-              />
-              <Text style={styles.dash}>-</Text>
-              <TextInput
-                testID={`fx-ht-as-${i}`}
-                keyboardType="number-pad"
-                placeholder="—"
-                placeholderTextColor={theme.colors.muted}
-                value={f.ht_away_score != null ? String(f.ht_away_score) : ''}
-                onChangeText={(t) => {
-                  const n = t === '' ? null : parseInt(t, 10);
-                  updateFixture(i, { ht_away_score: isNaN(n as number) ? null : n });
-                }}
-                style={styles.scoreInputSmall}
-              />
-            </View>
           </View>
         ))}
 
@@ -269,35 +239,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   dash: { color: theme.colors.muted, fontWeight: '800' },
-  htRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    marginTop: theme.spacing.xs,
-    paddingTop: theme.spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-  },
-  htLabel: {
-    flex: 1,
-    color: theme.colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  scoreInputSmall: {
-    width: 40,
-    color: theme.colors.onSurface,
-    backgroundColor: theme.colors.surfaceTertiary,
-    paddingVertical: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.sm,
-    borderRadius: theme.radius.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    fontSize: 14,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
   addBtn: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -60,8 +60,19 @@ export async function api<T = any>(
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('application/json') ? await res.json() : await res.text();
   if (!res.ok) {
-    const msg = typeof data === 'object' && data?.detail ? data.detail : `Errore ${res.status}`;
-    throw new Error(typeof msg === 'string' ? msg : 'Errore');
+    let msg: string = `Errore ${res.status}`;
+    if (typeof data === 'object' && data?.detail) {
+      if (typeof data.detail === 'string') {
+        msg = data.detail;
+      } else if (Array.isArray(data.detail)) {
+        // Pydantic validation errors → extract user-friendly message
+        const first = data.detail[0];
+        if (first?.msg) {
+          msg = String(first.msg).replace(/^Value error,\s*/i, '');
+        }
+      }
+    }
+    throw new Error(msg);
   }
   return data as T;
 }
