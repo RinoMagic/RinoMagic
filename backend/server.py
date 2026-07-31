@@ -56,6 +56,35 @@ logger = logging.getLogger("schedinabar")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
 
+def _ensure_tesseract() -> bool:
+    """Verify tesseract binary is available. If missing on a Debian-based
+    container, attempt a best-effort install (idempotent). Returns True when
+    the binary is usable after this call."""
+    import shutil
+    import subprocess
+    if shutil.which("tesseract"):
+        return True
+    logger.warning("tesseract binary missing; attempting to install...")
+    try:
+        env = os.environ.copy()
+        env.setdefault("DEBIAN_FRONTEND", "noninteractive")
+        subprocess.run(
+            ["apt-get", "install", "-y", "--no-install-recommends",
+             "tesseract-ocr", "tesseract-ocr-ita"],
+            check=True, env=env, capture_output=True, timeout=180,
+        )
+    except Exception as exc:  # pragma: no cover - environment dependent
+        logger.error("Failed to auto-install tesseract: %s", exc)
+        return False
+    ok = shutil.which("tesseract") is not None
+    if ok:
+        logger.info("tesseract installed successfully")
+    return ok
+
+
+_ensure_tesseract()
+
+
 # ============ Models ============
 ROOM_COLORS = ["#00D95F", "#FFB300", "#EF4444", "#3B82F6", "#A855F7", "#EC4899", "#14B8A6", "#F97316"]
 
@@ -499,15 +528,22 @@ async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
     parsed result. The staryes.it slip uses light blue text over a dark blue
     background: heavy preprocessing sometimes wipes the coloured predictions,
     so keeping the raw image as a fallback is important."""
+    if not _ensure_tesseract():
+        raise HTTPException(
+            status_code=503,
+            detail="Motore OCR non disponibile sul server. Riprova tra qualche secondo o inserisci manualmente i pronostici.",
+        )
     original = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     processed = _preprocess_image(image_bytes)
 
     best_text = ""
     best_events: List[dict] = []
+    ocr_error: Optional[str] = None
     for candidate in (original, processed):
         try:
             text = pytesseract.image_to_string(candidate, lang=TESSERACT_LANG)
-        except Exception as exc:  # pragma: no cover - tesseract missing/bad
+        except Exception as exc:
+            ocr_error = str(exc)
             logger.warning("OCR failure: %s", exc)
             continue
         events = _parse_staryes_slip(text)
@@ -516,6 +552,11 @@ async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
             best_text = text
         elif not best_text:
             best_text = text
+    if not best_text and ocr_error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"OCR fallito: {ocr_error}. Riprova o inserisci manualmente i pronostici.",
+        )
     return {"raw_text": best_text, "events": best_events}
 
 

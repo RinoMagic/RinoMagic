@@ -67,16 +67,28 @@ export default function UploadSchedina() {
     setBusy(true);
     setMsg(null);
     try {
-      const res = await api<{ events: Event[]; max_events: number }>(
+      const res = await api<{ events: Event[]; max_events: number; raw_text?: string }>(
         `/rooms/${id}/schedina/ocr`,
         { method: 'POST', body: { image_base64: b64 } }
       );
       setMaxEvents(res.max_events);
       if (res.events.length === 0) {
-        setEvents([{ home_team: '', away_team: '', prediction: '1', odd: 0 }]);
-        setMsg('OCR non ha trovato eventi. Inseriscili manualmente.');
+        // Give the user 3 empty rows to make manual entry less painful.
+        setEvents([
+          { home_team: '', away_team: '', prediction: '1', odd: 0 },
+          { home_team: '', away_team: '', prediction: '1', odd: 0 },
+          { home_team: '', away_team: '', prediction: '1', odd: 0 },
+        ]);
+        setMsg(
+          'OCR non ha trovato eventi. Verifica che lo screenshot sia leggibile (senza tagli) e inserisci i pronostici manualmente.'
+        );
       } else {
         setEvents(res.events);
+        if (res.events.length < 3) {
+          setMsg(
+            `OCR ha trovato ${res.events.length} evento/i. Se lo screenshot conteneva più partite, aggiungi manualmente le mancanti.`
+          );
+        }
       }
       setStep('confirm');
     } catch (e: any) {
