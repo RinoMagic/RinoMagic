@@ -32,8 +32,14 @@ type Event = {
 };
 
 export default function UploadSchedina() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, asUser, asName } = useLocalSearchParams<{
+    id: string;
+    asUser?: string;
+    asName?: string;
+  }>();
   const router = useRouter();
+  const onBehalfOf = typeof asUser === 'string' && asUser.length > 0 ? asUser : null;
+  const onBehalfName = typeof asName === 'string' ? asName : null;
   const [preview, setPreview] = useState<string | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [maxEvents, setMaxEvents] = useState(7);
@@ -70,7 +76,12 @@ export default function UploadSchedina() {
     try {
       const res = await api<{ events: Event[]; max_events: number; raw_text?: string }>(
         `/rooms/${id}/schedina/ocr`,
-        { method: 'POST', body: { image_base64: b64 } }
+        {
+          method: 'POST',
+          body: onBehalfOf
+            ? { image_base64: b64, on_behalf_of: onBehalfOf }
+            : { image_base64: b64 },
+        }
       );
       setMaxEvents(res.max_events);
       if (res.events.length === 0) {
@@ -137,7 +148,7 @@ export default function UploadSchedina() {
       // (anti-cheat: prevent the client from tampering with odds).
       await api(`/rooms/${id}/schedina/confirm`, {
         method: 'POST',
-        body: {},
+        body: onBehalfOf ? { on_behalf_of: onBehalfOf } : {},
       });
       if (Platform.OS !== 'web') {
         Alert.alert('OK', 'Schedina consegnata!');
@@ -165,6 +176,20 @@ export default function UploadSchedina() {
       </SafeAreaView>
 
       <ScrollView contentContainerStyle={{ padding: theme.spacing.lg, paddingBottom: 120 }}>
+        {onBehalfOf && (
+          <View style={styles.behalfBanner} testID="on-behalf-banner">
+            <Ionicons name="person-add" size={20} color={theme.colors.brand} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.behalfTitle}>
+                Stai caricando per {onBehalfName || 'un altro giocatore'}
+              </Text>
+              <Text style={styles.behalfSub}>
+                La schedina sarà registrata a suo nome. Verifica che lo screenshot sia effettivamente il suo.
+              </Text>
+            </View>
+          </View>
+        )}
+
         {step === 'pick' && (
           <>
             <View style={styles.instr}>
@@ -718,5 +743,27 @@ const styles = StyleSheet.create({
     color: theme.colors.onSurface,
     fontWeight: '800',
     fontSize: 14,
+  },
+  behalfBanner: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+    alignItems: 'flex-start',
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.brand + '15',
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.brand + '55',
+    marginBottom: theme.spacing.md,
+  },
+  behalfTitle: {
+    color: theme.colors.onSurface,
+    fontWeight: '800',
+    fontSize: 14,
+  },
+  behalfSub: {
+    color: theme.colors.muted,
+    fontSize: 12,
+    marginTop: 2,
+    lineHeight: 16,
   },
 });

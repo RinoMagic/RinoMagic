@@ -178,6 +178,8 @@ class SchedinaConfirm(BaseModel):
     # events are IGNORED by the confirm endpoint (server always uses the OCR
     # draft) but the field is kept for backward compatibility with older clients.
     events: Optional[List[SchedinaEventIn]] = None
+    # Optional: admin-only. Must match the on_behalf_of used at OCR upload.
+    on_behalf_of: Optional[str] = None
 
 
 class FixtureIn(BaseModel):
@@ -1078,6 +1080,40 @@ async def close_room(room_id: str, user: dict = Depends(require_admin)):
 # ============ Schedina / OCR ============
 class ScreenshotIn(BaseModel):
     image_base64: str
+    # Optional: admin-only. When set, the schedina is stored under this
+    # user_id instead of the caller. Useful when helping a friend who is
+    # not comfortable using the app on their phone.
+    on_behalf_of: Optional[str] = None
+
+
+async def _resolve_target_user(
+    room_id: str, actor: dict, target_user_id: Optional[str]
+) -> dict:
+    """Return the (user_id, display_name) tuple of the schedina owner.
+
+    If `target_user_id` is provided, the acting user MUST be the admin of the
+    room (or a global admin). The target user MUST be a member of the room.
+    """
+    if not target_user_id or target_user_id == actor["id"]:
+        return actor
+    # Only admins can act on behalf of another player
+    room = await db.rooms.find_one({"id": room_id}, {"admin_user_id": 1, "_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
+    is_room_admin = actor["role"] == "admin" or actor["id"] == room.get("admin_user_id")
+    if not is_room_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Solo l'admin della stanza può caricare la schedina per un altro giocatore",
+        )
+    target = await db.users.find_one({"id": target_user_id}, {"password_hash": 0, "_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Giocatore non trovato")
+    # The target must be a member of the room
+    member = await db.memberships.find_one({"room_id": room_id, "user_id": target_user_id})
+    if not member:
+        raise HTTPException(status_code=400, detail="Il giocatore non fa parte di questa stanza")
+    return target
 
 
 @api.post("/rooms/{room_id}/schedina/ocr")
@@ -1089,6 +1125,14 @@ async def upload_schedina(room_id: str, data: ScreenshotIn, user: dict = Depends
     if room.get("status") == "settled":
         raise HTTPException(status_code=400, detail="Stanza chiusa")
     await _ensure_submissions_open(room)
+
+    owner = await _resolve_target_user(room_id, user, data.on_behalf_of)
+    logger.info(
+        "OCR upload room=%s actor=%s owner=%s (%s)",
+        room_id, user.get("username") or user.get("email"),
+        owner.get("username") or owner.get("email"),
+        "SELF" if owner["id"] == user["id"] else "ON BEHALF OF",
+    )
 
     b64 = data.image_base64
     if "," in b64:
@@ -1104,20 +1148,26 @@ async def upload_schedina(room_id: str, data: ScreenshotIn, user: dict = Depends
         parsed = parsed[: room["max_events"]]
 
     await db.schedine.update_one(
-        {"room_id": room_id, "user_id": user["id"]},
+        {"room_id": room_id, "user_id": owner["id"]},
         {"$set": {
             "room_id": room_id,
-            "user_id": user["id"],
-            "nickname": display_name(user),
+            "user_id": owner["id"],
+            "nickname": display_name(owner),
             "screenshot_base64": b64,
             "raw_text": result["raw_text"],
             "events": parsed,
             "status": "draft",
+            "uploaded_by": user["id"] if owner["id"] != user["id"] else None,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }},
         upsert=True,
     )
-    return {"events": parsed, "raw_text": result["raw_text"], "max_events": room["max_events"]}
+    return {
+        "events": parsed,
+        "raw_text": result["raw_text"],
+        "max_events": room["max_events"],
+        "owner": {"id": owner["id"], "nickname": display_name(owner)},
+    }
 
 
 @api.post("/rooms/{room_id}/schedina/confirm")
@@ -1137,8 +1187,10 @@ async def confirm_schedina(room_id: str, data: SchedinaConfirm, user: dict = Dep
         raise HTTPException(status_code=400, detail="Stanza chiusa")
     await _ensure_submissions_open(room)
 
+    owner = await _resolve_target_user(room_id, user, data.on_behalf_of if data else None)
+
     # Load the OCR draft (must exist — created by upload_schedina)
-    draft = await db.schedine.find_one({"room_id": room_id, "user_id": user["id"]}, {"_id": 0})
+    draft = await db.schedine.find_one({"room_id": room_id, "user_id": owner["id"]}, {"_id": 0})
     if not draft or not draft.get("events"):
         raise HTTPException(
             status_code=400,
@@ -1175,27 +1227,34 @@ async def confirm_schedina(room_id: str, data: SchedinaConfirm, user: dict = Dep
             )
 
     await db.schedine.update_one(
-        {"room_id": room_id, "user_id": user["id"]},
+        {"room_id": room_id, "user_id": owner["id"]},
         {"$set": {
             "room_id": room_id,
-            "user_id": user["id"],
-            "nickname": display_name(user),
+            "user_id": owner["id"],
+            "nickname": display_name(owner),
             "events": ocr_events,
             "status": "confirmed",
+            "confirmed_by": user["id"] if owner["id"] != user["id"] else None,
             "confirmed_at": datetime.now(timezone.utc).isoformat(),
         }},
         upsert=True,
     )
-    # Ignore the client-provided `data.events` entirely — see docstring.
-    _ = data
-    return {"ok": True, "events": ocr_events}
+    _ = data  # events in body intentionally ignored (anti-cheat)
+    return {"ok": True, "events": ocr_events, "owner": {"id": owner["id"], "nickname": display_name(owner)}}
 
 
 @api.get("/rooms/{room_id}/schedina")
-async def my_schedina(room_id: str, user: dict = Depends(current_user)):
+async def my_schedina(
+    room_id: str,
+    user: dict = Depends(current_user),
+    on_behalf_of: Optional[str] = None,
+):
+    """Return the caller's schedina in the given room. Admins of the room may
+    fetch another player's schedina via the ?on_behalf_of=<user_id> query."""
     await _ensure_member(room_id, user)
+    owner = await _resolve_target_user(room_id, user, on_behalf_of)
     s = await db.schedine.find_one(
-        {"room_id": room_id, "user_id": user["id"]},
+        {"room_id": room_id, "user_id": owner["id"]},
         {"_id": 0, "screenshot_base64": 0, "raw_text": 0},
     )
     return s or {"empty": True}

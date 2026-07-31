@@ -15,6 +15,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import { confirmDialog } from '@/src/utils/confirm';
 
 type Room = {
   id: string;
@@ -127,12 +128,11 @@ export default function InvitesManagement() {
   };
 
   const revokeInvite = async (invite: Invite) => {
-    const ok =
-      Platform.OS === 'web'
-        ? typeof window !== 'undefined'
-          ? window.confirm(`Revocare il codice ${invite.code}? Non potrà più essere utilizzato.`)
-          : true
-        : true;
+    const ok = await confirmDialog(
+      'Revoca invito',
+      `Revocare il codice ${invite.code}? Non potrà più essere utilizzato.`,
+      { destructive: true }
+    );
     if (!ok) return;
     try {
       await api(`/rooms/${id}/invites/${invite.id}`, { method: 'DELETE' });

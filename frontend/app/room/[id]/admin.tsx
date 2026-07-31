@@ -13,6 +13,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import { confirmDialog } from '@/src/utils/confirm';
 
 type Fixture = {
   home_team: string;
@@ -43,7 +44,12 @@ export default function AdminFixtures() {
   const updateFixture = (i: number, patch: Partial<Fixture>) => {
     setFixtures((arr) => arr.map((f, idx) => (idx === i ? { ...f, ...patch } : f)));
   };
-  const remove = (i: number) => setFixtures((arr) => arr.filter((_, idx) => idx !== i));
+  const remove = async (i: number) => {
+    const fx = fixtures[i];
+    const label = fx?.home_team && fx?.away_team ? `${fx.home_team} - ${fx.away_team}` : `#${i + 1}`;
+    if (!await confirmDialog('Rimuovi partita', `Rimuovere "${label}" dai risultati?`, { destructive: true })) return;
+    setFixtures((arr) => arr.filter((_, idx) => idx !== i));
+  };
   const add = () => setFixtures((arr) => [...arr, { home_team: '', away_team: '', home_score: 0, away_score: 0 }]);
 
   const trySyncFromApi = async () => {

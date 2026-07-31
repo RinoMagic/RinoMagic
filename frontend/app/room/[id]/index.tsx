@@ -19,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, session } from '@/src/api';
 import { theme } from '@/src/theme';
 import { formatPrediction } from '@/src/utils/predictions';
+import { confirmDialog } from '@/src/utils/confirm';
 
 type Room = {
   id: string;
@@ -127,6 +128,14 @@ export default function RoomDetail() {
 
   const saveDeadline = async (clear = false) => {
     if (!room) return;
+    if (clear) {
+      const ok = await confirmDialog(
+        'Rimuovi termine',
+        'Rimuovere il termine di inserimento? I giocatori potranno caricare la schedina senza scadenza.',
+        { destructive: true }
+      );
+      if (!ok) return;
+    }
     setDeadlineBusy(true);
     setDeadlineErr(null);
     try {
@@ -420,11 +429,11 @@ export default function RoomDetail() {
               <Pressable
                 key={m.nickname}
                 onPress={() => openPlayerSchedina(m.nickname, m.submitted)}
-                disabled={!m.submitted}
+                disabled={!m.submitted && !room.is_admin}
                 testID={`member-row-${m.nickname}`}
                 style={({ pressed }) => [
                   styles.row,
-                  pressed && m.submitted && { opacity: 0.7 },
+                  pressed && (m.submitted || room.is_admin) && { opacity: 0.7 },
                 ]}
               >
                 <View style={[styles.avatar, { backgroundColor: room.color + '33' }]}>
@@ -447,9 +456,26 @@ export default function RoomDetail() {
                     <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
                   </>
                 ) : (
-                  <View style={styles.badgePending}>
-                    <Text style={styles.badgePendingText}>In attesa</Text>
-                  </View>
+                  <>
+                    <View style={styles.badgePending}>
+                      <Text style={styles.badgePendingText}>In attesa</Text>
+                    </View>
+                    {room.is_admin && !room.submissions_locked && m.role !== 'admin' && (
+                      <Pressable
+                        testID={`upload-for-${m.nickname}`}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          router.push(
+                            `/room/${room.id}/upload?asUser=${encodeURIComponent(m.user_id)}&asName=${encodeURIComponent(m.nickname)}`
+                          );
+                        }}
+                        hitSlop={6}
+                        style={styles.uploadForBtn}
+                      >
+                        <Ionicons name="camera" size={16} color={theme.colors.brand} />
+                      </Pressable>
+                    )}
+                  </>
                 )}
               </Pressable>
             ))}
@@ -1065,6 +1091,14 @@ const styles = StyleSheet.create({
     padding: 6,
     borderRadius: theme.radius.sm,
     backgroundColor: theme.colors.surfaceSecondary,
+  },
+  uploadForBtn: {
+    marginLeft: 6,
+    padding: 8,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.brand + '22',
+    borderWidth: 1,
+    borderColor: theme.colors.brand + '55',
   },
 });
 

@@ -9,24 +9,13 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, session, User } from '@/src/api';
 import { theme } from '@/src/theme';
+import { confirmDialog } from '@/src/utils/confirm';
 
 type Room = {
   id: string; name: string; matchday: number; max_events: number;
   color: string; invite_code: string; status: string; members_count: number;
   invites_available: number; invites_total: number;
 };
-
-function confirmDialog(title: string, message: string): Promise<boolean> {
-  if (Platform.OS === 'web') {
-    return Promise.resolve(window.confirm(`${title}\n\n${message}`));
-  }
-  return new Promise((resolve) => {
-    Alert.alert(title, message, [
-      { text: 'Annulla', style: 'cancel', onPress: () => resolve(false) },
-      { text: 'Conferma', style: 'destructive', onPress: () => resolve(true) },
-    ]);
-  });
-}
 
 async function copyText(text: string): Promise<void> {
   try {
@@ -100,8 +89,16 @@ export default function AdminHome() {
 
   const toggleBlock = async (u: User) => {
     const action = u.blocked ? 'unblock' : 'block';
-    await api(`/auth/users/${u.id}/${action}`, { method: 'POST' });
-    await load();
+    const label = u.blocked ? 'Sbloccare' : 'Bloccare';
+    const name = u.username || u.email || '';
+    const message = u.blocked
+      ? `Riabilitare "${name}" all'accesso all'app?`
+      : `"${name}" non potrà più accedere all'app finché non verrà sbloccato. Confermi?`;
+    if (!await confirmDialog(`${label} giocatore`, message, { destructive: !u.blocked })) return;
+    try {
+      await api(`/auth/users/${u.id}/${action}`, { method: 'POST' });
+      await load();
+    } catch (e: any) { setMsg(e.message); }
   };
 
   const deletePlayer = async (u: User) => {
