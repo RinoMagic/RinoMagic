@@ -268,6 +268,18 @@ _sal_router = _build_sal_router(
 )
 api.include_router(_sal_router)
 
+# ---------- Matchday Facts (universal Voti/Marcatori PDF ingestion) ----------
+from matchday_facts import (  # noqa: E402
+    build_router as _build_facts_router,
+    ensure_indexes as _facts_ensure_indexes,
+)
+_facts_router = _build_facts_router(
+    db=db,
+    current_user=current_user,
+    require_admin=require_admin,
+)
+api.include_router(_facts_router)
+
 
 def _norm_team(name: str) -> str:
     """Aggressive team-name normalization for matching predictions vs results.
@@ -740,6 +752,8 @@ async def startup():
     await db.invites.create_index([("room_id", 1), ("used_by_user_id", 1)])
     # ScoreAndLive indexes
     await _sal_ensure_indexes(db)
+    # Matchday Facts indexes (universal PDF ingestion)
+    await _facts_ensure_indexes(db)
     # Backfill: every existing room/invite belongs to TheBestTiket (the game
     # that existed before the multi-game refactor). New rooms/invites carry
     # the field explicitly.

@@ -15,6 +15,7 @@ Data model (all collections prefixed with `sal_`):
 """
 from __future__ import annotations
 
+import re
 import uuid
 import string
 import random
@@ -22,10 +23,76 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger("scoreandlive")
+
+# Serie A 2025-26 team names — used to anchor the listone parser. Update this
+# set when new teams are promoted/relegated (kept explicit so we can adapt
+# quickly without changing the regex).
+SERIE_A_TEAMS = {
+    "Atalanta", "Bologna", "Cagliari", "Como", "Cremonese", "Fiorentina",
+    "Genoa", "Inter", "Juventus", "Lazio", "Lecce", "Milan", "Napoli",
+    "Parma", "Pisa", "Roma", "Sassuolo", "Torino", "Udinese", "Verona",
+}
+
+
+def _parse_listone_pdf(pdf_bytes: bytes) -> List[dict]:
+    """Extract Serie A players from a "Listone Fantacalcio" PDF.
+
+    Expected layout (one row per player, whitespace-separated):
+        <Id> <R> <RM> <Cognome[ Inizialesuffisso.]> <Squadra> <QtA> <QtI> <Diff> <QtAM> <QtIM>
+
+    Returns a list of dicts ready to be inserted in ``sal_players``. Rows that
+    don't match are silently skipped (typical for headers, page numbers or the
+    Mantra variant appended to the same PDF).
+    """
+    try:
+        import pdfplumber
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"pdfplumber non installato: {e}") from e
+
+    import io as _io
+    line_re = re.compile(
+        r"^(\d+)\s+([PDCA])\s+(\S+)\s+(.+?)\s+(" + "|".join(SERIE_A_TEAMS) + r")\s+"
+        r"(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s*$"
+    )
+    seen_ids: set[int] = set()
+    players: List[dict] = []
+    with pdfplumber.open(_io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            for line in text.split("\n"):
+                line = line.strip()
+                if not line or line.startswith("Id") or "Quotazioni" in line:
+                    continue
+                m = line_re.match(line)
+                if not m:
+                    continue
+                fid, role, rm, name_field, team, qa, qi, _diff, _qam, _qim = m.groups()
+                fid_int = int(fid)
+                if fid_int in seen_ids:
+                    continue  # de-dupe rows from the Mantra section
+                seen_ids.add(fid_int)
+                parts = name_field.split()
+                if len(parts) >= 2 and re.fullmatch(r"[A-Z]\.", parts[-1]):
+                    first = parts[-1]
+                    last = " ".join(parts[:-1])
+                else:
+                    first = ""
+                    last = name_field
+                players.append({
+                    "fanta_id": fid_int,
+                    "first_name": first,
+                    "last_name": last,
+                    "team": team,
+                    "role": role,
+                    "role_mantra": rm,
+                    "price_current": int(qa),
+                    "price_initial": int(qi),
+                })
+    return players
 
 
 # =========================================================================
@@ -196,6 +263,78 @@ def build_router(
         if docs:
             await db.sal_players.insert_many(docs)
         return {"inserted": len(docs), "total": await db.sal_players.count_documents({})}
+
+    @router.post("/players/import-pdf")
+    async def import_players_pdf(
+        file: UploadFile = File(...),
+        dry_run: bool = True,
+        replace_all: bool = False,
+        user: dict = Depends(require_admin),
+    ):
+        """Upload a "Listone Fantacalcio" PDF and import players.
+
+        - ``dry_run=true`` (default) → returns a preview without writing to DB
+        - ``dry_run=false`` → actually imports (use ``replace_all=true`` to wipe
+          the existing roster first)
+        """
+        if not file.filename or not file.filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Serve un file .pdf")
+        raw = await file.read()
+        if len(raw) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="PDF troppo grande (max 20MB)")
+        try:
+            extracted = _parse_listone_pdf(raw)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("PDF parse error")
+            raise HTTPException(status_code=400, detail=f"Errore nell'analisi del PDF: {e}")
+
+        if not extracted:
+            raise HTTPException(status_code=400, detail="Nessun giocatore riconosciuto nel PDF. Verifica il formato.")
+
+        # Team distribution helps the admin sanity-check the extraction
+        by_team: Dict[str, int] = {}
+        by_role: Dict[str, int] = {}
+        for p in extracted:
+            by_team[p["team"]] = by_team.get(p["team"], 0) + 1
+            by_role[p["role"]] = by_role.get(p["role"], 0) + 1
+
+        result: Dict[str, Any] = {
+            "extracted": len(extracted),
+            "by_team": dict(sorted(by_team.items())),
+            "by_role": dict(sorted(by_role.items())),
+            "sample": extracted[:15],
+            "dry_run": dry_run,
+        }
+
+        if dry_run:
+            return result
+
+        # Actually import
+        if replace_all:
+            await db.sal_players.delete_many({})
+        now = _now()
+        docs = []
+        for p in extracted:
+            docs.append({
+                "id": str(uuid.uuid4()),
+                "fanta_id": p["fanta_id"],
+                "first_name": p["first_name"],
+                "last_name": p["last_name"],
+                "full_name": (p["first_name"] + " " + p["last_name"]).strip(),
+                "team": p["team"],
+                "role": p["role"],
+                "role_mantra": p.get("role_mantra"),
+                "price_current": p.get("price_current"),
+                "price_initial": p.get("price_initial"),
+                "active": True,
+                "created_at": now,
+            })
+        await db.sal_players.insert_many(docs)
+        result["inserted"] = len(docs)
+        result["total"] = await db.sal_players.count_documents({})
+        return result
 
     @router.get("/players")
     async def list_players(
