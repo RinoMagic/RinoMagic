@@ -252,13 +252,14 @@ class TestFutureDeadlineAllows:
         body = o.json()
         assert "events" in body and "raw_text" in body
 
-        # confirm with a single valid event
+        # confirm: since the blank test image yields 0 OCR events, we expect 400
+        # (anti-cheat: server ignores client-provided events and uses the OCR
+        # draft). The important thing here is that the deadline did NOT block
+        # the request — we specifically must NOT get "Termine ... scaduto".
         c = requests.post(f"{API}/rooms/{room['id']}/schedina/confirm",
-                          json={"events": [{"home_team": "Inter", "away_team": "Milan",
-                                            "prediction": "1", "odd": 2.10}]},
-                          headers=ph, timeout=15)
-        assert c.status_code == 200, f"confirm should work, got {c.status_code}: {c.text}"
-        assert c.json()["ok"] is True
+                          json={}, headers=ph, timeout=15)
+        assert c.status_code == 400, f"confirm should reach handler, got {c.status_code}: {c.text}"
+        assert "Nessuna schedina" in c.json().get("detail", "")
 
 
 # ==================== Requirement 9: fresh room without deadline works ====================
@@ -274,13 +275,12 @@ class TestFreshRoomNoDeadline:
                           json={"image_base64": TINY_PNG_B64}, headers=ph, timeout=30)
         assert o.status_code == 200, o.text
 
-        # confirm works
+        # confirm reaches the handler (no deadline blocking). Blank test image
+        # yields no OCR events → anti-cheat correctly returns 400.
         c = requests.post(f"{API}/rooms/{room['id']}/schedina/confirm",
-                          json={"events": [{"home_team": "Roma", "away_team": "Lazio",
-                                            "prediction": "X", "odd": 3.20}]},
-                          headers=ph, timeout=15)
-        assert c.status_code == 200, c.text
-        assert c.json()["ok"] is True
+                          json={}, headers=ph, timeout=15)
+        assert c.status_code == 400
+        assert "Nessuna schedina" in c.json().get("detail", "")
 
 
 # ==================== Extra: preserve deadline_at when patching other fields ====================

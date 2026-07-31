@@ -175,7 +175,9 @@ class SchedinaEventIn(BaseModel):
 
 
 class SchedinaConfirm(BaseModel):
-    events: List[SchedinaEventIn]
+    # events are IGNORED by the confirm endpoint (server always uses the OCR
+    # draft) but the field is kept for backward compatibility with older clients.
+    events: Optional[List[SchedinaEventIn]] = None
 
 
 class FixtureIn(BaseModel):
@@ -1096,6 +1098,13 @@ async def upload_schedina(room_id: str, data: ScreenshotIn, user: dict = Depends
 
 @api.post("/rooms/{room_id}/schedina/confirm")
 async def confirm_schedina(room_id: str, data: SchedinaConfirm, user: dict = Depends(current_user)):
+    """Confirm the OCR draft as the player's final bet slip.
+
+    IMPORTANT — anti-cheat: this endpoint IGNORES any events sent by the
+    client and always uses the OCR-parsed events stored server-side during
+    :func:`upload_schedina`. This prevents a player from tampering with
+    odds or predictions in the client and cheating the leaderboard.
+    """
     await _ensure_member(room_id, user)
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     if not room:
@@ -1103,25 +1112,59 @@ async def confirm_schedina(room_id: str, data: SchedinaConfirm, user: dict = Dep
     if room.get("status") == "settled":
         raise HTTPException(status_code=400, detail="Stanza chiusa")
     await _ensure_submissions_open(room)
-    if not data.events:
-        raise HTTPException(status_code=400, detail="La schedina deve avere almeno un pronostico")
-    if len(data.events) > room["max_events"]:
-        raise HTTPException(status_code=400, detail=f"Massimo {room['max_events']} pronostici")
 
-    events = [e.model_dump() for e in data.events]
+    # Load the OCR draft (must exist — created by upload_schedina)
+    draft = await db.schedine.find_one({"room_id": room_id, "user_id": user["id"]}, {"_id": 0})
+    if not draft or not draft.get("events"):
+        raise HTTPException(
+            status_code=400,
+            detail="Nessuna schedina caricata. Carica prima uno screenshot.",
+        )
+
+    ocr_events = draft["events"]
+    if len(ocr_events) > room["max_events"]:
+        ocr_events = ocr_events[: room["max_events"]]
+
+    # Validate that every event has a recognised prediction. If any event
+    # has an empty/unknown prediction, the OCR failed to read it: the
+    # player is asked to retake a cleaner screenshot rather than manually
+    # patching a market (which would open a cheating window).
+    bad = [e for e in ocr_events if not e.get("prediction")]
+    if bad:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"L'OCR non ha riconosciuto {len(bad)} pronostici. "
+                "Rifai lo screenshot con maggiore risoluzione."
+            ),
+        )
+    # Also refuse zero/absurd odds
+    for e in ocr_events:
+        odd = e.get("odd") or 0
+        if not (1.01 <= odd <= 999):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "L'OCR non ha letto correttamente le quote. "
+                    "Rifai lo screenshot con maggiore risoluzione."
+                ),
+            )
+
     await db.schedine.update_one(
         {"room_id": room_id, "user_id": user["id"]},
         {"$set": {
             "room_id": room_id,
             "user_id": user["id"],
             "nickname": display_name(user),
-            "events": events,
+            "events": ocr_events,
             "status": "confirmed",
             "confirmed_at": datetime.now(timezone.utc).isoformat(),
         }},
         upsert=True,
     )
-    return {"ok": True, "events": events}
+    # Ignore the client-provided `data.events` entirely — see docstring.
+    _ = data
+    return {"ok": True, "events": ocr_events}
 
 
 @api.get("/rooms/{room_id}/schedina")

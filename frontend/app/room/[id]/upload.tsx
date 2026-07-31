@@ -111,31 +111,33 @@ export default function UploadSchedina() {
     setEvents((arr) => [...arr, { home_team: '', away_team: '', prediction: '1', odd: 0 }]);
   };
 
+  const hasInvalidPrediction = events.some((e) => isUnknownPrediction(e.prediction));
+  const hasInvalidOdd = events.some((e) => !e.odd || e.odd < 1.01);
+  const canConfirm = events.length > 0 && !hasInvalidPrediction && !hasInvalidOdd;
+
   const submit = async () => {
-    if (events.length === 0) return setMsg('Aggiungi almeno un pronostico');
-    for (const e of events) {
-      if (!e.home_team || !e.away_team || !e.odd) {
-        return setMsg('Compila tutti i campi (squadre + quota)');
-      }
-      if (isUnknownPrediction(e.prediction)) {
+    if (!canConfirm) {
+      if (events.length === 0) return setMsg('Nessun pronostico rilevato — ricarica lo screenshot.');
+      if (hasInvalidPrediction) {
         return setMsg(
-          'MERCATO NON AMMESSO su almeno un evento. Tocca "Pronostico" per sceglierne uno valido.'
+          "L'OCR non ha riconosciuto uno o più mercati. Ricarica uno screenshot più nitido."
+        );
+      }
+      if (hasInvalidOdd) {
+        return setMsg(
+          "L'OCR non ha letto correttamente le quote. Ricarica uno screenshot più nitido."
         );
       }
     }
     setBusy(true);
     setMsg(null);
     try {
+      // NOTE: no body is needed — the backend uses the OCR draft it stored
+      // during upload. Sending events would be ignored server-side by design
+      // (anti-cheat: prevent the client from tampering with odds).
       await api(`/rooms/${id}/schedina/confirm`, {
         method: 'POST',
-        body: {
-          events: events.map((e) => ({
-            home_team: e.home_team,
-            away_team: e.away_team,
-            prediction: e.prediction,
-            odd: Number(e.odd),
-          })),
-        },
+        body: {},
       });
       if (Platform.OS !== 'web') {
         Alert.alert('OK', 'Schedina consegnata!');
@@ -205,113 +207,115 @@ export default function UploadSchedina() {
                   testID="change-image"
                 >
                   <Ionicons name="refresh" size={14} color={theme.colors.onSurface} />
-                  <Text style={styles.previewChangeText}>Cambia</Text>
+                  <Text style={styles.previewChangeText}>Rifai</Text>
                 </Pressable>
               </View>
             )}
-            <Text style={styles.hint}>
-              Verifica ogni evento. Modifica squadre, pronostico e quota se l&apos;OCR ha sbagliato.
-              Max {maxEvents} pronostici.
-            </Text>
+            <View style={styles.lockNotice}>
+              <Ionicons name="shield-checkmark" size={18} color={theme.colors.brand} />
+              <Text style={styles.lockNoticeText}>
+                Anti-cheat: quote e pronostici sono letti automaticamente dallo screenshot e
+                non sono modificabili. Se qualcosa è sbagliato, rifai lo screenshot.
+              </Text>
+            </View>
 
-            {events.map((e, i) => (
-              <View key={i} style={styles.eventCard}>
-                <View style={styles.eventHead}>
-                  <Text style={styles.eventNum}>#{i + 1}</Text>
-                  <Pressable onPress={() => removeEvent(i)} hitSlop={10} testID={`remove-event-${i}`}>
-                    <Ionicons name="trash" size={16} color={theme.colors.error} />
-                  </Pressable>
-                </View>
-                <View style={styles.eventRow}>
-                  <TextInput
-                    testID={`home-${i}`}
-                    placeholder="Casa"
-                    placeholderTextColor={theme.colors.muted}
-                    value={e.home_team}
-                    onChangeText={(t) => updateEvent(i, { home_team: t })}
-                    style={styles.eventInput}
-                  />
-                  <Text style={styles.vs}>vs</Text>
-                  <TextInput
-                    testID={`away-${i}`}
-                    placeholder="Trasferta"
-                    placeholderTextColor={theme.colors.muted}
-                    value={e.away_team}
-                    onChangeText={(t) => updateEvent(i, { away_team: t })}
-                    style={styles.eventInput}
-                  />
-                </View>
-                <View style={styles.predRow}>
-                  <Pressable
-                    testID={`open-market-picker-${i}`}
-                    onPress={() => setPickerIndex(i)}
-                    style={[
-                      styles.marketButton,
-                      isUnknownPrediction(e.prediction) && styles.marketButtonError,
-                    ]}
-                  >
+            {events.map((e, i) => {
+              const bad = isUnknownPrediction(e.prediction);
+              const badOdd = !e.odd || e.odd < 1.01;
+              return (
+                <View
+                  key={i}
+                  style={[
+                    styles.eventCard,
+                    (bad || badOdd) && { borderColor: theme.colors.error, borderWidth: 1.5 },
+                  ]}
+                >
+                  <View style={styles.eventHead}>
+                    <Text style={styles.eventNum}>#{i + 1}</Text>
+                    {(bad || badOdd) && (
+                      <View style={styles.badTag}>
+                        <Ionicons name="alert-circle" size={12} color={theme.colors.error} />
+                        <Text style={styles.badTagText}>OCR non riuscito</Text>
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.eventRowStatic}>
+                    <Text style={styles.eventTeamStatic} numberOfLines={1}>
+                      {e.home_team || '—'}
+                    </Text>
+                    <Text style={styles.vs}>vs</Text>
+                    <Text style={styles.eventTeamStatic} numberOfLines={1}>
+                      {e.away_team || '—'}
+                    </Text>
+                  </View>
+                  <View style={styles.predRowStatic}>
                     <View style={{ flex: 1 }}>
-                      <Text
-                        style={[
-                          styles.marketLabel,
-                          isUnknownPrediction(e.prediction) && styles.marketLabelError,
-                        ]}
-                      >
-                        {isUnknownPrediction(e.prediction) ? 'PRONOSTICO — DA SCEGLIERE' : 'PRONOSTICO'}
-                      </Text>
+                      <Text style={styles.marketLabel}>PRONOSTICO</Text>
                       <Text
                         style={[
                           styles.marketValue,
-                          isUnknownPrediction(e.prediction) && styles.marketValueError,
+                          bad && { color: theme.colors.error },
                         ]}
                         numberOfLines={2}
                       >
-                        {formatPrediction(e.prediction)}
+                        {bad ? 'MERCATO NON AMMESSO' : formatPrediction(e.prediction)}
                       </Text>
                     </View>
-                    <Ionicons
-                      name="chevron-forward"
-                      size={18}
-                      color={isUnknownPrediction(e.prediction) ? theme.colors.error : theme.colors.muted}
-                    />
-                  </Pressable>
+                  </View>
+                  <View style={styles.oddRowStatic}>
+                    <Text style={styles.oddLabel}>Quota</Text>
+                    <Text
+                      style={[
+                        styles.oddValue,
+                        badOdd && { color: theme.colors.error },
+                      ]}
+                    >
+                      {e.odd ? e.odd.toFixed(2) : '—'}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.oddRow}>
-                  <Text style={styles.oddLabel}>Quota</Text>
-                  <TextInput
-                    testID={`odd-${i}`}
-                    keyboardType="decimal-pad"
-                    placeholder="1.85"
-                    placeholderTextColor={theme.colors.muted}
-                    value={String(e.odd || '')}
-                    onChangeText={(t) => {
-                      const n = parseFloat(t.replace(',', '.'));
-                      updateEvent(i, { odd: isNaN(n) ? 0 : n });
-                    }}
-                    style={styles.oddInput}
-                  />
-                </View>
-              </View>
-            ))}
-
-            <Pressable onPress={addEvent} style={styles.addBtn} testID="add-event">
-              <Ionicons name="add-circle" size={20} color={theme.colors.brand} />
-              <Text style={styles.addBtnText}>Aggiungi pronostico ({events.length}/{maxEvents})</Text>
-            </Pressable>
+              );
+            })}
 
             {msg && <Text style={[styles.err, { marginTop: theme.spacing.md }]}>{msg}</Text>}
+
+            {(hasInvalidPrediction || hasInvalidOdd) && (
+              <View style={styles.retakeBox}>
+                <Ionicons name="camera-reverse" size={20} color={theme.colors.error} />
+                <Text style={styles.retakeText}>
+                  {hasInvalidPrediction
+                    ? "L'OCR non ha riconosciuto uno o più mercati."
+                    : "L'OCR non ha letto correttamente le quote."}
+                  {' '}Ricarica uno screenshot più nitido (senza tagli, ben illuminato).
+                </Text>
+              </View>
+            )}
 
             <Pressable
               testID="confirm-schedina-btn"
               onPress={submit}
-              disabled={busy}
-              style={[styles.cta, busy && { opacity: 0.6 }]}
+              disabled={busy || !canConfirm}
+              style={[
+                styles.cta,
+                (busy || !canConfirm) && { opacity: 0.4 },
+              ]}
             >
               {busy ? (
                 <ActivityIndicator color={theme.colors.onBrand} />
               ) : (
-                <Text style={styles.ctaText}>Conferma schedina</Text>
+                <Text style={styles.ctaText}>
+                  {canConfirm ? 'Conferma schedina' : 'Impossibile confermare'}
+                </Text>
               )}
+            </Pressable>
+
+            <Pressable
+              testID="retake-schedina-btn"
+              onPress={() => { setStep('pick'); setEvents([]); setPreview(null); setMsg(null); }}
+              style={styles.retakeCta}
+            >
+              <Ionicons name="refresh" size={18} color={theme.colors.onSurface} />
+              <Text style={styles.retakeCtaText}>Rifai lo screenshot</Text>
             </Pressable>
           </>
         )}
@@ -619,5 +623,100 @@ const styles = StyleSheet.create({
   optionLabelActive: {
     color: theme.colors.onBrand,
     opacity: 0.85,
+  },
+  lockNotice: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.brand + '15',
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.brand + '55',
+    marginBottom: theme.spacing.md,
+    alignItems: 'flex-start',
+  },
+  lockNoticeText: {
+    flex: 1,
+    color: theme.colors.onSurface,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  eventRowStatic: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  eventTeamStatic: {
+    flex: 1,
+    color: theme.colors.onSurface,
+    fontSize: 14,
+    fontWeight: '700',
+    paddingVertical: 8,
+  },
+  predRowStatic: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    paddingVertical: 4,
+  },
+  oddRowStatic: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  oddValue: {
+    color: theme.colors.onSurface,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  badTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.error + '22',
+  },
+  badTagText: {
+    color: theme.colors.error,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  retakeBox: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+    alignItems: 'flex-start',
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.error + '15',
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.error + '55',
+    marginTop: theme.spacing.md,
+  },
+  retakeText: {
+    flex: 1,
+    color: theme.colors.onSurface,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  retakeCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    height: 44,
+    marginTop: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceSecondary,
+  },
+  retakeCtaText: {
+    color: theme.colors.onSurface,
+    fontWeight: '800',
+    fontSize: 14,
   },
 });
