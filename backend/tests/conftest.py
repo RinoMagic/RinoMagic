@@ -43,7 +43,7 @@ def admin_token(session):
 def user1(session):
     # Unique suffix to avoid conflicts between runs
     suffix = uuid.uuid4().hex[:8]
-    email = f"TEST_user1_{suffix}@test.com"
+    email = f"test_user1_{suffix}@test.com"
     username = f"TESTuser1{suffix}"
     password = "Passw0rd!"
     r = _register(session, email, password, username)
@@ -55,7 +55,7 @@ def user1(session):
 @pytest.fixture(scope="session")
 def user2(session):
     suffix = uuid.uuid4().hex[:8]
-    email = f"TEST_user2_{suffix}@test.com"
+    email = f"test_user2_{suffix}@test.com"
     username = f"TESTuser2{suffix}"
     password = "Passw0rd!"
     r = _register(session, email, password, username)
@@ -68,7 +68,7 @@ def user2(session):
 def user3(session):
     """Third random user, not in the league (for 403 test)."""
     suffix = uuid.uuid4().hex[:8]
-    email = f"TEST_user3_{suffix}@test.com"
+    email = f"test_user3_{suffix}@test.com"
     username = f"TESTuser3{suffix}"
     password = "Passw0rd!"
     r = _register(session, email, password, username)

@@ -18,7 +18,7 @@ def fresh_user():
     s = requests.Session()
     s.headers.update({"Content-Type": "application/json"})
     suffix = uuid.uuid4().hex[:8]
-    email = f"TEST_pwd_{suffix}@test.com"
+    email = f"test_pwd_{suffix}@test.com"
     username = f"TESTpwd{suffix}"
     password = "Passw0rd!"
     r = _register(s, email, password, username)

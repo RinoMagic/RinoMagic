@@ -1,0 +1,39 @@
+{
+  "summary": "Verified the fix for the admin login 'Credenziali non valide' bug on FantaGiornata. Backend now normalizes login/register/admin-reset emails to strip().lower() with a case-insensitive regex fallback for legacy records; frontend login TextInputs use autoCapitalize='none', autoCorrect={false}, spellCheck={false} and normalize the email onChangeText. Added 17 new regression tests in /app/backend/tests/test_login_email_normalization.py that cover: (a) admin login with 5 case/whitespace variants including the exact bug repro 'Admin@fantagiornata.it', (b) wrong-password and unknown-user still return 401, (c) registration with mixed-case email + subsequent login with lowercase and uppercase, (d) duplicate registration with different case returns 409, (e) /auth/me returns lowercase email, (f) full admin reset-password flow using an autocapitalized admin email + mixed-case target email. All 17 new tests pass. Full pytest regression: 122/122 passed (previous 105 + 17 new). UI-level check on the deployed Expo web preview: typing 'Admin@Fantagiornata.IT' in the login email field is normalized to 'admin@fantagiornata.it' in real-time, submitting with 'Admin1234!' navigates to /home showing 'Ciao, admin' with no error. Admin credentials were used only for authentication; no permanent password change was made.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "startup/shutdown", "issue": "FastAPI on_event('startup'/'shutdown') is deprecated in favor of lifespan handlers (12 DeprecationWarnings in pytest run). Not blocking. Reference: /app/backend/server.py:263-269."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "Pressable/props.pointerEvents", "issue": "Console warning during login: 'props.pointerEvents is deprecated. Use style.pointerEvents.' Non-blocking but should be migrated. Likely coming from a Pressable/View in the login flow."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_login_email_normalization.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(optional cleanup) Migrate FastAPI on_event startup/shutdown to lifespan handlers in /app/backend/server.py.",
+    "(optional cleanup) Locate the Pressable/View emitting 'props.pointerEvents is deprecated' during login and move to style.pointerEvents."
+  ],
+  "critical_code_review_comments": [
+    "Login/register/admin-reset email normalization is consistent: strip().lower() everywhere + case-insensitive regex fallback for legacy records — correct approach.",
+    "Frontend login.tsx correctly sets autoCapitalize='none', autoCorrect={false}, spellCheck={false} on both email and password fields, and lowercases the email onChangeText. Password field is (correctly) not lowercased.",
+    "Duplicate registration is detected case-insensitively via regex fallback and returns HTTP 409 with the Italian detail message 'Email gia registrata'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_login_email_normalization.py (new)"
+  ],
+  "success_rate": {"backend": "100% (122/122 pytest, 17/17 new bug-fix tests)", "frontend": "100% (login flow verified end-to-end on mobile viewport)"},
+  "seed_data_creation": "Test-only users created with 'TEST_' prefix and random UUID suffixes (foo.bar, reset_<hex>@example.com). Admin password NOT changed. A throwaway user's password was reset by the admin during test_admin_reset_flow — that user is a TEST_ prefixed disposable account.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Bug 'Credenziali non valide' is fixed and covered by /app/backend/tests/test_login_email_normalization.py. Regression suite is 122/122. Admin credentials are admin@fantagiornata.it / Admin1234! (Admin1234! is a fixed seeded password — do not change permanently). Frontend login email input auto-lowercases via onChangeText.",
+  "rca_of_issue": "Root cause: iOS/Android soft keyboards auto-capitalize the first character of email inputs and can leave trailing whitespace, and the backend was doing an exact match on the 'email' field in MongoDB. The seeded admin record is stored lowercase ('admin@fantagiornata.it'), so 'Admin@fantagiornata.it' (auto-cap A) or '  admin@fantagiornata.it  ' would miss the lookup and return 401 with 'Credenziali non valide'. Mitigation applied by main agent: (1) backend normalizes input email to strip().lower() before lookup; (2) backend adds a case-insensitive regex fallback ({'email': {'$regex': '^<email>$', '$options':'i'}}) for legacy uppercase records; (3) same normalization applied to /auth/register and /admin/users/reset-password, with case-insensitive duplicate check; (4) frontend login TextInputs use autoCapitalize='none', autoCorrect={false}, spellCheck={false} and onChangeText(t => setEmail(t.trim().toLowerCase())). Reproduction verified via 5 case/whitespace variants — all return 200; wrong password / unknown user still correctly return 401."
+}

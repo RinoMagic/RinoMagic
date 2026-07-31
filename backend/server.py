@@ -272,14 +272,18 @@ async def shutdown():
 # ============ Auth ============
 @api.post("/auth/register", response_model=TokenOut, status_code=201)
 async def register(data: RegisterIn):
-    existing = await db.users.find_one({"email": data.email})
+    email = data.email.strip().lower()
+    existing = await db.users.find_one({"email": email})
+    if not existing:
+        # case-insensitive check for legacy records
+        existing = await db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}})
     if existing:
         raise HTTPException(status_code=409, detail="Email gia registrata")
     user_id = str(uuid.uuid4())
     await db.users.insert_one({
         "id": user_id,
-        "email": data.email,
-        "username": data.username,
+        "email": email,
+        "username": data.username.strip(),
         "password_hash": hash_password(data.password),
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
@@ -288,7 +292,11 @@ async def register(data: RegisterIn):
 
 @api.post("/auth/login", response_model=TokenOut)
 async def login(data: LoginIn):
-    user = await db.users.find_one({"email": data.email})
+    email = data.email.strip().lower()
+    user = await db.users.find_one({"email": email})
+    if not user:
+        # case-insensitive fallback for users registered before normalization
+        user = await db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}})
     if not user:
         verify_password(data.password, DUMMY_HASH)
         raise HTTPException(status_code=401, detail="Credenziali non valide")
@@ -357,7 +365,10 @@ async def admin_list_users(
 
 @api.post("/admin/users/reset-password")
 async def admin_reset_password(data: AdminResetPasswordIn, admin: dict = Depends(require_system_admin)):
-    target = await db.users.find_one({"email": data.email})
+    email = data.email.strip().lower()
+    target = await db.users.find_one({"email": email})
+    if not target:
+        target = await db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}})
     if not target:
         raise HTTPException(status_code=404, detail="Utente non trovato")
     if target["id"] == admin["id"]:
@@ -366,7 +377,7 @@ async def admin_reset_password(data: AdminResetPasswordIn, admin: dict = Depends
         {"id": target["id"]},
         {"$set": {"password_hash": hash_password(data.new_password)}}
     )
-    return {"ok": True, "email": data.email, "username": target.get("username")}
+    return {"ok": True, "email": target["email"], "username": target.get("username")}
 
 
 # ============ Players ============
