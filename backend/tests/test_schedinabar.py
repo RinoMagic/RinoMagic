@@ -364,6 +364,53 @@ class TestLeaderboard:
         assert totals == sorted(totals, reverse=True)
         _no_underscore_id(data)
 
+    def test_leaderboard_breakdown_structure(self, session, ctx):
+        """Verify GET /rooms/{id}/leaderboard returns breakdown[] with required keys."""
+        rid = ctx["admin"]["room"]["id"]
+        r = session.get(f"{API}/rooms/{rid}/leaderboard", headers=auth_headers(ctx["admin"]["token"]))
+        assert r.status_code == 200
+        data = r.json()
+        assert data["has_results"] is True
+        required = {"home_team", "away_team", "prediction", "odd", "won", "matched_fixture", "score"}
+        for entry in data["leaderboard"]:
+            assert "breakdown" in entry and isinstance(entry["breakdown"], list)
+            assert len(entry["breakdown"]) == entry["events_count"]
+            for item in entry["breakdown"]:
+                assert required.issubset(item.keys()), f"missing keys in breakdown item: {item}"
+                assert isinstance(item["won"], bool)
+                assert isinstance(item["odd"], (int, float))
+        # UserA has 2 wins: both breakdown items must have won=True and score set
+        a = next(e for e in data["leaderboard"] if e["nickname"] == "UserA")
+        for item in a["breakdown"]:
+            assert item["won"] is True
+            assert item["matched_fixture"] is not None
+            assert item["score"] is not None
+        # UserC has 0 wins
+        c = next(e for e in data["leaderboard"] if e["nickname"] == "UserC")
+        for item in c["breakdown"]:
+            assert item["won"] is False
+
+    def test_leaderboard_breakdown_before_results(self, session):
+        """Before fixtures exist, breakdown items should have won=False, matched_fixture=None."""
+        r = session.post(f"{API}/rooms",
+                         json={"name": _unique("BRK"), "matchday": 8, "max_events": 3, "admin_nickname": "AdmBrk"})
+        assert r.status_code == 200
+        ctx = r.json()
+        rid = ctx["room"]["id"]
+        events = [{"home_team": "Napoli", "away_team": "Juventus", "prediction": "1", "odd": 2.5}]
+        rc = session.post(f"{API}/rooms/{rid}/schedina/confirm", json={"events": events},
+                          headers=auth_headers(ctx["token"]))
+        assert rc.status_code == 200
+        r2 = session.get(f"{API}/rooms/{rid}/leaderboard", headers=auth_headers(ctx["token"]))
+        assert r2.status_code == 200
+        data = r2.json()
+        assert data["has_results"] is False
+        entry = data["leaderboard"][0]
+        assert entry["breakdown"][0]["won"] is False
+        assert entry["breakdown"][0]["matched_fixture"] is None
+        assert entry["breakdown"][0]["score"] is None
+        assert entry["breakdown"][0]["home_team"] == "Napoli"
+
 
 # ---------- Prediction evaluation + team-match logic (unit tests via import) ----------
 class TestUnitLogic:

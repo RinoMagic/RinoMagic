@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   RefreshControl,
   Share,
   Platform,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -31,12 +32,36 @@ type Room = {
 
 type Member = { nickname: string; is_admin?: boolean; submitted: boolean };
 
+type BreakdownItem = {
+  home_team: string;
+  away_team: string;
+  prediction: string;
+  odd: number;
+  won: boolean;
+  matched_fixture: string | null;
+  score: string | null;
+};
+
 type LeaderEntry = {
   nickname: string;
   total: number;
   won_count: number;
   events_count: number;
   rank: number;
+  breakdown: BreakdownItem[];
+};
+
+const PREDICTION_LABELS: Record<string, string> = {
+  '1': '1 (Casa)',
+  'X': 'X (Pareggio)',
+  '2': '2 (Trasferta)',
+  '1X': '1X (Casa o Pareggio)',
+  'X2': 'X2 (Pareggio o Trasferta)',
+  '12': '12 (Casa o Trasferta)',
+  'GOL': 'GOL (Entrambe segnano)',
+  'NOGOL': 'NO GOL',
+  'OVER': 'OVER 2.5',
+  'UNDER': 'UNDER 2.5',
 };
 
 export default function RoomDetail() {
@@ -50,6 +75,7 @@ export default function RoomDetail() {
   const [tab, setTab] = useState<'members' | 'leaderboard'>('members');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedNick, setSelectedNick] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -94,6 +120,16 @@ export default function RoomDetail() {
   const logout = async () => {
     await session.clear();
     router.replace('/');
+  };
+
+  const selectedEntry = useMemo(() => {
+    if (!selectedNick) return null;
+    return leaderboard.find((e) => e.nickname === selectedNick) || null;
+  }, [selectedNick, leaderboard]);
+
+  const openPlayerSchedina = (nickname: string, submitted: boolean) => {
+    if (!submitted) return;
+    setSelectedNick(nickname);
   };
 
   if (loading || !room) {
@@ -207,7 +243,16 @@ export default function RoomDetail() {
         {tab === 'members' && (
           <View style={styles.list}>
             {members.map((m) => (
-              <View key={m.nickname} style={styles.row}>
+              <Pressable
+                key={m.nickname}
+                onPress={() => openPlayerSchedina(m.nickname, m.submitted)}
+                disabled={!m.submitted}
+                testID={`member-row-${m.nickname}`}
+                style={({ pressed }) => [
+                  styles.row,
+                  pressed && m.submitted && { opacity: 0.7 },
+                ]}
+              >
                 <View style={[styles.avatar, { backgroundColor: room.color + '33' }]}>
                   <Text style={[styles.avatarText, { color: room.color }]}>
                     {m.nickname.slice(0, 2).toUpperCase()}
@@ -220,16 +265,19 @@ export default function RoomDetail() {
                   )}
                 </View>
                 {m.submitted ? (
-                  <View style={styles.badgeOk}>
-                    <Ionicons name="checkmark" size={14} color={theme.colors.accent} />
-                    <Text style={styles.badgeOkText}>Consegnata</Text>
-                  </View>
+                  <>
+                    <View style={styles.badgeOk}>
+                      <Ionicons name="checkmark" size={14} color={theme.colors.accent} />
+                      <Text style={styles.badgeOkText}>Consegnata</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
+                  </>
                 ) : (
                   <View style={styles.badgePending}>
                     <Text style={styles.badgePendingText}>In attesa</Text>
                   </View>
                 )}
-              </View>
+              </Pressable>
             ))}
           </View>
         )}
@@ -252,7 +300,16 @@ export default function RoomDetail() {
               leaderboard.map((row, idx) => {
                 const isLoser = idx === leaderboard.length - 1;
                 return (
-                  <View key={row.nickname} style={[styles.row, isLoser && styles.rowLoser]}>
+                  <Pressable
+                    key={row.nickname}
+                    testID={`leader-row-${row.nickname}`}
+                    onPress={() => openPlayerSchedina(row.nickname, true)}
+                    style={({ pressed }) => [
+                      styles.row,
+                      isLoser && styles.rowLoser,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
                     <Text style={styles.rank}>{row.rank}</Text>
                     <View style={[styles.avatar, { backgroundColor: room.color + '33' }]}>
                       <Text style={[styles.avatarText, { color: room.color }]}>
@@ -272,14 +329,204 @@ export default function RoomDetail() {
                       <Ionicons name="beer" size={20} color={theme.colors.warning} style={{ marginRight: 6 }} />
                     )}
                     <Text style={[styles.rowScore, { color: room.color }]}>{row.total.toFixed(2)}</Text>
-                  </View>
+                  </Pressable>
                 );
               })
             )}
           </View>
         )}
       </ScrollView>
+
+      <PlayerSchedinaModal
+        visible={!!selectedEntry}
+        onClose={() => setSelectedNick(null)}
+        entry={selectedEntry}
+        hasResults={hasResults}
+        color={room.color}
+      />
     </View>
+  );
+}
+
+function PlayerSchedinaModal({
+  visible,
+  onClose,
+  entry,
+  hasResults,
+  color,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  entry: LeaderEntry | null;
+  hasResults: boolean;
+  color: string;
+}) {
+  return (
+    <Modal
+      animationType="slide"
+      transparent
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            {entry && (
+              <View style={[styles.avatar, styles.modalAvatar, { backgroundColor: color + '33' }]}>
+                <Text style={[styles.avatarText, { color, fontSize: 14 }]}>
+                  {entry.nickname.slice(0, 2).toUpperCase()}
+                </Text>
+              </View>
+            )}
+            <View style={{ flex: 1 }}>
+              <Text style={styles.modalTitle}>
+                Schedina di {entry?.nickname || '—'}
+              </Text>
+              {entry && (
+                <Text style={styles.modalSub}>
+                  {hasResults
+                    ? `${entry.won_count}/${entry.events_count} azzeccate · Punteggio ${entry.total.toFixed(2)}`
+                    : `${entry.events_count} pronostici · In attesa dei risultati`}
+                </Text>
+              )}
+            </View>
+            <Pressable onPress={onClose} hitSlop={12} testID="close-schedina-modal">
+              <Ionicons name="close" size={26} color={theme.colors.onSurface} />
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={{ maxHeight: '75%' }}
+            contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.sm }}
+          >
+            {entry?.breakdown?.length ? (
+              entry.breakdown.map((b, i) => {
+                const evaluated = hasResults && b.matched_fixture;
+                const isWin = !!b.won;
+                const isLose = evaluated && !b.won;
+                const borderColor = isWin
+                  ? theme.colors.success
+                  : isLose
+                    ? theme.colors.error
+                    : theme.colors.border;
+                const bg = isWin
+                  ? theme.colors.success + '18'
+                  : isLose
+                    ? theme.colors.error + '18'
+                    : theme.colors.surfaceSecondary;
+                return (
+                  <View
+                    key={`${b.home_team}-${b.away_team}-${i}`}
+                    testID={`schedina-event-${i}`}
+                    style={[
+                      styles.eventCard,
+                      { backgroundColor: bg, borderColor },
+                    ]}
+                  >
+                    <View style={styles.eventRow}>
+                      <Text style={styles.eventTeams} numberOfLines={2}>
+                        {b.home_team} — {b.away_team}
+                      </Text>
+                      <View
+                        style={[
+                          styles.oddPill,
+                          {
+                            backgroundColor: isWin
+                              ? theme.colors.success
+                              : isLose
+                                ? theme.colors.error
+                                : theme.colors.surfaceTertiary,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.oddText,
+                            {
+                              color: isWin || isLose
+                                ? '#FFFFFF'
+                                : theme.colors.onSurface,
+                            },
+                          ]}
+                        >
+                          {b.odd.toFixed(2)}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.eventMeta}>
+                      <View style={styles.predictionChip}>
+                        <Text style={styles.predictionLabel}>Pronostico</Text>
+                        <Text style={styles.predictionValue}>
+                          {PREDICTION_LABELS[b.prediction] || b.prediction}
+                        </Text>
+                      </View>
+                      {evaluated ? (
+                        <View style={styles.resultChip}>
+                          <Ionicons
+                            name={isWin ? 'checkmark-circle' : 'close-circle'}
+                            size={16}
+                            color={isWin ? theme.colors.success : theme.colors.error}
+                          />
+                          <Text
+                            style={[
+                              styles.resultText,
+                              { color: isWin ? theme.colors.success : theme.colors.error },
+                            ]}
+                          >
+                            {isWin ? 'AZZECCATA' : 'SBAGLIATA'}
+                            {b.score ? ` · ${b.score}` : ''}
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={styles.resultChip}>
+                          <Ionicons
+                            name="time-outline"
+                            size={16}
+                            color={theme.colors.muted}
+                          />
+                          <Text style={[styles.resultText, { color: theme.colors.muted }]}>
+                            {hasResults ? 'Partita non trovata' : 'In attesa'}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                );
+              })
+            ) : (
+              <View style={styles.empty}>
+                <Text style={styles.emptyTitle}>Nessun pronostico</Text>
+              </View>
+            )}
+
+            {entry && hasResults && (
+              <View
+                style={[
+                  styles.totalCard,
+                  {
+                    borderColor: entry.total > 0 ? theme.colors.success : theme.colors.error,
+                    backgroundColor:
+                      (entry.total > 0 ? theme.colors.success : theme.colors.error) + '18',
+                  },
+                ]}
+              >
+                <Text style={styles.totalLabel}>Punteggio finale</Text>
+                <Text
+                  style={[
+                    styles.totalValue,
+                    { color: entry.total > 0 ? theme.colors.success : theme.colors.error },
+                  ]}
+                >
+                  {entry.total > 0
+                    ? `× ${entry.total.toFixed(2)}`
+                    : '0 (nessuna azzeccata)'}
+                </Text>
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -413,4 +660,107 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', padding: theme.spacing.xxl, gap: 8 },
   emptyTitle: { color: theme.colors.onSurface, fontWeight: '800', marginTop: 8 },
   emptySub: { color: theme.colors.muted, textAlign: 'center', fontSize: 13 },
+
+  // Modal
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: theme.colors.surface,
+    borderTopLeftRadius: theme.radius.lg,
+    borderTopRightRadius: theme.radius.lg,
+    maxHeight: '90%',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  modalAvatar: { width: 44, height: 44, borderRadius: 22 },
+  modalTitle: { color: theme.colors.onSurface, fontSize: 16, fontWeight: '800' },
+  modalSub: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
+  eventCard: {
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    gap: theme.spacing.sm,
+  },
+  eventRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  eventTeams: {
+    flex: 1,
+    color: theme.colors.onSurface,
+    fontWeight: '800',
+    fontSize: 14,
+  },
+  oddPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: theme.radius.pill,
+    minWidth: 60,
+    alignItems: 'center',
+  },
+  oddText: { fontWeight: '800', fontSize: 14 },
+  eventMeta: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    flexWrap: 'wrap',
+  },
+  predictionChip: {
+    flex: 1,
+    minWidth: 140,
+  },
+  predictionLabel: {
+    color: theme.colors.muted,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  predictionValue: {
+    color: theme.colors.onSurface,
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  resultChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  resultText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  totalCard: {
+    marginTop: theme.spacing.sm,
+    padding: theme.spacing.lg,
+    borderRadius: theme.radius.md,
+    borderWidth: 2,
+    alignItems: 'center',
+  },
+  totalLabel: {
+    color: theme.colors.muted,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  totalValue: {
+    fontSize: 28,
+    fontWeight: '800',
+    marginTop: 4,
+  },
 });

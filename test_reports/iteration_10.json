@@ -1,0 +1,42 @@
+{
+  "summary": "SchedinaBar PlayerSchedinaModal (nuovo) tested end-to-end. Backend regressione: 30/30 pytest passano (aggiunti 2 nuovi test per struttura `breakdown` in leaderboard: pre-results con won=false/matched_fixture=null e post-results con won/matched_fixture/score corretti). Frontend Playwright: 1) creata stanza + Alice admin + Bob join via API; 2) entrambi confermano schedina con 2 eventi (Inter-Milan, Roma-Lazio); 3) navigato a /room/{id} come Alice → tab Partecipanti mostra entrambi con badge Consegnata; 4) tap su member-row-Alice apre il modal con testID close-schedina-modal e schedina-event-0/1, mostra 'In attesa' 3 volte, ZERO AZZECCATA/SBAGLIATA (stato neutro pre-risultati); 5) admin invia fixtures Inter 2-1 Milan e Roma 1-1 Lazio; 6) tab Classifica mostra Alice #1 (6.00, trofeo) e Bob #2 (3.00, birra); 7) tap leader-row-Alice → 2 AZZECCATA (verde), 0 SBAGLIATA, Punteggio finale × 6.00; 8) tap leader-row-Bob → 1 AZZECCATA + 1 SBAGLIATA verificate con computed backgroundColor (rgba(239,68,68,0.09) rosso per SBAGLIATA, rgba(16,185,129,0.09) verde per AZZECCATA). Tutte le richieste della review request funzionano correttamente. Nessun red-screen, nessun errore console rilevante.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/rooms/{id}/schedina/confirm", "issue": "Pronostico invalido ritorna 422 (Pydantic) invece di 400 — standard FastAPI, non bloccante."},
+      {"endpoint": "app-level", "issue": "server.py usa @app.on_event deprecato; migrare a lifespan handlers."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "PlayerSchedinaModal", "issues": ["Warning console 'shadow* style props are deprecated. Use boxShadow.' — proviene da theme/StyleSheet, minore, non impatta UX."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_schedinabar.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Opzionale: sostituire props RN deprecate `shadow*` con `boxShadow` nel theme per silenziare i warning in console web.",
+    "Opzionale: migrare @app.on_event a FastAPI lifespan handlers."
+  ],
+  "critical_code_review_comments": [
+    "PlayerSchedinaModal (definito inline in /app/frontend/app/room/[id]/index.tsx) — file ora 767 righe, si avvicina alla soglia 700. Consigliato estrarre il modal in `src/components/PlayerSchedinaModal.tsx` per DRY e manutenibilità.",
+    "Il tap sulla member-row è correttamente disabilitato (disabled + !submitted return) per utenti senza schedina — coerente con la richiesta.",
+    "In leaderboard breakdown: quando `matched_fixture` è null (partita non trovata dopo aver settato i risultati), UI mostra 'Partita non trovata' — buona gestione edge case.",
+    "Backend leaderboard include correttamente `breakdown` con tutte le chiavi richieste (home_team, away_team, prediction, odd, won, matched_fixture, score) — verificato via test dedicato TestLeaderboard::test_leaderboard_breakdown_structure."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_schedinabar.py (aggiunti 2 test breakdown → 30 test totali)"
+  ],
+  "success_rate": {"backend": "100% (30/30)", "frontend": "100% (tutti i flussi PlayerSchedinaModal verificati)"},
+  "seed_data_creation": "Dati effimeri: stanza 'UI-TEST-ROOM' con invite G65VT4 creata via API, Alice admin + Bob joined, entrambi confermano schedina con 2 eventi, admin setta 2 fixtures Inter/Milan e Roma/Lazio.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Il modal PlayerSchedinaModal funziona sia pre-risultati (In attesa neutro) sia post-risultati (verde/rosso). testID stabili: member-row-{nickname}, leader-row-{nickname}, close-schedina-modal, schedina-event-{i}. Per testare il flusso end-to-end frontend: seed API → inject JWT+room+nick in localStorage (web) → goto /room/{id}. Il file di test backend /app/backend/tests/test_schedinabar.py copre tutte le CRUD + leaderboard breakdown.",
+  "rca_of_issue": "N/A — funzionalità completamente allineata alla review request."
+}
