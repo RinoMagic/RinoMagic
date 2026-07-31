@@ -57,9 +57,12 @@ export default function PlayerHome() {
     <View style={styles.wrap}>
       <SafeAreaView edges={['top']}>
         <View style={styles.header}>
-          <View>
+          <Pressable onPress={() => router.replace('/hub')} hitSlop={12} testID="player-back-hub" style={{ marginRight: 4 }}>
+            <Ionicons name="grid" size={22} color={theme.colors.onSurface} />
+          </Pressable>
+          <View style={{ flex: 1 }}>
             <Text style={styles.hi}>Ciao, {me?.username}</Text>
-            <Text style={styles.mail}>Giocatore</Text>
+            <Text style={styles.mail}>TheBestTiket · Giocatore</Text>
           </View>
           <View style={{ flexDirection: 'row', gap: theme.spacing.md, alignItems: 'center' }}>
             <Pressable onPress={() => router.push('/settings')} hitSlop={12} testID="player-settings">

@@ -45,7 +45,7 @@ export default function AdminHome() {
     try {
       const [s, r, u] = await Promise.all([
         session.load(),
-        api<Room[]>('/rooms'),
+        api<Room[]>('/rooms?game=thebesttiket'),
         api<User[]>('/auth/users'),
       ]);
       setMe(s.user); setRooms(r); setUsers(u);
@@ -64,7 +64,7 @@ export default function AdminHome() {
       if (!name.trim() || !md || !me) throw new Error('Compila tutti i campi');
       const room = await api<Room>('/rooms', {
         method: 'POST',
-        body: { name: name.trim(), matchday: md, max_events: me },
+        body: { name: name.trim(), matchday: md, max_events: me, game: 'thebesttiket' },
       });
       setCreateOpen(false); setName(''); setMatchday(''); setMaxEvents('5');
       router.push(`/room/${room.id}`);
@@ -136,8 +136,11 @@ export default function AdminHome() {
     <View style={styles.wrap}>
       <SafeAreaView edges={['top']}>
         <View style={styles.header}>
-          <View>
-            <Text style={styles.hi}>Admin</Text>
+          <Pressable onPress={() => router.replace('/hub')} hitSlop={12} testID="admin-back-hub" style={{ marginRight: 4 }}>
+            <Ionicons name="grid" size={22} color={theme.colors.onSurface} />
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.hi}>TheBestTiket · Admin</Text>
             <Text style={styles.mail}>{me?.email}</Text>
           </View>
           <View style={{ flexDirection: 'row', gap: theme.spacing.md, alignItems: 'center' }}>

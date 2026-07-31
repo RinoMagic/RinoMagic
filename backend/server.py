@@ -89,6 +89,30 @@ _ensure_tesseract()
 # ============ Models ============
 ROOM_COLORS = ["#00D95F", "#FFB300", "#EF4444", "#3B82F6", "#A855F7", "#EC4899", "#14B8A6", "#F97316"]
 
+# ---------- Games registry ----------
+# RinoMagic is the "umbrella" that hosts multiple mini-games. Each room and
+# each invite is scoped to exactly one game — a TheBestTiket invite cannot
+# be used to join a ScoreAndLive room, and vice-versa.
+GAMES = {
+    "thebesttiket": {
+        "id": "thebesttiket",
+        "name": "TheBestTiket",
+        "tagline": "Schedine Serie A tra amici",
+        "color": "#FFB300",
+        "icon": "trophy",
+        "enabled": True,
+    },
+    "scoreandlive": {
+        "id": "scoreandlive",
+        "name": "ScoreAndLive",
+        "tagline": "In arrivo prossimamente",
+        "color": "#3B82F6",
+        "icon": "pulse",
+        "enabled": False,  # Coming soon
+    },
+}
+DEFAULT_GAME = "thebesttiket"
+
 # Prediction codes we accept.
 # Simple markets:
 #   1  X  2  1X  X2  12          -> 1X2 + Double chance (final score)
@@ -147,6 +171,8 @@ class RoomCreate(BaseModel):
     matchday: int = Field(ge=1, le=38)
     max_events: int = Field(ge=1, le=10, default=5)
     color: Optional[str] = None
+    # Which mini-game this room belongs to (TheBestTiket, ScoreAndLive, ...).
+    game: str = Field(default=DEFAULT_GAME)
 
 
 class RoomUpdate(BaseModel):
@@ -693,6 +719,11 @@ async def startup():
     await db.reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.invites.create_index("code", unique=True)
     await db.invites.create_index([("room_id", 1), ("used_by_user_id", 1)])
+    # Backfill: every existing room/invite belongs to TheBestTiket (the game
+    # that existed before the multi-game refactor). New rooms/invites carry
+    # the field explicitly.
+    await db.rooms.update_many({"game": {"$exists": False}}, {"$set": {"game": DEFAULT_GAME}})
+    await db.invites.update_many({"game": {"$exists": False}}, {"$set": {"game": DEFAULT_GAME}})
     # Backfill: for legacy rooms that still have a single `invite_code` field
     # but no invite doc, create the corresponding invite record. This keeps
     # existing invite links working after the "one-shot invite" migration.
@@ -738,6 +769,7 @@ async def _room_dict(room: dict, viewer: Optional[dict] = None) -> dict:
         "matchday": room["matchday"],
         "max_events": room["max_events"],
         "color": room["color"],
+        "game": room.get("game", DEFAULT_GAME),
         "invite_code": room["invite_code"],  # legacy: initial code, may be used
         "admin_user_id": room.get("admin_user_id"),
         "status": room.get("status", "open"),
@@ -794,9 +826,36 @@ async def _ensure_member(room_id: str, user: dict) -> None:
         raise HTTPException(status_code=403, detail="Non sei nella stanza")
 
 
+@api.get("/games")
+async def list_games(user: dict = Depends(current_user)):
+    """List of mini-games hosted by the RinoMagic umbrella app.
+
+    For each game returns the number of rooms the current user can access:
+    - Admins see all rooms in that game
+    - Players see only the rooms they are a member of
+    """
+    if user["role"] == "admin":
+        my_room_ids: Optional[List[str]] = None  # None means "all rooms"
+    else:
+        my_room_ids = [m["room_id"] async for m in db.memberships.find(
+            {"user_id": user["id"]}, {"room_id": 1, "_id": 0})]
+
+    games: List[dict] = []
+    for gid, meta in GAMES.items():
+        q: dict = {"game": gid}
+        if my_room_ids is not None:
+            q["id"] = {"$in": my_room_ids}
+        my_rooms_count = await db.rooms.count_documents(q)
+        games.append({**meta, "my_rooms_count": my_rooms_count})
+    return games
+
+
 # ---------- ROOM: CRUD ----------
 @api.post("/rooms")
 async def create_room(data: RoomCreate, user: dict = Depends(require_admin)):
+    game = data.game if data.game in GAMES else DEFAULT_GAME
+    if not GAMES[game].get("enabled", False):
+        raise HTTPException(status_code=400, detail=f"Il gioco '{GAMES[game]['name']}' non è ancora disponibile")
     for _ in range(10):
         code = gen_code()
         if not await db.rooms.find_one({"invite_code": code}) and not await db.invites.find_one({"code": code}):
@@ -810,6 +869,7 @@ async def create_room(data: RoomCreate, user: dict = Depends(require_admin)):
         "matchday": data.matchday,
         "max_events": data.max_events,
         "color": color,
+        "game": game,
         "invite_code": code,  # legacy field, still populated for backward compat
         "admin_user_id": user["id"],
         "status": "open",
@@ -820,6 +880,7 @@ async def create_room(data: RoomCreate, user: dict = Depends(require_admin)):
     await db.invites.insert_one({
         "id": str(uuid.uuid4()),
         "room_id": room_id,
+        "game": game,
         "code": code,
         "used_by_user_id": None,
         "used_at": None,
@@ -838,13 +899,23 @@ async def create_room(data: RoomCreate, user: dict = Depends(require_admin)):
 
 
 @api.get("/rooms")
-async def list_my_rooms(user: dict = Depends(current_user)):
+async def list_my_rooms(user: dict = Depends(current_user), game: Optional[str] = None):
+    game_filter = {}
+    if game:
+        if game not in GAMES:
+            raise HTTPException(status_code=400, detail="Gioco non valido")
+        game_filter = {"$or": [{"game": game}, {"game": {"$exists": False}} if game == DEFAULT_GAME else {}]}
+        # Simpler: match game explicitly (backfill already ran, so all docs have `game`)
+        game_filter = {"game": game}
     if user["role"] == "admin":
-        cursor = db.rooms.find({}, {"_id": 0}).sort("created_at", -1)
+        cursor = db.rooms.find(game_filter, {"_id": 0}).sort("created_at", -1)
     else:
         member_room_ids = [m["room_id"] async for m in db.memberships.find(
             {"user_id": user["id"]}, {"room_id": 1, "_id": 0})]
-        cursor = db.rooms.find({"id": {"$in": member_room_ids}}, {"_id": 0}).sort("created_at", -1)
+        q = {"id": {"$in": member_room_ids}}
+        if game_filter:
+            q.update(game_filter)
+        cursor = db.rooms.find(q, {"_id": 0}).sort("created_at", -1)
     rooms = []
     async for r in cursor:
         rooms.append(await _room_dict(r, user))
@@ -873,6 +944,7 @@ async def preview_room(invite_code: str):
         "matchday": room["matchday"],
         "max_events": room["max_events"],
         "color": room["color"],
+        "game": room.get("game", DEFAULT_GAME),
         "invite_code": code,
         "status": room.get("status", "open"),
     }
@@ -1003,7 +1075,7 @@ async def list_invites(room_id: str, user: dict = Depends(require_admin)):
 
 @api.post("/rooms/{room_id}/invites")
 async def create_invite(room_id: str, user: dict = Depends(require_admin)):
-    room = await db.rooms.find_one({"id": room_id}, {"id": 1, "_id": 0})
+    room = await db.rooms.find_one({"id": room_id}, {"id": 1, "game": 1, "_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Stanza non trovata")
     # Generate a unique code
@@ -1017,6 +1089,7 @@ async def create_invite(room_id: str, user: dict = Depends(require_admin)):
     doc = {
         "id": str(uuid.uuid4()),
         "room_id": room_id,
+        "game": room.get("game", DEFAULT_GAME) if isinstance(room, dict) else DEFAULT_GAME,
         "code": code,
         "used_by_user_id": None,
         "used_at": None,

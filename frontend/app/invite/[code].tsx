@@ -12,6 +12,12 @@ import { theme } from '@/src/theme';
 type RoomPreview = {
   id: string; name: string; matchday: number; color: string;
   invite_code: string; max_events: number; status: string;
+  game?: string;
+};
+
+const GAME_LABELS: Record<string, string> = {
+  thebesttiket: 'TheBestTiket',
+  scoreandlive: 'ScoreAndLive',
 };
 
 export default function InvitePage() {
@@ -102,6 +108,11 @@ export default function InvitePage() {
               <Ionicons name="mail-open" size={22} color={theme.colors.brand} />
             </View>
             <Text style={styles.title}>Sei stato invitato!</Text>
+            <View style={[styles.gameBadge, { backgroundColor: room.color + '33', borderColor: room.color }]}>
+              <Text style={[styles.gameBadgeText, { color: room.color }]}>
+                RinoMagic · {GAME_LABELS[room.game || 'thebesttiket'] || 'TheBestTiket'}
+              </Text>
+            </View>
             <Text style={styles.roomName}>{room.name}</Text>
             <Text style={styles.sub}>Giornata {room.matchday} · Max {room.max_events} pronostici</Text>
             <View style={styles.codeBox}>
@@ -146,6 +157,14 @@ const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.colors.surface },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.surface, gap: theme.spacing.md, padding: theme.spacing.lg },
   scroll: { padding: theme.spacing.lg, gap: theme.spacing.lg },
+  gameBadge: {
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+  },
+  gameBadgeText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.6 },
   hero: { alignItems: 'center', padding: theme.spacing.xl, borderRadius: theme.radius.lg, borderWidth: 1, gap: 6 },
   badge: { width: 56, height: 56, borderRadius: 28, backgroundColor: theme.colors.brand + '22', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
   title: { color: theme.colors.muted, fontSize: 12, fontWeight: '800', letterSpacing: 1.5 },

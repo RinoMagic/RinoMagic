@@ -33,9 +33,9 @@ export default function Landing() {
     })();
   }, []);
 
-  const goHome = (user: User) => {
-    if (user.role === 'admin') router.replace('/admin');
-    else router.replace('/player');
+  const goHome = (_user: User) => {
+    // After login every user lands on the RinoMagic hub where they pick a game.
+    router.replace('/hub');
   };
 
   const submit = async () => {
