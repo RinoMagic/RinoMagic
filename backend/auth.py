@@ -247,7 +247,6 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
             "id": str(uuid.uuid4()),
             "role": "admin",
             "email": email,
-            "username": None,
             "password_hash": hash_password(data.temp_password),
             "blocked": False,
             "must_change_password": True,
@@ -262,10 +261,13 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
         existing = await db.users.find_one({"username": data.username}, {"_id": 0})
         if existing:
             raise HTTPException(status_code=400, detail="Username già usato")
+        # NOTE: We intentionally OMIT the `email` field (instead of setting it to None)
+        # so the unique+sparse index on `email` skips this document. Storing
+        # `email: null` on multiple player docs would violate the unique constraint
+        # on some MongoDB versions.
         new_user = {
             "id": str(uuid.uuid4()),
             "role": "player",
-            "email": None,
             "username": data.username,
             "password_hash": hash_password(data.password),
             "blocked": False,
@@ -367,7 +369,6 @@ async def seed_admin_if_missing(db: AsyncIOMotorDatabase) -> None:
         "id": str(uuid.uuid4()),
         "role": "admin",
         "email": seed_email,
-        "username": None,
         "password_hash": hash_password(seed_pw),
         "blocked": False,
         "must_change_password": True,

@@ -100,9 +100,13 @@ export default function RoomDetail() {
 
   const shareInvite = async () => {
     if (!room) return;
-    const text = `Entra nella mia stanza SchedinaBar "${room.name}" con il codice ${room.invite_code}`;
-    if (Platform.OS === 'web' && typeof navigator !== 'undefined') {
-      try { await (navigator as any).clipboard.writeText(text); } catch {}
+    const APP_URL = process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/api\/?$/, '')
+      || (typeof window !== 'undefined' ? window.location.origin : '');
+    const link = `${APP_URL}/invite/${room.invite_code}`;
+    const text = `Entra nella stanza "${room.name}" su SchedinaBar!\n${link}`;
+    if (Platform.OS === 'web') {
+      try { await (navigator as any).clipboard?.writeText(link); } catch {}
+      if (typeof window !== 'undefined') window.alert(`Link copiato:\n${link}`);
       return;
     }
     try { await Share.share({ message: text }); } catch {}

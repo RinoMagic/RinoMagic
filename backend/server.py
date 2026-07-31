@@ -700,6 +700,24 @@ async def list_my_rooms(user: dict = Depends(current_user)):
     return rooms
 
 
+@api.get("/rooms/by-code/{invite_code}")
+async def preview_room(invite_code: str):
+    """Public preview of a room by invite code — used by the invite landing page.
+    Does NOT require authentication. Returns only non-sensitive info."""
+    room = await db.rooms.find_one({"invite_code": invite_code.upper().strip()}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Codice invito non valido")
+    return {
+        "id": room["id"],
+        "name": room["name"],
+        "matchday": room["matchday"],
+        "max_events": room["max_events"],
+        "color": room["color"],
+        "invite_code": room["invite_code"],
+        "status": room.get("status", "open"),
+    }
+
+
 @api.post("/rooms/join")
 async def join_room(data: RoomJoin, user: dict = Depends(current_user)):
     room = await db.rooms.find_one({"invite_code": data.invite_code.upper().strip()}, {"_id": 0})

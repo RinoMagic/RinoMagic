@@ -1,8 +1,9 @@
 import { useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, TextInput,
-  ActivityIndicator, RefreshControl, Modal, Alert,
+  ActivityIndicator, RefreshControl, Modal, Platform, Alert, Share,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,6 +14,32 @@ type Room = {
   id: string; name: string; matchday: number; max_events: number;
   color: string; invite_code: string; status: string; members_count: number;
 };
+
+const APP_URL =
+  process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/api\/?$/, '') ||
+  (typeof window !== 'undefined' ? window.location.origin : '');
+
+function confirmDialog(title: string, message: string): Promise<boolean> {
+  if (Platform.OS === 'web') {
+    return Promise.resolve(window.confirm(`${title}\n\n${message}`));
+  }
+  return new Promise((resolve) => {
+    Alert.alert(title, message, [
+      { text: 'Annulla', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'Conferma', style: 'destructive', onPress: () => resolve(true) },
+    ]);
+  });
+}
+
+async function copyText(text: string): Promise<void> {
+  try {
+    await Clipboard.setStringAsync(text);
+  } catch {
+    if (typeof navigator !== 'undefined' && (navigator as any).clipboard) {
+      try { await (navigator as any).clipboard.writeText(text); } catch {}
+    }
+  }
+}
 
 export default function AdminHome() {
   const router = useRouter();
@@ -59,45 +86,59 @@ export default function AdminHome() {
     finally { setBusy(false); }
   };
 
-  const deleteRoom = (id: string, name: string) => {
-    Alert.alert('Elimina stanza', `Sicuro di eliminare "${name}"? Tutte le schedine e i risultati saranno cancellati.`, [
-      { text: 'Annulla', style: 'cancel' },
-      {
-        text: 'Elimina', style: 'destructive', onPress: async () => {
-          await api(`/rooms/${id}`, { method: 'DELETE' }); load();
-        },
-      },
-    ]);
+  const deleteRoom = async (id: string, name: string) => {
+    if (!await confirmDialog('Elimina stanza',
+      `Sicuro di eliminare "${name}"? Tutte le schedine e i risultati saranno cancellati.`)) return;
+    try {
+      await api(`/rooms/${id}`, { method: 'DELETE' });
+      await load();
+    } catch (e: any) { setMsg(e.message); }
+  };
+
+  const shareInvite = async (r: Room) => {
+    const link = `${APP_URL}/invite/${r.invite_code}`;
+    const text = `Entra nella stanza "${r.name}" su SchedinaBar!\n${link}`;
+    if (Platform.OS === 'web') {
+      await copyText(link);
+      window.alert(`Link copiato negli appunti:\n${link}`);
+    } else {
+      try { await Share.share({ message: text }); } catch {}
+    }
   };
 
   const toggleBlock = async (u: User) => {
     const action = u.blocked ? 'unblock' : 'block';
-    await api(`/auth/users/${u.id}/${action}`, { method: 'POST' }); load();
+    await api(`/auth/users/${u.id}/${action}`, { method: 'POST' });
+    await load();
   };
 
-  const deletePlayer = (u: User) => {
-    Alert.alert('Elimina giocatore', `Elimina definitivamente "${u.username || u.email}"?`, [
-      { text: 'Annulla', style: 'cancel' },
-      {
-        text: 'Elimina', style: 'destructive', onPress: async () => {
-          await api(`/auth/users/${u.id}`, { method: 'DELETE' }); load();
-        },
-      },
-    ]);
+  const deletePlayer = async (u: User) => {
+    if (!await confirmDialog('Elimina giocatore',
+      `Elimina definitivamente "${u.username || u.email}"?`)) return;
+    try {
+      await api(`/auth/users/${u.id}`, { method: 'DELETE' });
+      await load();
+    } catch (e: any) { setMsg(e.message); }
   };
 
-  const resetPlayerPw = (u: User) => {
+  const resetPlayerPw = async (u: User) => {
     const tempPw = Math.random().toString(36).slice(2, 10) + 'A1';
-    Alert.alert('Reset password', `Nuova password per "${u.username}": ${tempPw}\nComunicala al giocatore.`, [
-      { text: 'Annulla', style: 'cancel' },
-      {
-        text: 'Conferma', onPress: async () => {
-          await api('/auth/users/reset-password', {
-            method: 'POST', body: { user_id: u.id, new_password: tempPw },
-          });
-        },
-      },
-    ]);
+    if (!await confirmDialog(
+      'Reset password',
+      `Assegno una password temporanea a "${u.username}".\n\nNuova password: ${tempPw}\n\nAssicurati di comunicargliela.`
+    )) return;
+    try {
+      await api('/auth/users/reset-password', {
+        method: 'POST', body: { user_id: u.id, new_password: tempPw },
+      });
+      await copyText(`Nickname: ${u.username}\nPassword: ${tempPw}`);
+      if (Platform.OS === 'web') {
+        window.alert(`Password aggiornata!\nHo copiato username+password negli appunti:\n\nNickname: ${u.username}\nPassword: ${tempPw}`);
+      } else {
+        Alert.alert('Password aggiornata',
+          `Nickname: ${u.username}\nPassword: ${tempPw}\n\nCopiato negli appunti.`);
+      }
+    } catch (e: any) { setMsg(e.message); }
   };
 
   if (loading) return <View style={styles.center}><ActivityIndicator color={theme.colors.brand} /></View>;
@@ -140,7 +181,10 @@ export default function AdminHome() {
                   <Text style={styles.rowName}>{r.name}</Text>
                   <Text style={styles.rowMeta}>Giornata {r.matchday} · {r.members_count} partecipanti · Cod. {r.invite_code}</Text>
                 </Pressable>
-                <Pressable onPress={() => deleteRoom(r.id, r.name)} hitSlop={12}>
+                <Pressable onPress={() => shareInvite(r)} hitSlop={8} testID={`share-${r.id}`}>
+                  <Ionicons name="share-social" size={18} color={theme.colors.brand} />
+                </Pressable>
+                <Pressable onPress={() => deleteRoom(r.id, r.name)} hitSlop={8} testID={`delete-${r.id}`}>
                   <Ionicons name="trash" size={18} color={theme.colors.error} />
                 </Pressable>
               </View>

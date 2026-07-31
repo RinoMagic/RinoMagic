@@ -1,0 +1,48 @@
+{
+  "summary": "Verified invite-code flow, admin reset-player-password fix, delete-room dialog and share-invite alert. Backend: 11/11 pytest passano (9 nuovi in test_invite_flow.py + 2 mantenuti in test_staryes_parser.py). Frontend E2E su viewport 390x844 (mobile): admin login OK, create room OK, SHARE icon triggers browser alert con il link https://.../invite/{CODE} e copia negli appunti; DELETE icon apre browser confirm 'Elimina stanza ... Sicuro di eliminare?' e rimuove la stanza dalla lista; KEY icon apre browser confirm con la password temporanea generata e mostra alert 'Password aggiornata!' — il player può fare login con la nuova password (verificato via /api/auth/player/login → 200). La pagina /invite/{code} mostra hero 'Sei stato invitato!', nome stanza, giornata, codice invito grande + form Registrati/Ho gia un account; dopo submit di 'Registrati ed entra' il player viene auto-joined nella stanza (URL cambia in /room/{id}, 2 partecipanti visibili). La pagina /invite/FAKE99XY mostra 'Codice invito non valido' + bottone 'Torna alla home'. CRITICAL BUG TROVATO E FIXATO: /api/auth/player/register restituiva 500 (DuplicateKeyError sull'unique+sparse email index) alla seconda registrazione player perché auth.py inseriva 'email: None'. Fix minimo applicato in auth.py: rimosso 'email: None' da player_register e 'username: None' da seed_admin_if_missing / admin_promote; migrazione one-shot eseguita per $unset dei campi null residui. Post-fix il flusso invite→register→join funziona end-to-end. Nessun red-screen React Native. Nessun altro errore console rilevante.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "startup index on users.email/username", "issue": "Attualmente unique+sparse: fragile con valori null. Consigliato migrare a partialFilterExpression={'email':{'$type':'string'}} per essere immune anche se in futuro qualcuno reintroduce 'email:null' nel doc. Fix corrente rimuove il campo, sufficiente per il flusso attuale."},
+      {"endpoint": "@app.on_event startup/shutdown", "issue": "Deprecato in Starlette/FastAPI moderni — migrare a lifespan handler (già segnalato nelle iterazioni precedenti)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "admin.tsx Utenti tab", "issues": ["Le icone azione (key/ban/trash) non hanno testID individuale — testabili solo per posizione, fragile. Aggiungere ad es. testID='reset-player-{id}', 'block-player-{id}', 'delete-player-{id}'."]},
+      {"screen": "admin.tsx", "issues": ["Dopo la creazione di una stanza si viene redirect a /room/{id}; l'admin che vuole tornare al dashboard deve navigare manualmente. Non è un blocker."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_invite_flow.py",
+    "/app/backend/tests/test_staryes_parser.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/invite_flow_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL — Migrare gli indici unique+sparse di users.email e users.username a partialFilterExpression per essere più robusti (drop + recreate index in startup).",
+    "OPTIONAL — Aggiungere testID espliciti alle icone di reset/block/delete player nel tab Utenti di admin.tsx per facilitare i test futuri (es. testID='reset-player-{u.id}').",
+    "OPTIONAL — Migrare @app.on_event a lifespan handler."
+  ],
+  "critical_code_review_comments": [
+    "auth.py player_register: OK dopo fix — non setta più email:None, evita DuplicateKeyError su indice unique+sparse (root cause dell'ex 500).",
+    "auth.py seed_admin_if_missing e admin_promote: rimosso 'username: None' — coerente con la fix precedente.",
+    "server.py /api/rooms/by-code/{invite_code}: correttamente pubblico (nessuna Depends), fa .upper().strip() sul codice, ritorna solo campi safe (no admin_user_id, no members_count).",
+    "admin.tsx confirmDialog: implementazione platform-aware corretta (window.confirm su web, Alert.alert su native). Anche il flusso reset-password e delete-room usano lo stesso helper — nessuna regressione.",
+    "invite/[code].tsx: opzione api con auth:false per la preview quando l'utente non è loggato è corretta; dopo register/login chiama /rooms/join con l'invite_code; UX chiara con hero + segments.",
+    "admin.tsx shareInvite su web: copia link + window.alert — funziona ed è testabile."
+  ],
+  "updated_files": [
+    "/app/backend/auth.py — rimosso 'email: None' da player_register; rimosso 'username: None' da seed_admin_if_missing e admin_promote (fix bug 500 DuplicateKeyError).",
+    "/app/backend/tests/test_invite_flow.py — nuovo file 9 test (preview pubblica, 404 invalid, full-flow admin→player register→join, reset-password happy path + neg cases, delete-room)."
+  ],
+  "success_rate": {"backend": "100% (11/11 pytest, incl. 9 nuovi test invite/reset)", "frontend": "100% (SHARE/alert OK, DELETE/confirm OK, KEY/confirm+alert+relogin OK, /invite/{code} valid+register+auto-join OK, /invite/BAD OK)"},
+  "seed_data_creation": "Effimeri: stanza 'TEST_FIX_INV' (creata e cancellata via UI); player TESTa*, TESTb*, TESTi* creati per il flusso — lasciati in DB (nessun cleanup automatico, ma privi di membership dopo cancellazione stanza).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Il bug DuplicateKeyError su email:null era attivo su questa istanza MongoDB (v>=5, il sparse index NON esclude i null in questa build). Il fix definitivo lungo termine è migrare gli indici a partialFilterExpression. Per ora omettere email/username None nei doc utente è sufficiente. I test in test_invite_flow.py vanno eseguiti anche in parallelo (pytest-xdist) senza fallire. testID rilevanti confermati: tab-admin, admin-email, admin-password, auth-submit, create-room-btn, share-{room_id}, delete-{room_id}, invite-username, invite-password, invite-submit. Le icone del tab Utenti in admin.tsx NON hanno testID: si testano cliccando via evaluate() sul primo role=button nel row del player; consigliato aggiungerli.",
+  "rca_of_issue": "Root cause del 500 sul secondo player register: `db.users.create_index('email', unique=True, sparse=True)` in server.py startup. Su questa versione di MongoDB il sparse index NON salta i documenti con 'email: null' — li indicizza come valore null. Con auth.py che inseriva 'email: None' per ogni player, la seconda registrazione violava l'unique. Reproduction: register p1 (OK) → register p2 (500 DuplicateKeyError). Mitigation applicata: (1) omettere il campo email da tutti i doc player (auth.py), (2) same per 'username: None' su admin, (3) cleanup one-shot: $unset email:null / username:null sui doc esistenti. Verificato: 2 player consecutivi + 1 via invite page ora funzionano tutti 200 OK."
+}
