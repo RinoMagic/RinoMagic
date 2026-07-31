@@ -44,6 +44,8 @@ export function formatPrediction(code: string | undefined | null): string {
           kind === 'MGH' ? 'Multigol Casa' : kind === 'MGA' ? 'Multigol Ospite' : 'Multigol';
         return `${label} ${mg[2]}-${mg[3]}${mg[4] ? ' (NO)' : ''}`;
       }
+      const re = up.match(/^RE-(\d+)-(\d+)$/);
+      if (re) return `Risultato esatto ${re[1]}-${re[2]}`;
       return atom;
     })
     .join(' + ');

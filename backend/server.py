@@ -267,6 +267,10 @@ def _evaluate_prediction(pred: str, fx: dict) -> bool:
 
     def eval_atom(atom: str) -> bool:
         atom = atom.upper().strip()
+        # Risultato esatto (RE-<home>-<away>)
+        m = re.match(r"^RE-(\d+)-(\d+)$", atom)
+        if m:
+            return home == int(m.group(1)) and away == int(m.group(2))
         # Multigol (total / home / away, optional NO suffix)
         m = re.match(r"^(MG|MGH|MGA)-(\d)-(\d)(-NO)?$", atom)
         if m:
@@ -521,6 +525,26 @@ def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
         if pick in {"1", "2"}:
             return pick
         return None
+
+    # Risultato esatto (exact final score). Pick format on staryes: "0-2" or
+    # "2:1"; sometimes OCR joins the digits ("02"). Accept a wide range.
+    if (
+        "RISULTATO ESATTO" in market or "ESATTO" in market
+        or market in {"RE", "R.ESATTO", "R-ESATTO"}
+    ):
+        m = re.search(r"(\d+)\s*[-–:.]\s*(\d+)", pick)
+        if not m:
+            # Try two-digit compact form like "21" -> 2-1 (only for reasonable scores)
+            m2 = re.search(r"\b(\d)(\d)\b", pick)
+            if m2:
+                a, b = int(m2.group(1)), int(m2.group(2))
+                if a <= 9 and b <= 9:
+                    return f"RE-{a}-{b}"
+            return None
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > 20 or b > 20:  # sanity guard
+            return None
+        return f"RE-{a}-{b}"
 
     # 1X2 / Double chance (final score only — no HT markets supported)
     # Market label may be "1X2", "1X", "X2", "12", "IX" (OCR of "1X"), etc.

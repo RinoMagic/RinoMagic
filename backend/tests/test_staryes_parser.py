@@ -101,6 +101,17 @@ def test_classifier() -> int:
         # OCR errors
         (("4X + MULTIGOL 13", "SI"), "1X+MG-1-3"),  # 4X → 1X, "13" → 1-3
         (("U/O 2.5 + GG/NG", "GG+0V"), "OVER-2.5+GOL"),  # 0V → OV
+        # Risultato esatto (Exact Score)
+        (("RISULTATO ESATTO", "0-2"), "RE-0-2"),
+        (("RISULTATO ESATTO", "2-1"), "RE-2-1"),
+        (("RISULTATO ESATTO", "0:0"), "RE-0-0"),
+        (("RISULTATO ESATTO", "3-3"), "RE-3-3"),
+        # Compact form (OCR eats the separator)
+        (("RISULTATO ESATTO", "21"), "RE-2-1"),
+        # Draw No Bet
+        (("DRAW NO BET", "1"), "1"),
+        (("DRAW NO BET", "2"), "2"),
+        (("DNB", "1"), "1"),
     ]
     fails = 0
     for (market, pick), expected in cases:
@@ -175,6 +186,13 @@ def test_evaluator() -> int:
         ("1X+OVER-2.5", fx(2, 1), True),
         ("X+UNDER-1.5", fx(1, 1), False),
         ("X+UNDER-2.5", fx(1, 1), True),
+        # Risultato esatto
+        ("RE-0-2", fx(0, 2), True),
+        ("RE-0-2", fx(0, 3), False),
+        ("RE-0-2", fx(1, 2), False),
+        ("RE-2-1", fx(2, 1), True),
+        ("RE-2-1", fx(1, 2), False),
+        ("RE-0-0", fx(0, 0), True),
     ]
     fails = 0
     for pred, fixture, expected in cases:

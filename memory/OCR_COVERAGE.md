@@ -65,6 +65,15 @@ Test isolati senza rumore OCR: verificano che il parser normalizzi correttamente
 | 1X2 1° TEMPO | Non ammesso | ⛔ |
 | 1X 1° TEMPO | Non ammesso | ⛔ |
 
+### Risultato Esatto (Exact Score) — NUOVO
+| Mercato | Giocata | Codice interno | ✔️ |
+|---------|---------|----------------|-----|
+| RISULTATO ESATTO | 0-2 | `RE-0-2` | ✅ |
+| RISULTATO ESATTO | 2-1 | `RE-2-1` | ✅ |
+| RISULTATO ESATTO | 0:0 | `RE-0-0` | ✅ |
+| RISULTATO ESATTO | 3-3 | `RE-3-3` | ✅ |
+| RISULTATO ESATTO | 21 (OCR senza separatore) | `RE-2-1` | ✅ |
+
 ### Combo (mercati combinati con `+`)
 | Mercato | Giocata | Codice interno | ✔️ |
 |---------|---------|----------------|-----|
@@ -160,7 +169,6 @@ Ecco l'elenco di ciò che **NON è ancora testato** ma è comunque parte del boo
 
 ### Mercati **non ancora supportati** dal parser
 Se compaiono, l'OCR li rifiuta correttamente come "MERCATO NON AMMESSO":
-- ⛔ **Risultato esatto** (es. 2-1)
 - ⛔ **Testa a Testa (H2H)**
 - ⛔ **Marcatori** (Chi segna, Primo marcatore, Segna e vince, ecc.)
 - ⛔ **Handicap** europeo e asiatico
