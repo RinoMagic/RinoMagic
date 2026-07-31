@@ -388,6 +388,89 @@ def build_router(
             ]
         }
 
+    # --- Team results (derived from voti) --------------------------------
+
+    @router.get("/{matchday}/team-results")
+    async def team_results(matchday: int, user: dict = Depends(require_admin)):
+        """Aggregate per-team goal totals from voti (no separate PDF needed).
+
+        For each team:
+          * ``goals_scored`` = Σ (gf + rf) over all its players (own goals excluded)
+          * ``goals_conceded`` = ``gs`` of that team's goalkeeper(s)
+          * ``goals_conceded_check`` = Σ (au) of that team (own goals count for
+            the opponent — informational)
+
+        Also returns a global sanity check that
+        ``sum(goals_scored) == sum(goals_conceded)``. If it doesn't match, some
+        matches are still to be played / postponed or a portiere row is missing.
+        """
+        if matchday < 1 or matchday > 38:
+            raise HTTPException(status_code=400, detail="matchday deve essere 1..38")
+
+        pipeline = [
+            {"$match": {"matchday": matchday}},
+            {"$group": {
+                "_id": "$team",
+                "goals_scored": {"$sum": {"$add": ["$gf", "$rf"]}},
+                "own_goals": {"$sum": "$au"},
+                "gk_goals_conceded": {
+                    "$sum": {"$cond": [{"$eq": ["$role", "P"]}, "$gs", 0]}
+                },
+                "players_graded": {
+                    "$sum": {"$cond": [{"$eq": ["$sv", False]}, 1, 0]}
+                },
+                "players_total": {"$sum": 1},
+                "yellow_cards": {"$sum": "$amm"},
+                "red_cards": {"$sum": "$esp"},
+            }},
+            {"$sort": {"_id": 1}},
+        ]
+        agg = await db.matchday_facts.aggregate(pipeline).to_list(length=None)
+        if not agg:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Nessun dato voti per la giornata {matchday}. Carica prima il PDF Voti.",
+            )
+
+        rows = []
+        for r in agg:
+            rows.append({
+                "team": r["_id"],
+                # goals attributed *by their own players* (open play + rigori)
+                "goals_scored_openplay": r["goals_scored"],
+                # if the team scored also from opponent own-goals, we can't
+                # know it from this dataset alone → we surface `own_goals`
+                # separately (goals attributed to their players as autogol,
+                # which count for the opponent).
+                "own_goals": r["own_goals"],
+                # goals conceded, measured on the goalkeeper Gs column
+                "goals_conceded": r["gk_goals_conceded"],
+                "players_graded": r["players_graded"],
+                "players_total": r["players_total"],
+                "yellow_cards": r["yellow_cards"],
+                "red_cards": r["red_cards"],
+            })
+
+        tot_scored = sum(x["goals_scored_openplay"] for x in rows)
+        tot_own = sum(x["own_goals"] for x in rows)
+        tot_conceded = sum(x["goals_conceded"] for x in rows)
+        # Actual goals in the matchday: open-play goals scored + own goals
+        # (autogol are goals for the opponent, not tallied in Gf/Rf).
+        implied_goals = tot_scored + tot_own
+
+        return {
+            "matchday": matchday,
+            "teams": rows,
+            "sanity": {
+                "goals_scored_openplay": tot_scored,
+                "own_goals": tot_own,
+                "implied_total_goals": implied_goals,
+                "gk_goals_conceded": tot_conceded,
+                # If everything is consistent these two must match.
+                "consistent": implied_goals == tot_conceded,
+            },
+        }
+
     # --- Delete ------------------------------------------------------------
 
     @router.delete("/{matchday}")
@@ -396,71 +479,5 @@ def build_router(
             raise HTTPException(status_code=400, detail="matchday deve essere 1..38")
         r = await db.matchday_facts.delete_many({"matchday": matchday})
         return {"matchday": matchday, "deleted": r.deleted_count}
-
-    return router
-
-
-# =========================================================================
-# Risultati PDF router (STUB — parser to be built when a real sample lands)
-# =========================================================================
-
-def build_risultati_router(
-    db,
-    current_user: Callable,
-    require_admin: Callable,
-) -> APIRouter:
-    """Placeholder router for the "Risultati Serie A" PDF ingestion.
-
-    The parser is not implemented yet because we don't have a reference PDF
-    sample. This router exposes a single endpoint that:
-      * validates the upload is a PDF,
-      * extracts the raw text preview (first ~40 lines),
-      * returns it back to the admin so we can iterate on the parser without
-        blocking the UI wiring.
-    """
-    router = APIRouter(prefix="/admin/risultati")
-
-    @router.post("/upload-pdf")
-    async def upload_risultati_pdf(
-        file: UploadFile = File(...),
-        user: dict = Depends(require_admin),
-    ):
-        if not file.filename or not file.filename.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="Serve un file .pdf")
-        raw = await file.read()
-        if len(raw) > 20 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="PDF troppo grande (max 20MB)")
-        try:
-            import pdfplumber
-        except ImportError as e:
-            raise HTTPException(status_code=500, detail=f"pdfplumber non installato: {e}") from e
-
-        preview_lines: List[str] = []
-        page_count = 0
-        with pdfplumber.open(io.BytesIO(raw)) as pdf:
-            page_count = len(pdf.pages)
-            for page in pdf.pages[:3]:
-                text = page.extract_text() or ""
-                for line in text.split("\n"):
-                    ln = line.strip()
-                    if ln:
-                        preview_lines.append(ln)
-                    if len(preview_lines) >= 40:
-                        break
-                if len(preview_lines) >= 40:
-                    break
-
-        return {
-            "parser_ready": False,
-            "message": (
-                "Parser Risultati non ancora implementato. Il file è stato letto "
-                "correttamente — inviaci il PDF di esempio via chat così costruiamo "
-                "il parser sulla struttura reale."
-            ),
-            "filename": file.filename,
-            "size_bytes": len(raw),
-            "pages": page_count,
-            "preview_lines": preview_lines,
-        }
 
     return router

@@ -1,9 +1,9 @@
 /**
- * PDF Admin — Import center for the 3 weekly source files that feed
+ * PDF Admin — Import center for the 2 weekly source files that feed
  * RinoMagic's games:
  *   1. Listone       → sal_players roster (ScoreAndLive)
- *   2. Voti          → matchday_facts (all games)
- *   3. Risultati     → (parser TBD, sample needed)
+ *   2. Voti          → matchday_facts (all games) — also derives match results
+ *                      per team (goals scored/conceded) with no extra PDF.
  *
  * Web-first PWA screen. On native, hooks up transparently via `apiUpload`.
  */
@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { apiUpload, session } from '@/src/api';
+import { api, apiUpload, session } from '@/src/api';
 import { theme } from '@/src/theme';
 
 type UploadResult = { ok: boolean; data?: any; error?: string } | null;
@@ -54,6 +54,12 @@ type CardProps = {
   params?: Record<string, string | number | boolean>;
   onSuccessMessage: (data: any) => string;
   renderPreview?: (data: any) => React.ReactNode;
+  /**
+   * Optional callback fired after a successful upload. If it returns a
+   * value, that value is merged onto `data.__extra` so `renderPreview`
+   * can access derived data (e.g. computed team results).
+   */
+  afterSuccess?: (data: any) => Promise<any>;
   testID?: string;
 };
 
@@ -72,7 +78,11 @@ function UploadCard(p: CardProps) {
         { name: file.name, type: file.type || 'application/pdf', blob: file },
         p.params || {},
       );
-      setResult({ ok: true, data });
+      let extra: any = null;
+      if (p.afterSuccess) {
+        try { extra = await p.afterSuccess(data); } catch { /* non-fatal */ }
+      }
+      setResult({ ok: true, data: { ...data, __extra: extra } });
     } catch (e: any) {
       setResult({ ok: false, error: e.message || 'Errore upload' });
     } finally {
@@ -162,7 +172,7 @@ export default function PdfAdmin() {
           </Pressable>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>Import PDF</Text>
-            <Text style={styles.subtitle}>Carica le 3 fonti settimanali</Text>
+            <Text style={styles.subtitle}>Carica le 2 fonti settimanali</Text>
           </View>
           <Ionicons name="document-text" size={22} color={theme.colors.brand} />
         </View>
@@ -172,9 +182,9 @@ export default function PdfAdmin() {
         <View style={styles.infoBox}>
           <Ionicons name="information-circle" size={18} color={theme.colors.brand} />
           <Text style={styles.infoText}>
-            Questi PDF alimentano ScoreAndLive, TheBestTiket e FantaGiornata.
-            Riesegui l&apos;upload della stessa giornata quando necessario: i dati esistenti
-            vengono sovrascritti automaticamente.
+            Bastano 2 PDF per giornata. I risultati per squadra (gol fatti/subiti) sono
+            calcolati automaticamente dai Voti: Gf+Rf per squadra vs. Gs del portiere,
+            con cross-check invariante Σgol_fatti = Σgol_subiti.
           </Text>
         </View>
 
@@ -212,67 +222,90 @@ export default function PdfAdmin() {
           )}
         />
 
-        {/* -------- 2. Voti (fantavoto + marcatori) -------- */}
+        {/* -------- 2. Voti (fantavoto + marcatori + risultati per squadra) -------- */}
         <UploadCard
           testID="upload-voti"
           icon="star"
           color={theme.colors.warning}
           title="2. Voti giornata"
-          subtitle="Fantacalcio · voti, gol (Gf+Rf), amm/esp/assist · fonte unica per l'auto-settlement"
+          subtitle="Fantacalcio · voti, gol (Gf+Rf), amm/esp/assist · marcatori + risultati derivati"
           endpoint="/admin/voti/upload-pdf"
           params={{ dry_run: false, replace: true }}
+          afterSuccess={async (d) => {
+            try {
+              return await api(`/admin/voti/${d.matchday}/team-results`);
+            } catch { return null; }
+          }}
           onSuccessMessage={(d) =>
             `Giornata ${d.matchday}: ${d.stored_total} giocatori · ${d.scorers_count} marcatori (${d.total_goals} gol).`
           }
-          renderPreview={(d) => (
-            <View>
-              <Text style={styles.previewTitle}>Marcatori</Text>
-              <View style={styles.chipsWrap}>
-                {(d.scorers || []).map((s: any, i: number) => (
-                  <View key={i} style={[styles.chip, { borderColor: theme.colors.warning + '55' }]}>
-                    <Text style={styles.chipText}>
-                      {s.player_name} ({s.team}) · {s.goals}⚽ · voto {s.voto}
-                    </Text>
-                  </View>
-                ))}
-                {(!d.scorers || d.scorers.length === 0) && (
-                  <Text style={styles.muted}>Nessun marcatore in questa giornata.</Text>
+          renderPreview={(d) => {
+            const teamRes = d.__extra;
+            return (
+              <View>
+                <Text style={styles.previewTitle}>Marcatori</Text>
+                <View style={styles.chipsWrap}>
+                  {(d.scorers || []).map((s: any, i: number) => (
+                    <View key={i} style={[styles.chip, { borderColor: theme.colors.warning + '55' }]}>
+                      <Text style={styles.chipText}>
+                        {s.player_name} ({s.team}) · {s.goals}⚽ · voto {s.voto}
+                      </Text>
+                    </View>
+                  ))}
+                  {(!d.scorers || d.scorers.length === 0) && (
+                    <Text style={styles.muted}>Nessun marcatore in questa giornata.</Text>
+                  )}
+                </View>
+
+                {teamRes && (
+                  <>
+                    <View style={styles.divider} />
+                    <Text style={styles.previewTitle}>Risultati per squadra (calcolati)</Text>
+                    <View style={styles.teamsGrid}>
+                      {(teamRes.teams || []).map((t: any) => (
+                        <View key={t.team} style={styles.teamRow}>
+                          <Text style={styles.teamName}>{t.team}</Text>
+                          <View style={styles.teamScores}>
+                            <View style={[styles.scoreBadge, { backgroundColor: theme.colors.accent + '22' }]}>
+                              <Text style={[styles.scoreText, { color: theme.colors.accent }]}>
+                                {t.goals_scored_openplay}⚽
+                              </Text>
+                            </View>
+                            <Text style={styles.teamDash}>·</Text>
+                            <View style={[styles.scoreBadge, { backgroundColor: theme.colors.error + '22' }]}>
+                              <Text style={[styles.scoreText, { color: theme.colors.error }]}>
+                                {t.goals_conceded}🥅
+                              </Text>
+                            </View>
+                            {t.red_cards > 0 && (
+                              <View style={[styles.scoreBadge, { backgroundColor: theme.colors.error + '22' }]}>
+                                <Text style={[styles.scoreText, { color: theme.colors.error }]}>
+                                  {t.red_cards}🟥
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                    <View style={[styles.sanityBox, teamRes.sanity?.consistent ? styles.sanityOk : styles.sanityWarn]}>
+                      <Ionicons
+                        name={teamRes.sanity?.consistent ? 'shield-checkmark' : 'warning'}
+                        size={14}
+                        color={teamRes.sanity?.consistent ? theme.colors.success : theme.colors.warning}
+                      />
+                      <Text style={styles.sanityText}>
+                        {teamRes.sanity?.consistent
+                          ? `Cross-check OK: ${teamRes.sanity.implied_total_goals} gol fatti = ${teamRes.sanity.gk_goals_conceded} gol subiti`
+                          : `Attenzione: ${teamRes.sanity?.implied_total_goals} gol fatti ≠ ${teamRes.sanity?.gk_goals_conceded} gol subiti (posticipi o portiere non pervenuto)`
+                        }
+                      </Text>
+                    </View>
+                  </>
                 )}
               </View>
-            </View>
-          )}
-        />
-
-        {/* -------- 3. Risultati (parser da costruire) -------- */}
-        <UploadCard
-          testID="upload-risultati"
-          icon="football"
-          color={theme.colors.brand}
-          title="3. Risultati giornata"
-          subtitle="Partite Serie A con esito · parser in costruzione, invia un PDF di esempio"
-          endpoint="/admin/risultati/upload-pdf"
-          onSuccessMessage={(d) =>
-            d.parser_ready
-              ? `Giornata ${d.matchday}: ${d.matches} partite importate.`
-              : `PDF letto (${d.pages} pagine · ${d.preview_lines?.length || 0} righe). Parser in costruzione.`
-          }
-          renderPreview={(d) => (
-            <View>
-              <Text style={styles.previewTitle}>
-                {d.parser_ready ? 'Partite' : 'Anteprima testo estratto'}
-              </Text>
-              <View style={styles.previewBlock}>
-                {(d.preview_lines || []).slice(0, 30).map((ln: string, i: number) => (
-                  <Text key={i} style={styles.previewLine}>{ln}</Text>
-                ))}
-              </View>
-              {!d.parser_ready && (
-                <Text style={[styles.muted, { marginTop: theme.spacing.sm }]}>
-                  💡 {d.message}
-                </Text>
-              )}
-            </View>
-          )}
+            );
+          }}
         />
       </ScrollView>
     </View>
@@ -359,4 +392,37 @@ const styles = StyleSheet.create({
     fontFamily: Platform.select({ web: 'ui-monospace, monospace', default: 'monospace' }) as any,
   },
   muted: { color: theme.colors.muted, fontSize: 12, fontStyle: 'italic', lineHeight: 18 },
+  divider: {
+    height: 1, backgroundColor: theme.colors.border,
+    marginVertical: theme.spacing.md,
+  },
+  teamsGrid: { gap: 4, marginBottom: theme.spacing.md },
+  teamRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 6, paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surfaceTertiary,
+  },
+  teamName: { color: theme.colors.onSurface, fontSize: 13, fontWeight: '700', flex: 1 },
+  teamScores: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  teamDash: { color: theme.colors.muted, fontSize: 12 },
+  scoreBadge: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.sm,
+    minWidth: 34, alignItems: 'center',
+  },
+  scoreText: { fontSize: 12, fontWeight: '800' },
+  sanityBox: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    padding: theme.spacing.sm, borderRadius: theme.radius.sm,
+    borderWidth: 1,
+  },
+  sanityOk: {
+    backgroundColor: theme.colors.success + '18',
+    borderColor: theme.colors.success + '55',
+  },
+  sanityWarn: {
+    backgroundColor: theme.colors.warning + '18',
+    borderColor: theme.colors.warning + '55',
+  },
+  sanityText: { color: theme.colors.onSurfaceSecondary, fontSize: 11, flex: 1, fontWeight: '600' },
 });
