@@ -140,7 +140,18 @@ export default function AdminHome() {
             <Text style={styles.hi}>Admin</Text>
             <Text style={styles.mail}>{me?.email}</Text>
           </View>
-          <Pressable onPress={logout} hitSlop={12}><Ionicons name="log-out-outline" size={22} color={theme.colors.onSurface} /></Pressable>
+          <View style={{ flexDirection: 'row', gap: theme.spacing.md, alignItems: 'center' }}>
+            <Pressable
+              onPress={() => router.push('/settings')}
+              hitSlop={12}
+              testID="admin-settings"
+            >
+              <Ionicons name="settings-outline" size={22} color={theme.colors.onSurface} />
+            </Pressable>
+            <Pressable onPress={logout} hitSlop={12}>
+              <Ionicons name="log-out-outline" size={22} color={theme.colors.onSurface} />
+            </Pressable>
+          </View>
         </View>
       </SafeAreaView>
 

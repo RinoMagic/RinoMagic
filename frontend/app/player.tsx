@@ -61,7 +61,14 @@ export default function PlayerHome() {
             <Text style={styles.hi}>Ciao, {me?.username}</Text>
             <Text style={styles.mail}>Giocatore</Text>
           </View>
-          <Pressable onPress={logout} hitSlop={12}><Ionicons name="log-out-outline" size={22} color={theme.colors.onSurface} /></Pressable>
+          <View style={{ flexDirection: 'row', gap: theme.spacing.md, alignItems: 'center' }}>
+            <Pressable onPress={() => router.push('/settings')} hitSlop={12} testID="player-settings">
+              <Ionicons name="settings-outline" size={22} color={theme.colors.onSurface} />
+            </Pressable>
+            <Pressable onPress={logout} hitSlop={12}>
+              <Ionicons name="log-out-outline" size={22} color={theme.colors.onSurface} />
+            </Pressable>
+          </View>
         </View>
       </SafeAreaView>
 
