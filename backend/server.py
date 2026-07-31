@@ -1,267 +1,318 @@
+"""SchedinaBar — mini-fantacalcio Serie A challenge among friends.
+
+Flow:
+1. Admin creates a Room for a matchday (with color + max_events per schedina)
+2. Friends join with invite code + nickname (no password)
+3. Each user uploads a betting-slip screenshot → OCR parses events + odds
+4. User confirms/edits parsed events → stored in DB
+5. Admin fetches or manually inputs the Serie A matchday results
+6. System computes each user's product-of-odds on WON predictions only
+7. Leaderboard: highest total wins, lowest pays.
+"""
 import os
+import re
+import io
 import uuid
-import logging
+import base64
 import string
 import random
-import asyncio
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
-from zoneinfo import ZoneInfo
+from typing import List, Optional, Dict, Any
 
-import httpx
 import jwt
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query
+import httpx
+import pytesseract
+from PIL import Image, ImageOps, ImageFilter
+from fastapi import FastAPI, APIRouter, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, Field
-
-from seed_data import PLAYERS, TEAMS
+from pydantic import BaseModel, Field, field_validator
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-# --- Config ---
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "10080"))
-ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
-ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "20160"))
 API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY", "").strip()
 API_FOOTBALL_BASE = os.environ.get("API_FOOTBALL_BASE", "https://v3.football.api-sports.io").rstrip("/")
 SERIE_A_LEAGUE_ID = int(os.environ.get("SERIE_A_LEAGUE_ID", "135"))
 CURRENT_SEASON = int(os.environ.get("CURRENT_SEASON", "2024"))
-SCHEDULER_ENABLED = os.environ.get("SCHEDULER_ENABLED", "true").lower() == "true"
-SCHEDULER_INTERVAL_SECS = int(os.environ.get("SCHEDULER_INTERVAL_SECS", "300"))  # 5 min
-SCHEDULER_MIN_GAP_SECS = int(os.environ.get("SCHEDULER_MIN_GAP_SECS", "1800"))  # 30 min
+TESSERACT_LANG = os.environ.get("TESSERACT_LANG", "ita+eng")
 
-# Serie A match windows in Europe/Rome local time (weekday: [(start_hhmm, end_hhmm), ...])
-# Monday=0 ... Sunday=6
-MATCH_WINDOWS: dict[int, list[tuple[str, str]]] = {
-    0: [("20:00", "23:30")],   # Monday
-    4: [("20:00", "23:30")],   # Friday
-    5: [("14:30", "23:30")],   # Saturday
-    6: [("12:00", "23:30")],   # Sunday
-}
-ROME_TZ = ZoneInfo("Europe/Rome")
-
-# --- DB ---
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
-# --- App ---
-app = FastAPI(title="FantaGiornata API")
+app = FastAPI(title="SchedinaBar API")
 api = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-DUMMY_HASH = pwd_context.hash("dummy-password-for-timing")
-
-logger = logging.getLogger("fantagiornata")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("schedinabar")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
 
 # ============ Models ============
-class RegisterIn(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=6)
-    username: str = Field(min_length=2, max_length=24)
+ROOM_COLORS = ["#00D95F", "#FFB300", "#EF4444", "#3B82F6", "#A855F7", "#EC4899", "#14B8A6", "#F97316"]
+
+VALID_PREDICTIONS = {"1", "X", "2", "1X", "X2", "12", "GOL", "NOGOL", "OVER", "UNDER"}
 
 
-class LoginIn(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class TokenOut(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-
-class UserOut(BaseModel):
-    id: str
-    email: EmailStr
-    username: str
-
-
-class Player(BaseModel):
-    id: str
-    name: str
-    team: str
-    role: str  # P D C A
-
-
-class LeagueCreate(BaseModel):
+class RoomCreate(BaseModel):
     name: str = Field(min_length=2, max_length=40)
+    matchday: int = Field(ge=1, le=38)
+    max_events: int = Field(ge=1, le=10, default=5)
+    color: Optional[str] = None
+    admin_nickname: str = Field(min_length=2, max_length=20)
 
 
-class LeagueJoin(BaseModel):
-    code: str
+class RoomJoin(BaseModel):
+    invite_code: str
+    nickname: str = Field(min_length=2, max_length=20)
 
 
-class League(BaseModel):
-    id: str
-    name: str
-    code: str
-    owner_id: str
-    created_at: datetime
-    members_count: int = 0
-    is_owner: bool = False
-    current_matchday: int = 1
+class SchedinaEventIn(BaseModel):
+    home_team: str
+    away_team: str
+    prediction: str
+    odd: float = Field(gt=0, le=1000)
+
+    @field_validator("prediction")
+    @classmethod
+    def _norm_pred(cls, v: str) -> str:
+        v2 = v.upper().replace(" ", "").replace(".", "")
+        if v2 not in VALID_PREDICTIONS:
+            # accept OVER25 -> OVER, UNDER25 -> UNDER
+            for base in ("OVER", "UNDER"):
+                if v2.startswith(base):
+                    return base
+            raise ValueError(f"Pronostico non valido: {v}")
+        return v2
 
 
-class MatchdayCreate(BaseModel):
-    number: int = Field(ge=1, le=38)
+class SchedinaConfirm(BaseModel):
+    events: List[SchedinaEventIn]
 
 
-class LineupIn(BaseModel):
-    matchday: int
-    module: str  # e.g. "4-3-3"
-    starters: List[str]  # 11 player ids
-    bench: List[str] = []  # 8 bench: 2P + 2D + 2C + 2A
+class FixtureIn(BaseModel):
+    home_team: str
+    away_team: str
+    home_score: int = Field(ge=0)
+    away_score: int = Field(ge=0)
+    both_scored: Optional[bool] = None  # if None, computed from scores
 
 
-class VoteIn(BaseModel):
-    player_id: str
-    voto: float = 6.0
-    gol: int = 0
-    assist: int = 0
-    ammoniz: bool = False
-    espuls: bool = False
-    autogol: int = 0
-    gol_subiti: int = 0  # for portiere
-    rigore_segnato: int = 0
-    rigore_sbagliato: int = 0
-    rigore_parato: int = 0  # for portiere
-    gol_vittoria: int = 0  # winning goal bonus
-    gol_pareggio: int = 0  # tying goal bonus
-
-
-class VotesSubmit(BaseModel):
-    matchday: int
-    votes: List[VoteIn]
+class FixturesIn(BaseModel):
+    fixtures: List[FixtureIn]
 
 
 # ============ Helpers ============
-def hash_password(p: str) -> str:
-    return pwd_context.hash(p)
-
-
-def verify_password(p: str, h: str) -> bool:
-    return pwd_context.verify(p, h)
-
-
-def create_token(user_id: str) -> str:
-    exp = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_MINUTES)
-    return jwt.encode({"sub": user_id, "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-
 def gen_code(n: int = 6) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=n))
 
 
-def fantavoto_from_vote(v: dict, role: str) -> float:
-    """Compute fantavoto with bonus/malus."""
-    fv = float(v.get("voto", 6.0))
-    fv += 3 * v.get("gol", 0)
-    fv += 1 * v.get("assist", 0)
-    fv += 3 * v.get("rigore_segnato", 0)
-    fv -= 3 * v.get("rigore_sbagliato", 0)
-    fv -= 0.5 if v.get("ammoniz") else 0
-    fv -= 1 if v.get("espuls") else 0
-    fv -= 2 * v.get("autogol", 0)
-    fv += 1 * v.get("gol_vittoria", 0)
-    fv += 0.5 * v.get("gol_pareggio", 0)
-    if role == "P":
-        # portiere: -1 per ogni gol subito, +3 per rigore parato
-        fv -= 1 * v.get("gol_subiti", 0)
-        fv += 3 * v.get("rigore_parato", 0)
-    return round(fv, 2)
+def create_token(room_id: str, nickname: str, is_admin: bool) -> str:
+    payload = {
+        "room_id": room_id,
+        "nickname": nickname,
+        "is_admin": is_admin,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_MINUTES),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-async def get_current_user(cred: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> dict:
+async def current_session(cred: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> dict:
     if not cred:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(cred.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user_id = payload.get("sub")
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
-    user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
+    # Sanity: verify membership still exists
+    m = await db.memberships.find_one(
+        {"room_id": payload["room_id"], "nickname": payload["nickname"]}, {"_id": 0}
+    )
+    if not m:
+        raise HTTPException(status_code=401, detail="Session invalid")
+    return payload
 
 
-async def require_system_admin(user: dict = Depends(get_current_user)) -> dict:
-    """Only the seeded admin (by ADMIN_EMAIL) can call system-wide endpoints."""
-    if user.get("email") != ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="Solo l'admin di sistema puo eseguire questa azione")
-    return user
+def _norm_team(name: str) -> str:
+    """Aggressive team-name normalization for matching predictions vs results.
+
+    Lowercase, strip punctuation, remove common suffixes (FC, AC, CF, US, ...).
+    """
+    s = name.lower().strip()
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    s = re.sub(
+        r"\b(fc|ac|cf|us|ss|calcio|football|club|serie|a)\b",
+        " ",
+        s,
+    )
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _team_match(a: str, b: str) -> bool:
+    na, nb = _norm_team(a), _norm_team(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    # Substring / token overlap heuristic
+    if na in nb or nb in na:
+        return True
+    ta, tb = set(na.split()), set(nb.split())
+    if not ta or not tb:
+        return False
+    overlap = ta & tb
+    return len(overlap) >= 1 and len(overlap) >= min(len(ta), len(tb)) // 2
+
+
+def _evaluate_prediction(pred: str, home: int, away: int) -> bool:
+    """Return True if `pred` is correct given final score home-away."""
+    pred = pred.upper().replace(" ", "")
+    if pred == "1":
+        return home > away
+    if pred == "X":
+        return home == away
+    if pred == "2":
+        return home < away
+    if pred == "1X":
+        return home >= away
+    if pred == "X2":
+        return home <= away
+    if pred == "12":
+        return home != away
+    if pred == "GOL":
+        return home > 0 and away > 0
+    if pred == "NOGOL":
+        return home == 0 or away == 0
+    if pred == "OVER":
+        return (home + away) > 2  # Over 2.5
+    if pred == "UNDER":
+        return (home + away) < 3  # Under 2.5
+    return False
+
+
+# ============ OCR ============
+BOOKMAKER_TEAM_HINTS = [
+    "inter", "milan", "juventus", "juve", "napoli", "roma", "lazio", "atalanta",
+    "fiorentina", "bologna", "torino", "udinese", "genoa", "verona", "hellas",
+    "cagliari", "lecce", "parma", "empoli", "como", "monza", "venezia",
+    "sassuolo", "salernitana", "spezia", "cremonese", "pisa",
+]
+
+
+def _preprocess_image(raw_bytes: bytes) -> Image.Image:
+    img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+    # Resize up if small
+    w, h = img.size
+    if w < 900:
+        scale = 900 / w
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    # Convert to grayscale + increase contrast + slight sharpen
+    gray = ImageOps.grayscale(img)
+    gray = ImageOps.autocontrast(gray, cutoff=2)
+    gray = gray.filter(ImageFilter.SHARPEN)
+    return gray
+
+
+ODD_RE = re.compile(r"\b([1-9]\d?[.,]\d{1,3})\b")
+PRED_RE = re.compile(r"\b(1X|X2|12|GOL|NOGOL|NO\s*GOL|OVER\s*\d?[.,]?\d?|UNDER\s*\d?[.,]?\d?|[1X2])\b", re.IGNORECASE)
+
+
+def _extract_events_from_text(text: str) -> List[dict]:
+    """Best-effort parser: split text into candidate lines, look for
+    lines with two team-hint tokens + a prediction + an odd."""
+    events: List[dict] = []
+    # First, try line-per-line matching
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    joined_lines: List[str] = []
+    # merge very short lines with the next one (OCR often splits)
+    buffer = ""
+    for ln in lines:
+        if len(ln) < 3:
+            continue
+        buffer = (buffer + " " + ln).strip() if buffer else ln
+        # if buffer looks complete (has an odd) close it
+        if ODD_RE.search(buffer):
+            joined_lines.append(buffer)
+            buffer = ""
+    if buffer:
+        joined_lines.append(buffer)
+
+    for line in joined_lines:
+        lower = line.lower()
+        found_teams = [t for t in BOOKMAKER_TEAM_HINTS if t in lower]
+        if len(found_teams) < 2:
+            continue
+
+        # extract 2 team names as originally typed (best-effort by index)
+        team_positions = []
+        for team_hint in found_teams[:2]:
+            idx = lower.find(team_hint)
+            team_positions.append((idx, team_hint))
+        team_positions.sort()
+        home = team_positions[0][1].capitalize()
+        away = team_positions[1][1].capitalize()
+
+        pred_match = PRED_RE.search(line)
+        prediction = pred_match.group(1).upper().replace(" ", "") if pred_match else "1"
+        if prediction.startswith("OVER"):
+            prediction = "OVER"
+        elif prediction.startswith("UNDER"):
+            prediction = "UNDER"
+        elif prediction == "NOGOL" or "NOGOL" in prediction:
+            prediction = "NOGOL"
+
+        odds = ODD_RE.findall(line)
+        # Use the LAST odd on line (usually the total/moltiplicatore is at the end)
+        try:
+            odd = float(odds[-1].replace(",", ".")) if odds else 0.0
+        except ValueError:
+            odd = 0.0
+        if odd <= 1.0:
+            continue
+
+        events.append({
+            "home_team": home,
+            "away_team": away,
+            "prediction": prediction,
+            "odd": odd,
+        })
+
+    # Dedup by (home, away)
+    seen = set()
+    dedup = []
+    for e in events:
+        key = (e["home_team"].lower(), e["away_team"].lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(e)
+    return dedup
+
+
+async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
+    img = _preprocess_image(image_bytes)
+    text = pytesseract.image_to_string(img, lang=TESSERACT_LANG)
+    events = _extract_events_from_text(text)
+    return {"raw_text": text, "events": events}
 
 
 # ============ Startup ============
 @app.on_event("startup")
 async def startup():
-    await db.users.create_index("email", unique=True)
-    await db.users.create_index("id", unique=True)
-    await db.players.create_index("id", unique=True)
-    await db.leagues.create_index("id", unique=True)
-    await db.leagues.create_index("code", unique=True)
-    await db.memberships.create_index([("league_id", 1), ("user_id", 1)], unique=True)
-    await db.lineups.create_index([("league_id", 1), ("user_id", 1), ("matchday", 1)], unique=True)
-    await db.votes.create_index([("league_id", 1), ("matchday", 1), ("player_id", 1)], unique=True)
-    await db.api_votes.create_index([("matchday", 1), ("player_id", 1)], unique=True)
-    await db.system.create_index("key", unique=True)
-
-    # Init system defaults
-    await db.system.update_one(
-        {"key": "current_matchday"},
-        {"$setOnInsert": {"key": "current_matchday", "value": 1}},
-        upsert=True,
-    )
-    await db.system.update_one(
-        {"key": "scheduler_enabled"},
-        {"$setOnInsert": {"key": "scheduler_enabled", "value": SCHEDULER_ENABLED}},
-        upsert=True,
-    )
-
-    # Seed admin
-    existing_admin = await db.users.find_one({"email": ADMIN_EMAIL})
-    if not existing_admin:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "email": ADMIN_EMAIL,
-            "username": "admin",
-            "password_hash": hash_password(ADMIN_PASSWORD),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        logger.info("Admin user seeded")
-
-    # Seed players idempotently
-    count = await db.players.count_documents({})
-    if count == 0:
-        docs = []
-        for name, team, role in PLAYERS:
-            docs.append({
-                "id": str(uuid.uuid4()),
-                "name": name,
-                "team": team,
-                "role": role,
-            })
-        if docs:
-            await db.players.insert_many(docs)
-            logger.info(f"Seeded {len(docs)} Serie A players")
-
-    # Start background scheduler if enabled and API key present
-    if SCHEDULER_ENABLED and API_FOOTBALL_KEY:
-        asyncio.create_task(_scheduler_loop())
-        logger.info("Scheduler started (interval=%ss, min-gap=%ss)",
-                    SCHEDULER_INTERVAL_SECS, SCHEDULER_MIN_GAP_SECS)
+    await db.rooms.create_index("id", unique=True)
+    await db.rooms.create_index("invite_code", unique=True)
+    await db.memberships.create_index([("room_id", 1), ("nickname", 1)], unique=True)
+    await db.schedine.create_index([("room_id", 1), ("nickname", 1)], unique=True)
+    await db.fixtures.create_index([("room_id", 1), ("home_team", 1), ("away_team", 1)], unique=True)
+    logger.info("SchedinaBar API started")
 
 
 @app.on_event("shutdown")
@@ -269,1051 +320,370 @@ async def shutdown():
     client.close()
 
 
-# ============ Auth ============
-@api.post("/auth/register", response_model=TokenOut, status_code=201)
-async def register(data: RegisterIn):
-    email = data.email.strip().lower()
-    existing = await db.users.find_one({"email": email})
-    if not existing:
-        # case-insensitive check for legacy records
-        existing = await db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}})
-    if existing:
-        raise HTTPException(status_code=409, detail="Email gia registrata")
-    user_id = str(uuid.uuid4())
-    await db.users.insert_one({
-        "id": user_id,
-        "email": email,
-        "username": data.username.strip(),
-        "password_hash": hash_password(data.password),
+# ============ Rooms ============
+async def _room_dict(room: dict, viewer_nickname: Optional[str] = None) -> dict:
+    members_count = await db.memberships.count_documents({"room_id": room["id"]})
+    settled = room.get("status") == "settled"
+    return {
+        "id": room["id"],
+        "name": room["name"],
+        "matchday": room["matchday"],
+        "max_events": room["max_events"],
+        "color": room["color"],
+        "invite_code": room["invite_code"],
+        "admin_nickname": room["admin_nickname"],
+        "status": room.get("status", "open"),
+        "created_at": room["created_at"],
+        "members_count": members_count,
+        "settled": settled,
+        "is_admin": viewer_nickname == room["admin_nickname"] if viewer_nickname else False,
+    }
+
+
+@api.post("/rooms")
+async def create_room(data: RoomCreate):
+    for _ in range(10):
+        code = gen_code()
+        if not await db.rooms.find_one({"invite_code": code}):
+            break
+    room_id = str(uuid.uuid4())
+    color = data.color if data.color in ROOM_COLORS else random.choice(ROOM_COLORS)
+    doc = {
+        "id": room_id,
+        "name": data.name,
+        "matchday": data.matchday,
+        "max_events": data.max_events,
+        "color": color,
+        "invite_code": code,
+        "admin_nickname": data.admin_nickname.strip(),
+        "status": "open",
         "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.rooms.insert_one(doc)
+    await db.memberships.insert_one({
+        "room_id": room_id,
+        "nickname": data.admin_nickname.strip(),
+        "is_admin": True,
+        "joined_at": datetime.now(timezone.utc).isoformat(),
     })
-    return TokenOut(access_token=create_token(user_id))
+    token = create_token(room_id, data.admin_nickname.strip(), True)
+    return {
+        "token": token,
+        "room": await _room_dict(doc, data.admin_nickname.strip()),
+    }
 
 
-@api.post("/auth/login", response_model=TokenOut)
-async def login(data: LoginIn):
-    email = data.email.strip().lower()
-    user = await db.users.find_one({"email": email})
-    if not user:
-        # case-insensitive fallback for users registered before normalization
-        user = await db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}})
-    if not user:
-        verify_password(data.password, DUMMY_HASH)
-        raise HTTPException(status_code=401, detail="Credenziali non valide")
-    if not verify_password(data.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Credenziali non valide")
-    return TokenOut(access_token=create_token(user["id"]))
-
-
-@api.get("/auth/me", response_model=UserOut)
-async def me(user: dict = Depends(get_current_user)):
-    return UserOut(id=user["id"], email=user["email"], username=user["username"])
-
-
-# ============ Password management ============
-class ChangeOwnPasswordIn(BaseModel):
-    current_password: str
-    new_password: str = Field(min_length=6)
-
-
-class AdminResetPasswordIn(BaseModel):
-    email: EmailStr
-    new_password: str = Field(min_length=6)
-
-
-@api.post("/users/me/password")
-async def change_my_password(data: ChangeOwnPasswordIn, user: dict = Depends(get_current_user)):
-    full = await db.users.find_one({"id": user["id"]})
-    if not full or not verify_password(data.current_password, full["password_hash"]):
-        raise HTTPException(status_code=400, detail="Password attuale errata")
-    if data.current_password == data.new_password:
-        raise HTTPException(status_code=400, detail="La nuova password deve essere diversa")
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"password_hash": hash_password(data.new_password)}}
+@api.post("/rooms/join")
+async def join_room(data: RoomJoin):
+    room = await db.rooms.find_one({"invite_code": data.invite_code.upper()}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Codice invito non valido")
+    if room.get("status") == "settled":
+        raise HTTPException(status_code=400, detail="Stanza gia chiusa")
+    nickname = data.nickname.strip()
+    existing = await db.memberships.find_one(
+        {"room_id": room["id"], "nickname": nickname}
     )
+    if not existing:
+        # Enforce uniqueness of nickname in the room (case-insensitive)
+        conflict = await db.memberships.find_one({
+            "room_id": room["id"],
+            "nickname": {"$regex": f"^{re.escape(nickname)}$", "$options": "i"},
+        })
+        if conflict:
+            raise HTTPException(status_code=409, detail="Nickname gia usato in questa stanza")
+        await db.memberships.insert_one({
+            "room_id": room["id"],
+            "nickname": nickname,
+            "is_admin": False,
+            "joined_at": datetime.now(timezone.utc).isoformat(),
+        })
+    is_admin = nickname == room["admin_nickname"]
+    token = create_token(room["id"], nickname, is_admin)
+    return {"token": token, "room": await _room_dict(room, nickname)}
+
+
+@api.get("/rooms/{room_id}")
+async def get_room(room_id: str, session: dict = Depends(current_session)):
+    if session["room_id"] != room_id:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
+    return await _room_dict(room, session["nickname"])
+
+
+@api.get("/rooms/{room_id}/members")
+async def list_members(room_id: str, session: dict = Depends(current_session)):
+    if session["room_id"] != room_id:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    cursor = db.memberships.find({"room_id": room_id}, {"_id": 0})
+    members = [m async for m in cursor]
+    # Enrich with schedina submitted flag
+    submitted = set()
+    async for s in db.schedine.find({"room_id": room_id, "status": "confirmed"}, {"nickname": 1, "_id": 0}):
+        submitted.add(s["nickname"])
+    for m in members:
+        m["submitted"] = m["nickname"] in submitted
+    return members
+
+
+@api.post("/rooms/{room_id}/close")
+async def close_room(room_id: str, session: dict = Depends(current_session)):
+    if not session.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Solo l'admin puo chiudere la stanza")
+    if session["room_id"] != room_id:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    await db.rooms.update_one({"id": room_id}, {"$set": {"status": "closed"}})
     return {"ok": True}
 
 
-@api.get("/admin/users")
-async def admin_list_users(
-    page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=100),
-    q: Optional[str] = None,
-    admin: dict = Depends(require_system_admin),
-):
-    query = {}
-    if q and q.strip():
-        query = {
-            "$or": [
-                {"email": {"$regex": q.strip(), "$options": "i"}},
-                {"username": {"$regex": q.strip(), "$options": "i"}},
-            ]
-        }
-    total = await db.users.count_documents(query)
-    skip = (page - 1) * limit
-    cursor = (
-        db.users
-        .find(query, {"_id": 0, "password_hash": 0})
-        .sort("email", 1)
-        .skip(skip)
-        .limit(limit)
-    )
-    items = [u async for u in cursor]
-    return {"items": items, "page": page, "limit": limit, "total": total}
+# ============ Schedina / OCR ============
+class ScreenshotIn(BaseModel):
+    image_base64: str
 
 
-@api.post("/admin/users/reset-password")
-async def admin_reset_password(data: AdminResetPasswordIn, admin: dict = Depends(require_system_admin)):
-    email = data.email.strip().lower()
-    target = await db.users.find_one({"email": email})
-    if not target:
-        target = await db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}})
-    if not target:
-        raise HTTPException(status_code=404, detail="Utente non trovato")
-    if target["id"] == admin["id"]:
-        raise HTTPException(status_code=400, detail="Usa il cambio password personale per il tuo account")
-    await db.users.update_one(
-        {"id": target["id"]},
-        {"$set": {"password_hash": hash_password(data.new_password)}}
-    )
-    return {"ok": True, "email": target["email"], "username": target.get("username")}
-
-
-# ============ Players ============
-@api.get("/players", response_model=List[Player])
-async def list_players(
-    role: Optional[str] = None,
-    team: Optional[str] = None,
-    q: Optional[str] = None,
-    user: dict = Depends(get_current_user),
-):
-    query = {}
-    if role and role in ("P", "D", "C", "A"):
-        query["role"] = role
-    if team:
-        query["team"] = team
-    if q:
-        query["name"] = {"$regex": q, "$options": "i"}
-    cursor = db.players.find(query, {"_id": 0}).limit(500)
-    return [Player(**p) async for p in cursor]
-
-
-@api.get("/teams", response_model=List[str])
-async def list_teams(user: dict = Depends(get_current_user)):
-    teams_from_db = await db.players.distinct("team")
-    if teams_from_db:
-        return sorted(teams_from_db)
-    return TEAMS
-
-
-# ============ API-Football sync ============
-POSITION_MAP = {
-    "Goalkeeper": "P",
-    "Defender": "D",
-    "Midfielder": "C",
-    "Attacker": "A",
-}
-
-
-async def _apifootball_get(client: httpx.AsyncClient, path: str, params: dict) -> dict:
-    if not API_FOOTBALL_KEY:
-        raise HTTPException(status_code=400, detail="API_FOOTBALL_KEY non configurata")
-    headers = {"x-apisports-key": API_FOOTBALL_KEY}
-    try:
-        r = await client.get(f"{API_FOOTBALL_BASE}{path}", params=params, headers=headers, timeout=20.0)
-        r.raise_for_status()
-        data = r.json()
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=400, detail=f"API-Football: HTTP {e.response.status_code}")
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=400, detail=f"API-Football: connessione fallita ({type(e).__name__})")
-    errors = data.get("errors")
-    if errors:
-        # api-football returns errors as dict or list
-        if isinstance(errors, dict) and errors:
-            msg = next(iter(errors.values()))
-            raise HTTPException(status_code=400, detail=f"API-Football: {msg}")
-        if isinstance(errors, list) and errors:
-            raise HTTPException(status_code=400, detail=f"API-Football: {errors[0]}")
-    return data
-
-
-# ============ Global API votes cache + scheduler ============
-async def _system_get(key: str, default=None):
-    doc = await db.system.find_one({"key": key}, {"_id": 0})
-    return doc["value"] if doc else default
-
-
-async def _system_set(key: str, value) -> None:
-    await db.system.update_one(
-        {"key": key}, {"$set": {"key": key, "value": value}}, upsert=True
-    )
-
-
-def _in_match_window(dt_local: datetime) -> bool:
-    """Return True if the given Europe/Rome datetime is inside a Serie A match window."""
-    windows = MATCH_WINDOWS.get(dt_local.weekday(), [])
-    for start_str, end_str in windows:
-        sh, sm = (int(x) for x in start_str.split(":"))
-        eh, em = (int(x) for x in end_str.split(":"))
-        start = dt_local.replace(hour=sh, minute=sm, second=0, microsecond=0)
-        end = dt_local.replace(hour=eh, minute=em, second=0, microsecond=0)
-        if start <= dt_local <= end:
-            return True
-    return False
-
-
-async def _sync_matchday_votes_global(matchday: int, season: int) -> int:
-    """Fetch fixtures + player stats for a Serie A matchday and upsert into api_votes (global).
-
-    Returns number of votes upserted. Raises HTTPException on API error.
-    """
-    if not API_FOOTBALL_KEY:
-        raise HTTPException(status_code=400, detail="API_FOOTBALL_KEY non configurata")
-
-    # Build external_id -> local id map
-    ext_to_local: dict[str, str] = {}
-    async for p in db.players.find({"external_id": {"$exists": True, "$ne": None}}, {"_id": 0}):
-        if p.get("external_id"):
-            ext_to_local[str(p["external_id"])] = p["id"]
-    if not ext_to_local:
-        raise HTTPException(
-            status_code=400,
-            detail="La rosa non e sincronizzata dall'API. Sincronizza prima la rosa dalla tab Rosa.",
-        )
-
-    collected = 0
-    async with httpx.AsyncClient() as http_client:
-        fixtures_data = await _apifootball_get(
-            http_client,
-            "/fixtures",
-            {"league": SERIE_A_LEAGUE_ID, "season": season, "round": f"Regular Season - {matchday}"},
-        )
-        fixtures = fixtures_data.get("response", [])
-        if not fixtures:
-            raise HTTPException(status_code=400, detail=f"Nessuna partita trovata per giornata {matchday}")
-
-        for f in fixtures:
-            fixture_id = f.get("fixture", {}).get("id")
-            if not fixture_id:
-                continue
-            try:
-                stats_data = await _apifootball_get(
-                    http_client, "/fixtures/players", {"fixture": fixture_id}
-                )
-            except HTTPException as e:
-                logger.warning(f"Failed stats for fixture {fixture_id}: {e.detail}")
-                continue
-            for team_stats in stats_data.get("response", []):
-                for pdata in team_stats.get("players", []):
-                    ext_pid = str(pdata.get("player", {}).get("id"))
-                    local_id = ext_to_local.get(ext_pid)
-                    if not local_id:
-                        continue
-                    stats = (pdata.get("statistics") or [{}])[0]
-                    rating_str = stats.get("games", {}).get("rating")
-                    if rating_str is None:
-                        continue
-                    try:
-                        voto = float(rating_str)
-                    except (TypeError, ValueError):
-                        continue
-                    goals = stats.get("goals", {}) or {}
-                    cards = stats.get("cards", {}) or {}
-                    penalty = stats.get("penalty", {}) or {}
-                    passes = stats.get("passes", {}) or {}
-                    vote_dict = {
-                        "voto": voto,
-                        "gol": int(goals.get("total") or 0),
-                        "assist": int(passes.get("assists") or goals.get("assists") or 0),
-                        "ammoniz": bool(cards.get("yellow")),
-                        "espuls": bool(cards.get("red")),
-                        "autogol": 0,
-                        "gol_subiti": int(goals.get("conceded") or 0),
-                        "rigore_segnato": int(penalty.get("scored") or 0),
-                        "rigore_sbagliato": int(penalty.get("missed") or 0),
-                        "rigore_parato": int(penalty.get("saved") or 0),
-                        "gol_vittoria": 0,
-                        "gol_pareggio": 0,
-                    }
-                    player_doc = await db.players.find_one({"id": local_id}, {"_id": 0})
-                    role = player_doc.get("role") if player_doc else "C"
-                    fv = fantavoto_from_vote(vote_dict, role)
-                    await db.api_votes.update_one(
-                        {"matchday": matchday, "player_id": local_id},
-                        {"$set": {
-                            "matchday": matchday,
-                            "player_id": local_id,
-                            **vote_dict,
-                            "fantavoto": fv,
-                            "season": season,
-                            "source": "api-football",
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        }},
-                        upsert=True,
-                    )
-                    collected += 1
-            await asyncio.sleep(0.1)
-    return collected
-
-
-async def _scheduler_loop() -> None:
-    """Background loop: every SCHEDULER_INTERVAL_SECS check whether we should sync votes."""
-    logger.info("Scheduler loop running")
-    while True:
-        try:
-            await asyncio.sleep(SCHEDULER_INTERVAL_SECS)
-            enabled = await _system_get("scheduler_enabled", True)
-            if not enabled:
-                continue
-            now_local = datetime.now(ROME_TZ)
-            if not _in_match_window(now_local):
-                continue
-            last_at_iso = await _system_get("last_scheduled_sync_at")
-            if last_at_iso:
-                try:
-                    last_at = datetime.fromisoformat(last_at_iso)
-                    if (datetime.now(timezone.utc) - last_at).total_seconds() < SCHEDULER_MIN_GAP_SECS:
-                        continue
-                except ValueError:
-                    pass
-            matchday = int(await _system_get("current_matchday", 1))
-            season = int(await _system_get("current_season", CURRENT_SEASON))
-            try:
-                count = await _sync_matchday_votes_global(matchday, season)
-                await _system_set("last_scheduled_sync_at", datetime.now(timezone.utc).isoformat())
-                await _system_set("last_scheduled_sync_count", count)
-                await _system_set("last_scheduled_sync_error", None)
-                logger.info("Scheduled sync ok: matchday=%s votes=%s", matchday, count)
-            except HTTPException as e:
-                await _system_set("last_scheduled_sync_error", str(e.detail))
-                logger.warning("Scheduled sync failed: %s", e.detail)
-            except Exception as e:
-                await _system_set("last_scheduled_sync_error", f"{type(e).__name__}: {e}")
-                logger.exception("Scheduler tick error")
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Unhandled scheduler error")
-
-
-@api.post("/players/sync")
-async def sync_players(
-    season: Optional[int] = None,
-    dry_run: bool = False,
-    user: dict = Depends(get_current_user),
-):
-    """Sync Serie A players from API-Football into MongoDB.
-
-    Any authenticated user can trigger sync (idempotent replace).
-    Uses `season` query param, or CURRENT_SEASON from env.
-    """
-    if not API_FOOTBALL_KEY:
-        raise HTTPException(status_code=400, detail="API key non configurata")
-    target_season = season or CURRENT_SEASON
-
-    async with httpx.AsyncClient() as http_client:
-        # 1) Get all Serie A teams for the season
-        teams_data = await _apifootball_get(
-            http_client, "/teams", {"league": SERIE_A_LEAGUE_ID, "season": target_season}
-        )
-        teams = teams_data.get("response", [])
-        if not teams:
-            raise HTTPException(status_code=400, detail="Nessuna squadra ricevuta dall'API")
-
-        collected: list[dict] = []
-        team_names: list[str] = []
-
-        # 2) For each team get the squad
-        for t in teams:
-            team_info = t.get("team", {})
-            team_id = team_info.get("id")
-            team_name = team_info.get("name") or "Unknown"
-            team_names.append(team_name)
-            if not team_id:
-                continue
-            try:
-                squad_data = await _apifootball_get(
-                    http_client, "/players/squads", {"team": team_id}
-                )
-            except HTTPException as e:
-                logger.warning(f"Failed squad for {team_name}: {e.detail}")
-                continue
-            resp = squad_data.get("response", [])
-            if not resp:
-                continue
-            players_list = resp[0].get("players", [])
-            for p in players_list:
-                pos = p.get("position") or ""
-                role = POSITION_MAP.get(pos)
-                if not role:
-                    continue
-                collected.append({
-                    "external_id": str(p.get("id")),
-                    "name": p.get("name") or "?",
-                    "team": team_name,
-                    "role": role,
-                    "photo": p.get("photo"),
-                    "number": p.get("number"),
-                    "age": p.get("age"),
-                    "source": "api-football",
-                    "season": target_season,
-                })
-            # small delay to be nice
-            await asyncio.sleep(0.15)
-
-    if dry_run:
-        return {
-            "dry_run": True,
-            "season": target_season,
-            "teams_found": len(team_names),
-            "players_ready": len(collected),
-        }
-
-    # 3) Replace players collection atomically-ish:
-    # Preserve stability of ids: match by external_id if present, else regenerate
-    existing = {}
-    async for doc in db.players.find({}, {"_id": 0}):
-        ext = doc.get("external_id")
-        if ext:
-            existing[ext] = doc.get("id")
-
-    docs_to_insert = []
-    for c in collected:
-        pid = existing.get(c["external_id"]) or str(uuid.uuid4())
-        docs_to_insert.append({"id": pid, **c})
-
-    # Drop and reinsert
-    await db.players.delete_many({})
-    if docs_to_insert:
-        await db.players.insert_many(docs_to_insert)
-
-    return {
-        "ok": True,
-        "season": target_season,
-        "teams": len(team_names),
-        "players_synced": len(docs_to_insert),
-    }
-
-
-@api.get("/players/sync/status")
-async def sync_status(user: dict = Depends(get_current_user)):
-    total = await db.players.count_documents({})
-    api_synced = await db.players.count_documents({"source": "api-football"})
-    seasons = sorted(await db.players.distinct("season") or [])
-    return {
-        "total": total,
-        "api_synced": api_synced,
-        "seasons": seasons,
-        "api_key_configured": bool(API_FOOTBALL_KEY),
-        "current_season_env": CURRENT_SEASON,
-    }
-
-
-# ============ Leagues ============
-async def _league_public(league: dict, user_id: str) -> dict:
-    members_count = await db.memberships.count_documents({"league_id": league["id"]})
-    return {
-        "id": league["id"],
-        "name": league["name"],
-        "code": league["code"],
-        "owner_id": league["owner_id"],
-        "created_at": league["created_at"],
-        "members_count": members_count,
-        "is_owner": league["owner_id"] == user_id,
-        "current_matchday": league.get("current_matchday", 1),
-    }
-
-
-@api.post("/leagues", response_model=League)
-async def create_league(data: LeagueCreate, user: dict = Depends(get_current_user)):
-    # Generate unique code
-    for _ in range(10):
-        code = gen_code()
-        if not await db.leagues.find_one({"code": code}):
-            break
-    league_id = str(uuid.uuid4())
-    doc = {
-        "id": league_id,
-        "name": data.name,
-        "code": code,
-        "owner_id": user["id"],
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "current_matchday": 1,
-    }
-    await db.leagues.insert_one(doc)
-    await db.memberships.insert_one({
-        "league_id": league_id,
-        "user_id": user["id"],
-        "joined_at": datetime.now(timezone.utc).isoformat(),
-    })
-    return League(**await _league_public(doc, user["id"]))
-
-
-@api.post("/leagues/join", response_model=League)
-async def join_league(data: LeagueJoin, user: dict = Depends(get_current_user)):
-    league = await db.leagues.find_one({"code": data.code.upper()}, {"_id": 0})
-    if not league:
-        raise HTTPException(status_code=404, detail="Codice lega non trovato")
-    existing = await db.memberships.find_one({"league_id": league["id"], "user_id": user["id"]})
-    if not existing:
-        await db.memberships.insert_one({
-            "league_id": league["id"],
-            "user_id": user["id"],
-            "joined_at": datetime.now(timezone.utc).isoformat(),
-        })
-    return League(**await _league_public(league, user["id"]))
-
-
-@api.get("/leagues", response_model=List[League])
-async def list_leagues(user: dict = Depends(get_current_user)):
-    memberships = db.memberships.find({"user_id": user["id"]}, {"_id": 0})
-    league_ids = [m["league_id"] async for m in memberships]
-    if not league_ids:
-        return []
-    cursor = db.leagues.find({"id": {"$in": league_ids}}, {"_id": 0})
-    out = []
-    async for lg in cursor:
-        out.append(League(**await _league_public(lg, user["id"])))
-    return out
-
-
-@api.get("/leagues/{league_id}", response_model=League)
-async def get_league(league_id: str, user: dict = Depends(get_current_user)):
-    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
-    if not league:
-        raise HTTPException(status_code=404, detail="Lega non trovata")
-    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
-    if not member:
-        raise HTTPException(status_code=403, detail="Non sei membro di questa lega")
-    return League(**await _league_public(league, user["id"]))
-
-
-@api.get("/leagues/{league_id}/members")
-async def league_members(league_id: str, user: dict = Depends(get_current_user)):
-    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
-    if not member:
+@api.post("/rooms/{room_id}/schedina/ocr")
+async def upload_schedina(room_id: str, data: ScreenshotIn, session: dict = Depends(current_session)):
+    if session["room_id"] != room_id:
         raise HTTPException(status_code=403, detail="Accesso negato")
-    cursor = db.memberships.find({"league_id": league_id}, {"_id": 0})
-    users_ids = [m["user_id"] async for m in cursor]
-    users = db.users.find({"id": {"$in": users_ids}}, {"_id": 0, "password_hash": 0})
-    return [{"id": u["id"], "username": u["username"]} async for u in users]
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
+    if room.get("status") == "settled":
+        raise HTTPException(status_code=400, detail="Stanza chiusa")
 
+    b64 = data.image_base64
+    if "," in b64:
+        b64 = b64.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Immagine base64 non valida")
 
-@api.post("/leagues/{league_id}/advance", response_model=League)
-async def advance_matchday(league_id: str, user: dict = Depends(get_current_user)):
-    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
-    if not league:
-        raise HTTPException(status_code=404, detail="Lega non trovata")
-    if league["owner_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Solo il proprietario puo avanzare la giornata")
-    new_md = league.get("current_matchday", 1) + 1
-    await db.leagues.update_one({"id": league_id}, {"$set": {"current_matchday": new_md}})
-    league["current_matchday"] = new_md
-    return League(**await _league_public(league, user["id"]))
+    # Persist draft with screenshot + parsed events
+    result = await ocr_screenshot(raw)
+    parsed = result["events"]
+    if len(parsed) > room["max_events"]:
+        parsed = parsed[: room["max_events"]]
 
-
-# ============ Lineups ============
-@api.post("/leagues/{league_id}/lineups")
-async def submit_lineup(league_id: str, data: LineupIn, user: dict = Depends(get_current_user)):
-    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
-    if not league:
-        raise HTTPException(status_code=404, detail="Lega non trovata")
-    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
-    if not member:
-        raise HTTPException(status_code=403, detail="Non membro")
-    if len(data.starters) != 11:
-        raise HTTPException(status_code=400, detail="Devi selezionare esattamente 11 titolari")
-    if len(set(data.starters)) != 11:
-        raise HTTPException(status_code=400, detail="Titolari duplicati")
-
-    # Validate starter player ids exist
-    count = await db.players.count_documents({"id": {"$in": data.starters}})
-    if count != 11:
-        raise HTTPException(status_code=400, detail="Alcuni titolari non esistono")
-
-    # Bench validation: allow empty (backward compat) OR exactly 8 with 2P+2D+2C+2A composition
-    if data.bench:
-        if len(data.bench) != 8:
-            raise HTTPException(status_code=400, detail="La panchina deve avere 8 giocatori (2P + 2D + 2C + 2A)")
-        if len(set(data.bench)) != 8:
-            raise HTTPException(status_code=400, detail="Panchina: giocatori duplicati")
-        # No overlap between starters and bench
-        if set(data.bench) & set(data.starters):
-            raise HTTPException(status_code=400, detail="Un giocatore non puo essere sia titolare che panchina")
-        bench_docs = [p async for p in db.players.find({"id": {"$in": data.bench}}, {"_id": 0})]
-        if len(bench_docs) != 8:
-            raise HTTPException(status_code=400, detail="Alcuni giocatori di panchina non esistono")
-        counts = {"P": 0, "D": 0, "C": 0, "A": 0}
-        for p in bench_docs:
-            counts[p["role"]] = counts.get(p["role"], 0) + 1
-        if counts != {"P": 2, "D": 2, "C": 2, "A": 2}:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Composizione panchina errata: servono 2P+2D+2C+2A, ricevuto {counts}",
-            )
-
-    await db.lineups.update_one(
-        {"league_id": league_id, "user_id": user["id"], "matchday": data.matchday},
+    await db.schedine.update_one(
+        {"room_id": room_id, "nickname": session["nickname"]},
         {"$set": {
-            "league_id": league_id,
-            "user_id": user["id"],
-            "matchday": data.matchday,
-            "module": data.module,
-            "starters": data.starters,
-            "bench": data.bench,
-            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "room_id": room_id,
+            "nickname": session["nickname"],
+            "screenshot_base64": b64,
+            "raw_text": result["raw_text"],
+            "events": parsed,
+            "status": "draft",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }},
         upsert=True,
     )
-    return {"ok": True}
+    return {"events": parsed, "raw_text": result["raw_text"], "max_events": room["max_events"]}
 
 
-@api.get("/leagues/{league_id}/lineups/{matchday}")
-async def get_my_lineup(league_id: str, matchday: int, user: dict = Depends(get_current_user)):
-    lineup = await db.lineups.find_one(
-        {"league_id": league_id, "user_id": user["id"], "matchday": matchday},
-        {"_id": 0},
-    )
-    return lineup or {"empty": True}
-
-
-# ============ Votes / Results ============
-@api.post("/leagues/{league_id}/votes")
-async def submit_votes(league_id: str, data: VotesSubmit, user: dict = Depends(get_current_user)):
-    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
-    if not league:
-        raise HTTPException(status_code=404, detail="Lega non trovata")
-    if league["owner_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Solo il proprietario puo inserire i voti")
-
-    for v in data.votes:
-        player = await db.players.find_one({"id": v.player_id}, {"_id": 0})
-        if not player:
-            continue
-        vd = v.model_dump()
-        fv = fantavoto_from_vote(vd, player["role"])
-        await db.votes.update_one(
-            {"league_id": league_id, "matchday": data.matchday, "player_id": v.player_id},
-            {"$set": {
-                "league_id": league_id,
-                "matchday": data.matchday,
-                "player_id": v.player_id,
-                "voto": vd["voto"],
-                "gol": vd["gol"],
-                "assist": vd["assist"],
-                "ammoniz": vd["ammoniz"],
-                "espuls": vd["espuls"],
-                "autogol": vd["autogol"],
-                "gol_subiti": vd["gol_subiti"],
-                "rigore_segnato": vd["rigore_segnato"],
-                "rigore_sbagliato": vd["rigore_sbagliato"],
-                "rigore_parato": vd["rigore_parato"],
-                "gol_vittoria": vd["gol_vittoria"],
-                "gol_pareggio": vd["gol_pareggio"],
-                "fantavoto": fv,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }},
-            upsert=True,
-        )
-    return {"ok": True, "count": len(data.votes)}
-
-
-@api.get("/leagues/{league_id}/votes/{matchday}")
-async def get_votes(league_id: str, matchday: int, user: dict = Depends(get_current_user)):
-    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
-    if not member:
+@api.post("/rooms/{room_id}/schedina/confirm")
+async def confirm_schedina(room_id: str, data: SchedinaConfirm, session: dict = Depends(current_session)):
+    if session["room_id"] != room_id:
         raise HTTPException(status_code=403, detail="Accesso negato")
-    cursor = db.votes.find({"league_id": league_id, "matchday": matchday}, {"_id": 0})
-    return [v async for v in cursor]
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
+    if room.get("status") == "settled":
+        raise HTTPException(status_code=400, detail="Stanza chiusa")
+    if not data.events:
+        raise HTTPException(status_code=400, detail="La schedina deve avere almeno un pronostico")
+    if len(data.events) > room["max_events"]:
+        raise HTTPException(status_code=400, detail=f"Massimo {room['max_events']} pronostici")
+
+    events = [e.model_dump() for e in data.events]
+    await db.schedine.update_one(
+        {"room_id": room_id, "nickname": session["nickname"]},
+        {"$set": {
+            "room_id": room_id,
+            "nickname": session["nickname"],
+            "events": events,
+            "status": "confirmed",
+            "confirmed_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "events": events}
 
 
-@api.post("/leagues/{league_id}/votes/sync/{matchday}")
-async def sync_votes_from_api(
-    league_id: str,
-    matchday: int,
-    season: Optional[int] = None,
-    user: dict = Depends(get_current_user),
-):
-    """Auto-fetch player statistics from API-Football for a matchday and compute fantavoto.
+@api.get("/rooms/{room_id}/schedina")
+async def my_schedina(room_id: str, session: dict = Depends(current_session)):
+    if session["room_id"] != room_id:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    s = await db.schedine.find_one(
+        {"room_id": room_id, "nickname": session["nickname"]},
+        {"_id": 0, "screenshot_base64": 0, "raw_text": 0},
+    )
+    return s or {"empty": True}
 
-    Only lega owner can trigger. Uses api-football fixtures + fixtures/players endpoints.
-    """
-    league = await db.leagues.find_one({"id": league_id}, {"_id": 0})
-    if not league:
-        raise HTTPException(status_code=404, detail="Lega non trovata")
-    if league["owner_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Solo il proprietario puo sincronizzare i voti")
+
+# ============ Fixtures / Results ============
+@api.post("/rooms/{room_id}/fixtures")
+async def set_fixtures(room_id: str, data: FixturesIn, session: dict = Depends(current_session)):
+    if not session.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Solo l'admin puo inserire i risultati")
+    if session["room_id"] != room_id:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    await db.fixtures.delete_many({"room_id": room_id})
+    docs = []
+    for f in data.fixtures:
+        both = f.both_scored if f.both_scored is not None else (f.home_score > 0 and f.away_score > 0)
+        docs.append({
+            "room_id": room_id,
+            "home_team": f.home_team.strip(),
+            "away_team": f.away_team.strip(),
+            "home_score": f.home_score,
+            "away_score": f.away_score,
+            "both_scored": both,
+        })
+    if docs:
+        await db.fixtures.insert_many(docs)
+    return {"ok": True, "count": len(docs)}
+
+
+@api.get("/rooms/{room_id}/fixtures")
+async def get_fixtures(room_id: str, session: dict = Depends(current_session)):
+    if session["room_id"] != room_id:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    cursor = db.fixtures.find({"room_id": room_id}, {"_id": 0})
+    return [f async for f in cursor]
+
+
+@api.post("/rooms/{room_id}/fixtures/sync")
+async def sync_fixtures_from_api(room_id: str, season: Optional[int] = None, session: dict = Depends(current_session)):
+    if not session.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Solo l'admin")
+    if session["room_id"] != room_id:
+        raise HTTPException(status_code=403, detail="Accesso negato")
     if not API_FOOTBALL_KEY:
         raise HTTPException(status_code=400, detail="API_FOOTBALL_KEY non configurata")
-
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
     target_season = season or CURRENT_SEASON
-
-    # Build external_id → local player id map
-    ext_to_local: dict[str, str] = {}
-    async for p in db.players.find({"external_id": {"$exists": True}}, {"_id": 0}):
-        if p.get("external_id"):
-            ext_to_local[str(p["external_id"])] = p["id"]
-
-    if not ext_to_local:
-        raise HTTPException(
-            status_code=400,
-            detail="La rosa non e sincronizzata dall'API. Sincronizza prima la rosa dalla tab Rosa.",
-        )
-
-    async with httpx.AsyncClient() as http_client:
-        # 1) Get fixtures for the matchday
-        fixtures_data = await _apifootball_get(
-            http_client,
-            "/fixtures",
-            {"league": SERIE_A_LEAGUE_ID, "season": target_season, "round": f"Regular Season - {matchday}"},
-        )
-        fixtures = fixtures_data.get("response", [])
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    async with httpx.AsyncClient(timeout=20) as http:
+        try:
+            r = await http.get(
+                f"{API_FOOTBALL_BASE}/fixtures",
+                params={
+                    "league": SERIE_A_LEAGUE_ID,
+                    "season": target_season,
+                    "round": f"Regular Season - {room['matchday']}",
+                },
+                headers=headers,
+            )
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=400, detail=f"API-Football: {type(e).__name__}")
+        data = r.json()
+        errs = data.get("errors") or {}
+        if isinstance(errs, dict) and errs:
+            raise HTTPException(status_code=400, detail=f"API-Football: {next(iter(errs.values()))}")
+        fixtures = data.get("response", [])
         if not fixtures:
-            raise HTTPException(status_code=400, detail=f"Nessuna partita trovata per giornata {matchday}")
+            raise HTTPException(status_code=400, detail="Nessuna partita ricevuta dall'API")
 
-        collected_votes = 0
-        for f in fixtures:
-            fixture_id = f.get("fixture", {}).get("id")
-            if not fixture_id:
-                continue
-            try:
-                stats_data = await _apifootball_get(
-                    http_client, "/fixtures/players", {"fixture": fixture_id}
-                )
-            except HTTPException as e:
-                logger.warning(f"Failed stats for fixture {fixture_id}: {e.detail}")
-                continue
-            for team_stats in stats_data.get("response", []):
-                for pdata in team_stats.get("players", []):
-                    ext_pid = str(pdata.get("player", {}).get("id"))
-                    local_id = ext_to_local.get(ext_pid)
-                    if not local_id:
-                        continue
-                    stats = (pdata.get("statistics") or [{}])[0]
-                    rating_str = stats.get("games", {}).get("rating")
-                    if rating_str is None:
-                        continue  # did not play
-                    try:
-                        voto = float(rating_str)
-                    except (TypeError, ValueError):
-                        continue
-                    goals = stats.get("goals", {}) or {}
-                    cards = stats.get("cards", {}) or {}
-                    penalty = stats.get("penalty", {}) or {}
-                    passes = stats.get("passes", {}) or {}
-                    vote_dict = {
-                        "voto": voto,
-                        "gol": int(goals.get("total") or 0),
-                        "assist": int(passes.get("assists") or goals.get("assists") or 0),
-                        "ammoniz": bool(cards.get("yellow")),
-                        "espuls": bool(cards.get("red")),
-                        "autogol": 0,
-                        "gol_subiti": int(goals.get("conceded") or 0),
-                        "rigore_segnato": int(penalty.get("scored") or 0),
-                        "rigore_sbagliato": int(penalty.get("missed") or 0),
-                        "rigore_parato": int(penalty.get("saved") or 0),
-                        "gol_vittoria": 0,
-                        "gol_pareggio": 0,
-                    }
-                    player_doc = await db.players.find_one({"id": local_id}, {"_id": 0})
-                    role = player_doc.get("role") if player_doc else "C"
-                    fv = fantavoto_from_vote(vote_dict, role)
-                    await db.votes.update_one(
-                        {"league_id": league_id, "matchday": matchday, "player_id": local_id},
-                        {"$set": {
-                            "league_id": league_id,
-                            "matchday": matchday,
-                            "player_id": local_id,
-                            **vote_dict,
-                            "fantavoto": fv,
-                            "source": "api-football",
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        }},
-                        upsert=True,
-                    )
-                    collected_votes += 1
-            await asyncio.sleep(0.1)
-    return {"ok": True, "matchday": matchday, "votes_synced": collected_votes, "season": target_season}
-
-
-def _compute_user_total(lineup: dict, votes: dict[str, dict], players_map: dict[str, dict], api_votes: dict[str, dict] | None = None) -> tuple[float, list, list]:
-    """Compute user total for a matchday applying auto-substitutions from bench.
-
-    Vote resolution priority: league-specific manual votes > global api_votes cache.
-    Returns (total, breakdown, substitutions).
-    """
-    api_votes = api_votes or {}
-
-    def _get_vote(pid: str) -> Optional[dict]:
-        return votes.get(pid) or api_votes.get(pid)
-
-    starter_ids = list(lineup.get("starters", []))
-    bench_ids = list(lineup.get("bench", []))
-    used_bench: set[str] = set()
-    total = 0.0
-    breakdown = []
-    substitutions = []
-    for pid in starter_ids:
-        v = _get_vote(pid)
-        player = players_map.get(pid)
-        role = player.get("role") if player else None
-        if v:
-            total += v["fantavoto"]
-            breakdown.append({"player_id": pid, "fantavoto": v["fantavoto"], "has_vote": True, "substituted": False})
+    await db.fixtures.delete_many({"room_id": room_id})
+    docs = []
+    for f in fixtures:
+        goals = f.get("goals", {}) or {}
+        home_score = goals.get("home")
+        away_score = goals.get("away")
+        if home_score is None or away_score is None:
             continue
-        sub_pid = None
-        if role:
-            for bp in bench_ids:
-                if bp in used_bench:
-                    continue
-                bp_player = players_map.get(bp)
-                if not bp_player or bp_player.get("role") != role:
-                    continue
-                if _get_vote(bp):
-                    sub_pid = bp
-                    break
-        if sub_pid:
-            sub_vote = _get_vote(sub_pid)
-            used_bench.add(sub_pid)
-            total += sub_vote["fantavoto"]
-            breakdown.append({
-                "player_id": pid,
-                "fantavoto": sub_vote["fantavoto"],
-                "has_vote": True,
-                "substituted": True,
-                "sub_player_id": sub_pid,
-            })
-            substitutions.append({"out": pid, "in": sub_pid})
-        else:
-            breakdown.append({"player_id": pid, "fantavoto": 0.0, "has_vote": False, "substituted": False})
-    return total, breakdown, substitutions
+        teams = f.get("teams", {}) or {}
+        home = teams.get("home", {}).get("name") or ""
+        away = teams.get("away", {}).get("name") or ""
+        if not home or not away:
+            continue
+        docs.append({
+            "room_id": room_id,
+            "home_team": home,
+            "away_team": away,
+            "home_score": int(home_score),
+            "away_score": int(away_score),
+            "both_scored": home_score > 0 and away_score > 0,
+        })
+    if docs:
+        await db.fixtures.insert_many(docs)
+    return {"ok": True, "count": len(docs)}
 
 
-@api.get("/leagues/{league_id}/results/{matchday}")
-async def matchday_results(league_id: str, matchday: int, user: dict = Depends(get_current_user)):
-    """Return leaderboard for a matchday with auto-substitution from bench.
+# ============ Leaderboard ============
+def _match_prediction_to_fixture(event: dict, fixtures: list[dict]) -> Optional[dict]:
+    for f in fixtures:
+        if _team_match(event["home_team"], f["home_team"]) and _team_match(event["away_team"], f["away_team"]):
+            return f
+        # Also try swapped (in case OCR got them backwards)
+        if _team_match(event["home_team"], f["away_team"]) and _team_match(event["away_team"], f["home_team"]):
+            return f
+    return None
 
-    Vote sources: league-specific manual votes (admin override) + global api_votes cache.
-    """
-    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
-    if not member:
+
+@api.get("/rooms/{room_id}/leaderboard")
+async def leaderboard(room_id: str, session: dict = Depends(current_session)):
+    if session["room_id"] != room_id:
         raise HTTPException(status_code=403, detail="Accesso negato")
+    fixtures = [f async for f in db.fixtures.find({"room_id": room_id}, {"_id": 0})]
+    has_results = len(fixtures) > 0
 
-    votes = {v["player_id"]: v async for v in db.votes.find(
-        {"league_id": league_id, "matchday": matchday}, {"_id": 0}
-    )}
-    api_votes = {v["player_id"]: v async for v in db.api_votes.find(
-        {"matchday": matchday}, {"_id": 0}
-    )}
-    lineups_docs = [ln async for ln in db.lineups.find(
-        {"league_id": league_id, "matchday": matchday}, {"_id": 0}
-    )]
-    all_ids: set[str] = set()
-    for ln in lineups_docs:
-        all_ids.update(ln.get("starters", []))
-        all_ids.update(ln.get("bench", []))
-    players_map: dict[str, dict] = {}
-    if all_ids:
-        async for p in db.players.find({"id": {"$in": list(all_ids)}}, {"_id": 0}):
-            players_map[p["id"]] = p
-
-    results = []
-    for lineup in lineups_docs:
-        total, breakdown, substitutions = _compute_user_total(lineup, votes, players_map, api_votes)
-        user_doc = await db.users.find_one({"id": lineup["user_id"]}, {"_id": 0, "password_hash": 0})
-        results.append({
-            "user_id": lineup["user_id"],
-            "username": user_doc["username"] if user_doc else "?",
-            "total": round(total, 2),
-            "module": lineup.get("module"),
+    schedine_cur = db.schedine.find({"room_id": room_id, "status": "confirmed"}, {"_id": 0})
+    entries = []
+    async for s in schedine_cur:
+        events = s.get("events", [])
+        breakdown = []
+        product = 1.0
+        won_count = 0
+        for e in events:
+            info = {
+                "home_team": e["home_team"],
+                "away_team": e["away_team"],
+                "prediction": e["prediction"],
+                "odd": e["odd"],
+                "won": False,
+                "matched_fixture": None,
+                "score": None,
+            }
+            if has_results:
+                fx = _match_prediction_to_fixture(e, fixtures)
+                if fx:
+                    info["matched_fixture"] = f"{fx['home_team']} vs {fx['away_team']}"
+                    info["score"] = f"{fx['home_score']}-{fx['away_score']}"
+                    if _evaluate_prediction(e["prediction"], fx["home_score"], fx["away_score"]):
+                        info["won"] = True
+                        product *= e["odd"]
+                        won_count += 1
+            breakdown.append(info)
+        total = round(product, 2) if won_count > 0 else 0.0
+        entries.append({
+            "nickname": s["nickname"],
+            "total": total,
+            "won_count": won_count,
+            "events_count": len(events),
             "breakdown": breakdown,
-            "substitutions": substitutions,
         })
-    results.sort(key=lambda x: x["total"], reverse=True)
-    for i, r in enumerate(results):
+    entries.sort(key=lambda x: (-x["total"], x["nickname"]))
+    for i, r in enumerate(entries):
         r["rank"] = i + 1
-        r["is_winner"] = i == 0 and r["total"] > 0
-    return {"matchday": matchday, "results": results}
-
-
-@api.get("/leagues/{league_id}/leaderboard")
-async def overall_leaderboard(league_id: str, user: dict = Depends(get_current_user)):
-    """Total points across all played matchdays. Each matchday winner gets 3 points, 2nd 2, 3rd 1."""
-    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
-    if not member:
-        raise HTTPException(status_code=403, detail="Accesso negato")
-
-    # Get all matchdays that have votes
-    matchdays = await db.votes.distinct("matchday", {"league_id": league_id})
-
-    # Get all members
-    memberships = db.memberships.find({"league_id": league_id}, {"_id": 0})
-    member_ids = [m["user_id"] async for m in memberships]
-    users_map = {}
-    users_cur = db.users.find({"id": {"$in": member_ids}}, {"_id": 0, "password_hash": 0})
-    async for u in users_cur:
-        users_map[u["id"]] = u["username"]
-
-    scores = {uid: {"user_id": uid, "username": users_map.get(uid, "?"),
-                    "total_fantavoto": 0.0, "wins": 0, "points": 0, "matchdays_played": 0}
-              for uid in member_ids}
-
-    for md in matchdays:
-        # compute per matchday
-        votes = {v["player_id"]: v async for v in db.votes.find(
-            {"league_id": league_id, "matchday": md}, {"_id": 0}
-        )}
-        md_results = []
-        lineups_cur = db.lineups.find({"league_id": league_id, "matchday": md}, {"_id": 0})
-        async for lineup in lineups_cur:
-            total = sum(votes.get(pid, {}).get("fantavoto", 0.0) for pid in lineup.get("starters", []))
-            md_results.append((lineup["user_id"], total))
-        md_results.sort(key=lambda x: x[1], reverse=True)
-        for i, (uid, total) in enumerate(md_results):
-            if uid in scores:
-                scores[uid]["total_fantavoto"] += total
-                scores[uid]["matchdays_played"] += 1
-                if i == 0 and total > 0:
-                    scores[uid]["wins"] += 1
-                    scores[uid]["points"] += 3
-                elif i == 1:
-                    scores[uid]["points"] += 2
-                elif i == 2:
-                    scores[uid]["points"] += 1
-
-    out = list(scores.values())
-    for r in out:
-        r["total_fantavoto"] = round(r["total_fantavoto"], 2)
-    out.sort(key=lambda x: (x["points"], x["total_fantavoto"]), reverse=True)
-    for i, r in enumerate(out):
-        r["rank"] = i + 1
-    return {"leaderboard": out, "matchdays_played": len(matchdays)}
-
-
-@api.get("/leagues/{league_id}/history")
-async def matchday_history(league_id: str, user: dict = Depends(get_current_user)):
-    """List all played matchdays with their winners (using bench substitutions).
-
-    Matchdays with either league-specific votes OR global api_votes are considered played.
-    """
-    member = await db.memberships.find_one({"league_id": league_id, "user_id": user["id"]})
-    if not member:
-        raise HTTPException(status_code=403, detail="Accesso negato")
-    md_set = set(await db.votes.distinct("matchday", {"league_id": league_id}))
-    md_set.update(await db.api_votes.distinct("matchday"))
-    matchdays = sorted(md_set)
-    out = []
-    for md in matchdays:
-        votes = {v["player_id"]: v async for v in db.votes.find(
-            {"league_id": league_id, "matchday": md}, {"_id": 0}
-        )}
-        api_votes = {v["player_id"]: v async for v in db.api_votes.find(
-            {"matchday": md}, {"_id": 0}
-        )}
-        lineups_docs = [ln async for ln in db.lineups.find(
-            {"league_id": league_id, "matchday": md}, {"_id": 0}
-        )]
-        all_ids: set[str] = set()
-        for ln in lineups_docs:
-            all_ids.update(ln.get("starters", []))
-            all_ids.update(ln.get("bench", []))
-        players_map: dict[str, dict] = {}
-        if all_ids:
-            async for p in db.players.find({"id": {"$in": list(all_ids)}}, {"_id": 0}):
-                players_map[p["id"]] = p
-        best = None
-        for lineup in lineups_docs:
-            total, _, _ = _compute_user_total(lineup, votes, players_map, api_votes)
-            if best is None or total > best[1]:
-                best = (lineup["user_id"], total)
-        if not best:
-            continue
-        u = await db.users.find_one({"id": best[0]}, {"_id": 0, "password_hash": 0})
-        winner_name = u["username"] if u else "?"
-        out.append({
-            "matchday": md,
-            "winner_username": winner_name,
-            "winner_score": round(best[1], 2),
-        })
-    return {"history": out}
-
-
-# ============ System / Scheduler admin ============
-class SystemMatchdayIn(BaseModel):
-    matchday: int = Field(ge=1, le=38)
-
-
-class SystemSchedulerIn(BaseModel):
-    enabled: bool
-
-
-@api.get("/system")
-async def get_system(user: dict = Depends(get_current_user)):
-    """Public system status (any authenticated user can read)."""
-    md = await _system_get("current_matchday", 1)
-    enabled = await _system_get("scheduler_enabled", SCHEDULER_ENABLED)
-    last_at = await _system_get("last_scheduled_sync_at")
-    last_count = await _system_get("last_scheduled_sync_count", 0)
-    last_err = await _system_get("last_scheduled_sync_error")
-    api_votes_by_md = {}
-    async for doc in db.api_votes.aggregate([{"$group": {"_id": "$matchday", "n": {"$sum": 1}}}]):
-        api_votes_by_md[str(doc["_id"])] = doc["n"]
-    now_local = datetime.now(ROME_TZ)
     return {
-        "current_matchday": md,
-        "current_season": CURRENT_SEASON,
-        "scheduler_enabled": enabled,
-        "scheduler_running": SCHEDULER_ENABLED and bool(API_FOOTBALL_KEY),
-        "in_match_window": _in_match_window(now_local),
-        "server_time_rome": now_local.strftime("%Y-%m-%d %H:%M %Z"),
-        "last_scheduled_sync_at": last_at,
-        "last_scheduled_sync_count": last_count,
-        "last_scheduled_sync_error": last_err,
-        "api_votes_by_matchday": api_votes_by_md,
-        "match_windows": {str(k): v for k, v in MATCH_WINDOWS.items()},
+        "has_results": has_results,
+        "settled": has_results and len(entries) > 0,
+        "leaderboard": entries,
     }
 
 
-@api.post("/system/matchday")
-async def set_current_matchday(
-    data: SystemMatchdayIn, admin: dict = Depends(require_system_admin)
-):
-    await _system_set("current_matchday", data.matchday)
-    return {"ok": True, "current_matchday": data.matchday}
-
-
-@api.post("/system/scheduler")
-async def set_scheduler_enabled(
-    data: SystemSchedulerIn, admin: dict = Depends(require_system_admin)
-):
-    await _system_set("scheduler_enabled", data.enabled)
-    return {"ok": True, "scheduler_enabled": data.enabled}
-
-
-@api.post("/system/sync-now")
-async def system_sync_now(admin: dict = Depends(require_system_admin)):
-    """Trigger an immediate sync of the current matchday votes (respects gap check).
-
-    Returns votes_synced or upstream error.
-    """
-    matchday = int(await _system_get("current_matchday", 1))
-    season = int(await _system_get("current_season", CURRENT_SEASON))
-    count = await _sync_matchday_votes_global(matchday, season)
-    await _system_set("last_scheduled_sync_at", datetime.now(timezone.utc).isoformat())
-    await _system_set("last_scheduled_sync_count", count)
-    await _system_set("last_scheduled_sync_error", None)
-    return {"ok": True, "matchday": matchday, "votes_synced": count}
-
-
-# ============ Health ============
 @api.get("/")
 async def root():
-    return {"service": "FantaGiornata", "status": "ok"}
+    return {"service": "SchedinaBar", "status": "ok"}
 
 
-# Mount
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
