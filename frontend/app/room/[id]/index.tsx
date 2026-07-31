@@ -16,6 +16,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, session } from '@/src/api';
 import { theme } from '@/src/theme';
+import { formatPrediction } from '@/src/utils/predictions';
 
 type Room = {
   id: string;
@@ -51,18 +52,8 @@ type LeaderEntry = {
   breakdown: BreakdownItem[];
 };
 
-const PREDICTION_LABELS: Record<string, string> = {
-  '1': '1 (Casa)',
-  'X': 'X (Pareggio)',
-  '2': '2 (Trasferta)',
-  '1X': '1X (Casa o Pareggio)',
-  'X2': 'X2 (Pareggio o Trasferta)',
-  '12': '12 (Casa o Trasferta)',
-  'GOL': 'GOL (Entrambe segnano)',
-  'NOGOL': 'NO GOL',
-  'OVER': 'OVER 2.5',
-  'UNDER': 'UNDER 2.5',
-};
+
+
 
 export default function RoomDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -457,7 +448,7 @@ function PlayerSchedinaModal({
                       <View style={styles.predictionChip}>
                         <Text style={styles.predictionLabel}>Pronostico</Text>
                         <Text style={styles.predictionValue}>
-                          {PREDICTION_LABELS[b.prediction] || b.prediction}
+                          {formatPrediction(b.prediction)}
                         </Text>
                       </View>
                       {evaluated ? (

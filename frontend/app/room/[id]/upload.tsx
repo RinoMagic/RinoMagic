@@ -9,6 +9,7 @@ import {
   TextInput,
   Platform,
   Alert,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -17,6 +18,10 @@ import * as ImagePicker from 'expo-image-picker';
 import { Image } from 'expo-image';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import {
+  formatPrediction,
+  PREDICTION_GROUPS,
+} from '@/src/utils/predictions';
 
 type Event = {
   home_team: string;
@@ -24,8 +29,6 @@ type Event = {
   prediction: string;
   odd: number;
 };
-
-const PREDICTIONS = ['1', 'X', '2', '1X', 'X2', '12', 'GOL', 'NOGOL', 'OVER', 'UNDER'];
 
 export default function UploadSchedina() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -36,6 +39,7 @@ export default function UploadSchedina() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [step, setStep] = useState<'pick' | 'confirm'>('pick');
+  const [pickerIndex, setPickerIndex] = useState<number | null>(null);
 
   const pickImage = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -220,20 +224,19 @@ export default function UploadSchedina() {
                   />
                 </View>
                 <View style={styles.predRow}>
-                  {PREDICTIONS.map((p) => (
-                    <Pressable
-                      key={p}
-                      testID={`pred-${i}-${p}`}
-                      onPress={() => updateEvent(i, { prediction: p })}
-                      style={[styles.predChip, e.prediction === p && styles.predChipActive]}
-                    >
-                      <Text
-                        style={[styles.predChipText, e.prediction === p && styles.predChipTextActive]}
-                      >
-                        {p}
+                  <Pressable
+                    testID={`open-market-picker-${i}`}
+                    onPress={() => setPickerIndex(i)}
+                    style={styles.marketButton}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.marketLabel}>PRONOSTICO</Text>
+                      <Text style={styles.marketValue} numberOfLines={2}>
+                        {formatPrediction(e.prediction)}
                       </Text>
-                    </Pressable>
-                  ))}
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
+                  </Pressable>
                 </View>
                 <View style={styles.oddRow}>
                   <Text style={styles.oddLabel}>Quota</Text>
@@ -275,7 +278,81 @@ export default function UploadSchedina() {
           </>
         )}
       </ScrollView>
+
+      <MarketPickerModal
+        visible={pickerIndex !== null}
+        currentCode={pickerIndex !== null ? events[pickerIndex]?.prediction : undefined}
+        onClose={() => setPickerIndex(null)}
+        onPick={(code) => {
+          if (pickerIndex !== null) updateEvent(pickerIndex, { prediction: code });
+          setPickerIndex(null);
+        }}
+      />
     </View>
+  );
+}
+
+function MarketPickerModal({
+  visible,
+  currentCode,
+  onClose,
+  onPick,
+}: {
+  visible: boolean;
+  currentCode?: string;
+  onClose: () => void;
+  onPick: (code: string) => void;
+}) {
+  return (
+    <Modal
+      animationType="slide"
+      transparent
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <View style={styles.pickerBackdrop}>
+        <View style={styles.pickerCard}>
+          <View style={styles.pickerHeader}>
+            <Text style={styles.pickerTitle}>Scegli il mercato</Text>
+            <Pressable onPress={onClose} hitSlop={12} testID="close-market-picker">
+              <Ionicons name="close" size={24} color={theme.colors.onSurface} />
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}>
+            {PREDICTION_GROUPS.map((group) => (
+              <View key={group.title}>
+                <Text style={styles.groupTitle}>{group.title}</Text>
+                <View style={styles.groupChips}>
+                  {group.options.map((opt) => {
+                    const active = currentCode === opt.code;
+                    return (
+                      <Pressable
+                        key={opt.code}
+                        testID={`market-opt-${opt.code}`}
+                        onPress={() => onPick(opt.code)}
+                        style={[styles.optionChip, active && styles.optionChipActive]}
+                      >
+                        <Text
+                          style={[styles.optionShort, active && styles.optionShortActive]}
+                        >
+                          {opt.short}
+                        </Text>
+                        <Text
+                          style={[styles.optionLabel, active && styles.optionLabelActive]}
+                          numberOfLines={1}
+                        >
+                          {opt.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -366,18 +443,29 @@ const styles = StyleSheet.create({
   },
   vs: { color: theme.colors.muted, fontWeight: '800' },
   predRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  predChip: {
-    paddingHorizontal: 12,
-    height: 34,
-    justifyContent: 'center',
-    borderRadius: theme.radius.pill,
+  marketButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
     backgroundColor: theme.colors.surfaceTertiary,
+    borderRadius: theme.radius.sm,
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  predChipActive: { backgroundColor: theme.colors.brand, borderColor: theme.colors.brand },
-  predChipText: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 12 },
-  predChipTextActive: { color: theme.colors.onBrand, fontWeight: '800' },
+  marketLabel: {
+    color: theme.colors.muted,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  marketValue: {
+    color: theme.colors.onSurface,
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 2,
+  },
   oddRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
   oddLabel: { color: theme.colors.muted, fontWeight: '600' },
   oddInput: {
@@ -412,4 +500,75 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   ctaText: { color: theme.colors.onBrand, fontWeight: '800', fontSize: 16 },
+
+  // Market picker modal
+  pickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'flex-end',
+  },
+  pickerCard: {
+    backgroundColor: theme.colors.surface,
+    borderTopLeftRadius: theme.radius.lg,
+    borderTopRightRadius: theme.radius.lg,
+    maxHeight: '88%',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: theme.spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  pickerTitle: {
+    color: theme.colors.onSurface,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  groupTitle: {
+    color: theme.colors.muted,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    marginBottom: theme.spacing.sm,
+  },
+  groupChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
+  optionChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    minWidth: 96,
+    flexShrink: 1,
+  },
+  optionChipActive: {
+    backgroundColor: theme.colors.brand,
+    borderColor: theme.colors.brand,
+  },
+  optionShort: {
+    color: theme.colors.onSurface,
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  optionShortActive: {
+    color: theme.colors.onBrand,
+  },
+  optionLabel: {
+    color: theme.colors.muted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  optionLabelActive: {
+    color: theme.colors.onBrand,
+    opacity: 0.85,
+  },
 });

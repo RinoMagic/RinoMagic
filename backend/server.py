@@ -59,7 +59,59 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 # ============ Models ============
 ROOM_COLORS = ["#00D95F", "#FFB300", "#EF4444", "#3B82F6", "#A855F7", "#EC4899", "#14B8A6", "#F97316"]
 
-VALID_PREDICTIONS = {"1", "X", "2", "1X", "X2", "12", "GOL", "NOGOL", "OVER", "UNDER"}
+# Prediction codes we accept.
+# Simple markets:
+#   1  X  2  1X  X2  12          -> 1X2 + Double chance FT
+#   HT-1  HT-X  HT-2              -> 1X2 first half
+#   HT-1X  HT-X2  HT-12           -> Double chance first half
+#   GOL  NOGOL                     -> Both teams to score
+#   OVER-0.5..OVER-4.5             -> Over goals with threshold
+#   UNDER-0.5..UNDER-4.5           -> Under goals with threshold
+#   MG-<a>-<b>                     -> Multigol totale (a..b inclusive, SI)
+#   MG-<a>-<b>-NO                  -> Multigol totale NO
+#   MGH-<a>-<b>[-NO]               -> Multigol casa
+#   MGA-<a>-<b>[-NO]               -> Multigol ospite
+# Combo: any of the above joined by '+', all conditions must be true, e.g.:
+#   1+GOL          X+OVER-2.5      1X+MG-1-3       12+GOL+OVER-1.5
+_SIMPLE_ATOM_RE = re.compile(
+    r"^(?:"
+    r"(?:HT-)?(?:1X|X2|12|1|X|2)"       # 1X2 / DC (optionally HT)
+    r"|GOL|NOGOL"
+    r"|(?:OVER|UNDER)-\d(?:\.\d)?"      # Over/Under with threshold
+    r"|MG[HA]?-\d-\d(?:-NO)?"           # Multigol total/home/away (SI default, or NO)
+    r")$"
+)
+
+
+def _validate_prediction_code(code: str) -> str:
+    """Validate and normalize a prediction code.
+
+    Accepts legacy short forms and returns a canonical code:
+        "OVER" -> "OVER-2.5"    "UNDER" -> "UNDER-2.5"
+        "OVER2.5" or "OVER 2.5" -> "OVER-2.5"
+    Combos joined by '+' are validated atom-by-atom.
+    """
+    if not code:
+        raise ValueError("Pronostico mancante")
+
+    def normalize_atom(a: str) -> str:
+        a = a.strip().upper()
+        # OVER/UNDER with optional threshold (spaces or no separator)
+        m = re.match(r"^(OVER|UNDER)[\s-]*(\d(?:[.,]\d)?)?$", a)
+        if m:
+            side = m.group(1)
+            thr = (m.group(2) or "2.5").replace(",", ".")
+            if "." not in thr:
+                thr = f"{thr}.5"
+            return f"{side}-{thr}"
+        return a
+
+    atoms = [normalize_atom(a) for a in code.split("+")]
+    canonical = "+".join(atoms)
+    for a in atoms:
+        if not _SIMPLE_ATOM_RE.match(a):
+            raise ValueError(f"Pronostico non valido: {code}")
+    return canonical
 
 
 class RoomCreate(BaseModel):
@@ -84,14 +136,7 @@ class SchedinaEventIn(BaseModel):
     @field_validator("prediction")
     @classmethod
     def _norm_pred(cls, v: str) -> str:
-        v2 = v.upper().replace(" ", "").replace(".", "")
-        if v2 not in VALID_PREDICTIONS:
-            # accept OVER25 -> OVER, UNDER25 -> UNDER
-            for base in ("OVER", "UNDER"):
-                if v2.startswith(base):
-                    return base
-            raise ValueError(f"Pronostico non valido: {v}")
-        return v2
+        return _validate_prediction_code(v.strip().upper().replace(" ", ""))
 
 
 class SchedinaConfirm(BaseModel):
@@ -104,6 +149,8 @@ class FixtureIn(BaseModel):
     home_score: int = Field(ge=0)
     away_score: int = Field(ge=0)
     both_scored: Optional[bool] = None  # if None, computed from scores
+    ht_home_score: Optional[int] = Field(default=None, ge=0)
+    ht_away_score: Optional[int] = Field(default=None, ge=0)
 
 
 class FixturesIn(BaseModel):
@@ -172,29 +219,74 @@ def _team_match(a: str, b: str) -> bool:
     return len(overlap) >= 1 and len(overlap) >= min(len(ta), len(tb)) // 2
 
 
-def _evaluate_prediction(pred: str, home: int, away: int) -> bool:
-    """Return True if `pred` is correct given final score home-away."""
-    pred = pred.upper().replace(" ", "")
-    if pred == "1":
+def _evaluate_prediction(pred: str, fx: dict) -> bool:
+    """Return True if `pred` is correct given the fixture result.
+
+    Supports combos: multiple atoms joined by '+' — all must be true.
+    `fx` must contain: home_score, away_score. Optional: ht_home_score, ht_away_score.
+    HT markets require the HT scores; if absent the pick is considered lost.
+    """
+    if not pred:
+        return False
+    home = int(fx.get("home_score", 0))
+    away = int(fx.get("away_score", 0))
+    total = home + away
+    ht_home = fx.get("ht_home_score")
+    ht_away = fx.get("ht_away_score")
+
+    def eval_atom(atom: str) -> bool:
+        atom = atom.upper().strip()
+        # First-half markets
+        if atom.startswith("HT-"):
+            if ht_home is None or ht_away is None:
+                return False
+            core = atom[3:]
+            return _eval_1x2_dc(core, ht_home, ht_away)
+        # Multigol (total / home / away, optional NO suffix)
+        m = re.match(r"^(MG|MGH|MGA)-(\d)-(\d)(-NO)?$", atom)
+        if m:
+            kind, a, b, no = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
+            if kind == "MG":
+                value = total
+            elif kind == "MGH":
+                value = home
+            else:  # MGA
+                value = away
+            in_range = a <= value <= b
+            return (not in_range) if no else in_range
+        # Over / Under with threshold
+        m = re.match(r"^(OVER|UNDER)-(\d(?:\.\d)?)$", atom)
+        if m:
+            side, thr = m.group(1), float(m.group(2))
+            return total > thr if side == "OVER" else total < thr
+        # GOL / NOGOL
+        if atom == "GOL":
+            return home > 0 and away > 0
+        if atom == "NOGOL":
+            return home == 0 or away == 0
+        # 1X2 / Double chance (full time)
+        return _eval_1x2_dc(atom, home, away)
+
+    for a in pred.split("+"):
+        if not eval_atom(a):
+            return False
+    return True
+
+
+def _eval_1x2_dc(pick: str, home: int, away: int) -> bool:
+    pick = pick.upper()
+    if pick == "1":
         return home > away
-    if pred == "X":
+    if pick == "X":
         return home == away
-    if pred == "2":
+    if pick == "2":
         return home < away
-    if pred == "1X":
+    if pick == "1X":
         return home >= away
-    if pred == "X2":
+    if pick == "X2":
         return home <= away
-    if pred == "12":
+    if pick == "12":
         return home != away
-    if pred == "GOL":
-        return home > 0 and away > 0
-    if pred == "NOGOL":
-        return home == 0 or away == 0
-    if pred == "OVER":
-        return (home + away) > 2  # Over 2.5
-    if pred == "UNDER":
-        return (home + away) < 3  # Under 2.5
     return False
 
 
@@ -234,38 +326,99 @@ def _titleize(name: str) -> str:
     return "".join(p if p.isspace() else (p[:1].upper() + p[1:].lower()) for p in parts)
 
 
-def _normalize_prediction(fragment: str) -> Optional[str]:
-    """Given a fragment like '1X2: 2', 'G/NG: GOL' or 'U/O 1,5: UNDER'
-    return the normalized prediction code (1/X/2/1X/X2/12/GOL/NOGOL/OVER/UNDER)."""
-    if not fragment:
+def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
+    """Given the market label and pick as printed on staryes.it, return the
+    canonical prediction code (or None if unrecognised).
+
+    Examples:
+        ("1X2", "2")                  -> "2"
+        ("G/NG", "GOL")               -> "GOL"
+        ("U/O 1,5", "UNDER")          -> "UNDER-1.5"
+        ("1X2 1°TEMPO", "X")          -> "HT-X"
+        ("1X", "1X")                  -> "1X"
+        ("MULTIGOL 0-1 OSPITE", "SI") -> "MGA-0-1"
+        ("MULTIGOL 0-2 CASA", "SI")   -> "MGH-0-2"
+        ("MULTIGOL 1-3", "SI")        -> "MG-1-3"
+    """
+    if pick_raw is None:
         return None
-    text = fragment.upper()
-    # Take part after the last colon if present, otherwise the last token.
-    if ":" in text:
-        pred = text.rsplit(":", 1)[1]
-    else:
-        tokens = text.replace(",", " ").split()
-        pred = tokens[-1] if tokens else ""
-    pred = re.sub(r"[^A-Z0-9]", "", pred)
-    # Common OCR aliases
-    if pred in {"NOGOL", "NG"}:
-        return "NOGOL"
-    if pred in {"GOL", "GG"}:
-        return "GOL"
-    if pred.startswith("NO"):
-        return "NOGOL"
-    if pred.startswith("OVER") or pred == "O":
-        return "OVER"
-    if pred.startswith("UNDER") or pred == "U":
-        return "UNDER"
-    if pred in {"1", "2", "X"}:
-        return pred
-    if pred in {"1X", "X1"}:
-        return "1X"
-    if pred in {"X2", "2X"}:
-        return "X2"
-    if pred in {"12", "21"}:
-        return "12"
+    market = market_raw.upper().replace("°", "").replace(",", ".")
+    pick = re.sub(r"[^A-Z0-9./,+-]", "", pick_raw.upper().replace(",", "."))
+    if not pick:
+        return None
+
+    # Combo: if pick contains '+' (staryes combo layout), classify each atom
+    # against the paired market atom when possible. Fallback: split market
+    # by '+' too and try to match atoms 1-to-1.
+    if "+" in pick:
+        pick_atoms = [p for p in pick.split("+") if p]
+        # Only split market on '+' (do NOT split on '/' -- 'U/O 2.5' is one market)
+        market_atoms = [m.strip() for m in market.split("+") if m.strip()]
+        codes: List[str] = []
+        for i, pa in enumerate(pick_atoms):
+            m_for_atom = market_atoms[i] if i < len(market_atoms) else market
+            code = _classify_bet(m_for_atom, pa)
+            if not code:
+                return None
+            codes.append(code)
+        return "+".join(codes)
+
+    # Detect first-half markets
+    is_ht = any(tag in market for tag in ("1TEMPO", "1 TEMPO", "PRIMO TEMPO", "1T", "HT", "1H"))
+    ht_prefix = "HT-" if is_ht else ""
+
+    # Multigol (total / home / away)
+    if "MULTIGOL" in market or "MULTI GOL" in market:
+        rng = re.search(r"(\d)\s*[-–]\s*(\d)", market)
+        if not rng:
+            return None
+        a, b = rng.group(1), rng.group(2)
+        if "CASA" in market or "HOME" in market:
+            base = "MGH"
+        elif "OSPITE" in market or "AWAY" in market or "TRASF" in market:
+            base = "MGA"
+        else:
+            base = "MG"
+        code = f"{base}-{a}-{b}"
+        if pick in {"NO", "N"}:
+            code += "-NO"
+        elif pick not in {"SI", "S", "YES", "Y", "GOL", "1", ""}:
+            # Unexpected pick for multigol
+            return None
+        return code
+
+    # G/NG (both teams to score)
+    if market in {"G/NG", "GG/NG", "GG", "NG"} or "GOL/NOGOL" in market or "GOL/NO GOL" in market:
+        if pick in {"GOL", "GG", "SI", "S", "YES", "1"}:
+            return "GOL"
+        if pick in {"NOGOL", "NG", "NO", "N", "0"}:
+            return "NOGOL"
+        return None
+
+    # Over / Under (threshold-aware)
+    if "U/O" in market or "O/U" in market or "OVER" in market or "UNDER" in market:
+        thr_match = re.search(r"(\d(?:\.\d)?)", market)
+        threshold = thr_match.group(1) if thr_match else "2.5"
+        # normalise threshold to "X.5" or integer
+        if "." not in threshold:
+            threshold = f"{threshold}.5"
+        if pick.startswith("OVER") or pick == "O":
+            return f"OVER-{threshold}"
+        if pick.startswith("UNDER") or pick == "U":
+            return f"UNDER-{threshold}"
+        return None
+
+    # 1X2 / Double chance — both full-time and half-time
+    # Market label may be "1X2", "1X", "X2", "12", "IX" (OCR of "1X"), etc.
+    if pick in {"1", "X", "2"}:
+        return f"{ht_prefix}{pick}"
+    if pick in {"1X", "X2", "12", "IX"}:
+        canonical = "1X" if pick == "IX" else pick
+        return f"{ht_prefix}{canonical}"
+    # As a last resort, if the pick is GOL/NOGOL alone
+    if pick in {"GOL", "NOGOL"}:
+        return pick
+
     return None
 
 
@@ -310,7 +463,14 @@ def _parse_staryes_slip(raw_text: str) -> List[dict]:
                         candidate = 0.0
                     if 1.01 <= candidate <= 999:
                         pred_fragment = ln[: om.start()].strip()
-                        pred = _normalize_prediction(pred_fragment)
+                        # Split "MARKET: PICK" (last colon wins to survive "U/O 1,5: UNDER")
+                        if ":" in pred_fragment:
+                            market_raw, pick_raw = pred_fragment.rsplit(":", 1)
+                        else:
+                            tokens = pred_fragment.split()
+                            market_raw = " ".join(tokens[:-1]) if len(tokens) > 1 else ""
+                            pick_raw = tokens[-1] if tokens else ""
+                        pred = _classify_bet(market_raw, pick_raw)
                         if pred:
                             odd = candidate
                             prediction = pred
@@ -596,6 +756,8 @@ async def set_fixtures(room_id: str, data: FixturesIn, session: dict = Depends(c
             "home_score": f.home_score,
             "away_score": f.away_score,
             "both_scored": both,
+            "ht_home_score": f.ht_home_score,
+            "ht_away_score": f.ht_away_score,
         })
     if docs:
         await db.fixtures.insert_many(docs)
@@ -711,7 +873,7 @@ async def leaderboard(room_id: str, session: dict = Depends(current_session)):
                 if fx:
                     info["matched_fixture"] = f"{fx['home_team']} vs {fx['away_team']}"
                     info["score"] = f"{fx['home_score']}-{fx['away_score']}"
-                    if _evaluate_prediction(e["prediction"], fx["home_score"], fx["away_score"]):
+                    if _evaluate_prediction(e["prediction"], fx):
                         info["won"] = True
                         product *= e["odd"]
                         won_count += 1

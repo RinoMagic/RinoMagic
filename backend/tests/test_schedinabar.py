@@ -234,7 +234,7 @@ class TestSchedina:
                           headers=auth_headers(token))
         assert r2.status_code == 200, r2.text
         preds = [e["prediction"] for e in r2.json()["events"]]
-        assert preds == ["1", "X", "2", "1X", "X2", "12", "GOL", "NOGOL", "OVER", "UNDER"]
+        assert preds == ["1", "X", "2", "1X", "X2", "12", "GOL", "NOGOL", "OVER-2.5", "UNDER-2.5"]
 
     def test_members_submitted_flag_true_after_confirm(self, session, ctx):
         rid = ctx["room"]["id"]
@@ -427,26 +427,38 @@ class TestUnitLogic:
         import sys, os
         sys.path.insert(0, "/app/backend")
         from server import _evaluate_prediction
+        def fx(h, a): return {"home_score": h, "away_score": a}
         # 1: home>away
-        assert _evaluate_prediction("1", 2, 1) is True
-        assert _evaluate_prediction("1", 0, 0) is False
+        assert _evaluate_prediction("1", fx(2, 1)) is True
+        assert _evaluate_prediction("1", fx(0, 0)) is False
         # X: draw
-        assert _evaluate_prediction("X", 1, 1) is True
-        assert _evaluate_prediction("X", 2, 1) is False
+        assert _evaluate_prediction("X", fx(1, 1)) is True
+        assert _evaluate_prediction("X", fx(2, 1)) is False
         # 2: away>home
-        assert _evaluate_prediction("2", 0, 1) is True
+        assert _evaluate_prediction("2", fx(0, 1)) is True
         # OVER 2.5: h+a>2
-        assert _evaluate_prediction("OVER", 2, 1) is True
-        assert _evaluate_prediction("OVER", 1, 1) is False
+        assert _evaluate_prediction("OVER-2.5", fx(2, 1)) is True
+        assert _evaluate_prediction("OVER-2.5", fx(1, 1)) is False
         # UNDER 2.5: h+a<3
-        assert _evaluate_prediction("UNDER", 1, 1) is True
-        assert _evaluate_prediction("UNDER", 2, 1) is False
+        assert _evaluate_prediction("UNDER-2.5", fx(1, 1)) is True
+        assert _evaluate_prediction("UNDER-2.5", fx(2, 1)) is False
         # GOL: both scored
-        assert _evaluate_prediction("GOL", 1, 1) is True
-        assert _evaluate_prediction("GOL", 0, 2) is False
+        assert _evaluate_prediction("GOL", fx(1, 1)) is True
+        assert _evaluate_prediction("GOL", fx(0, 2)) is False
         # NOGOL: at least one 0
-        assert _evaluate_prediction("NOGOL", 0, 2) is True
-        assert _evaluate_prediction("NOGOL", 1, 1) is False
+        assert _evaluate_prediction("NOGOL", fx(0, 2)) is True
+        assert _evaluate_prediction("NOGOL", fx(1, 1)) is False
+        # NEW: Multigol / HT / combos
+        assert _evaluate_prediction("MG-1-3", fx(1, 2)) is True
+        assert _evaluate_prediction("MG-1-3", fx(2, 2)) is False
+        assert _evaluate_prediction("MGH-0-2", fx(2, 5)) is True
+        assert _evaluate_prediction("MGA-0-1", fx(4, 0)) is True
+        assert _evaluate_prediction("1+GOL", fx(2, 1)) is True
+        assert _evaluate_prediction("1+GOL", fx(2, 0)) is False
+        # HT markets require HT scores
+        assert _evaluate_prediction("HT-1", {"home_score": 2, "away_score": 0,
+                                             "ht_home_score": 1, "ht_away_score": 0}) is True
+        assert _evaluate_prediction("HT-1", fx(2, 0)) is False  # HT scores missing
 
 
 # ---------- Security: cross-room and no-token ----------

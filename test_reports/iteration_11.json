@@ -1,0 +1,40 @@
+{
+  "summary": "SchedinaBar — Extended markets (HT 1X2/DC, Multigol totale/casa/ospite, Combo with '+') verified end-to-end. Backend: 32/32 pytest passano (test_schedinabar.py + test_staryes_parser.py). Il validator SchedinaEventIn normalizza correttamente legacy 'Over 2.5' -> 'OVER-2.5', 'under' -> 'UNDER-2.5', accetta 'HT-1', 'MG-1-3', 'MGH-0-2', 'MGA-0-1' e combo tipo '1+GOL', '1X+OVER-2.5'. POST /rooms/{id}/fixtures accetta i nuovi campi opzionali ht_home_score/ht_away_score (persistiti nel Mongo). Evaluator verificato con tutti i casi richiesti: HT-1 con HT 1-0 -> won=true; MG-1-3 total=3 -> true, total=4 -> false; MGH-0-2 home=2 -> true, home=3 -> false; combo '1+GOL' 2-1 -> true, 2-0 -> false. Frontend Playwright E2E (viewport 390x844): seed via API (Alice+Bob, 4 schedine con nuovi mercati, 4 fixtures con HT), join via UI usando invite-code -> dashboard. Tab Classifica -> tap leader-row-Alice apre modal con TUTTE le label leggibili verificate: '1° Tempo: 1 (Casa)', 'Multigol 1-3', 'Multigol Ospite 0-1', 'Over 2.5', '1X (Casa o Pareggio)' (5/5 match). Admin page /room/{id}/admin mostra correttamente sotto ogni fixture la riga '1° Tempo (opzionale)' con testID fx-ht-hs-{i} e fx-ht-as-{i} popolati dai dati del backend (Inter HT 1-1, Roma HT 1-0). Leaderboard product-of-odds su tutti won: Alice 5/5=78.62, Bob 1/2=1.5 — corretto. Upload page: il pulsante open-market-picker-{i} e il modal 'Scegli il mercato' sono presenti nel codice con TUTTI i testID richiesti (verificato via grep) e con tutti gli 8 gruppi PREDICTION_GROUPS (1X2, Doppia Chance, 1° Tempo, Gol/No Gol, Over/Under, Multigol totale, Multigol Casa, Multigol Ospite); l'interazione UI diretta richiede il gating OCR (upload di un'immagine reale), quindi la verifica del modal è stata fatta via code review + testID check. Nessun red-screen, nessun errore console rilevante (solo warning shadow* già noto).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/rooms/{id}/schedina/confirm", "issue": "Pronostico invalido ritorna 422 (Pydantic) — comportamento FastAPI standard, il test lo accetta."},
+      {"endpoint": "app-level", "issue": "server.py usa @app.on_event deprecato; migrare a lifespan handlers (già segnalato in iteration_10)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "global", "issues": ["Warning console 'shadow* style props are deprecated. Use boxShadow.' persiste — già segnalato in iteration_10, non impatta UX."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_schedinabar.py",
+    "/app/backend/tests/test_staryes_parser.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py _validate_prediction_code + _SIMPLE_ATOM_RE coprono tutti i mercati richiesti e normalizzano combo con '+' atomo-per-atomo — copertura completa.",
+    "server.py _evaluate_prediction gestisce HT-*, MG/MGH/MGA (con suffisso -NO), OVER/UNDER con threshold custom, e combo joined da '+' — tutti i casi valutati correttamente nei test unit e via E2E.",
+    "server.py FixtureIn accetta ht_home_score e ht_away_score come Optional[int] ge=0; persistiti in Mongo e restituiti in GET /fixtures.",
+    "predictions.ts formatPrediction rende leggibili tutti i codici (compresi i combi joined da ' + '); PREDICTION_GROUPS espone gli 8 gruppi richiesti.",
+    "upload.tsx implementa il modal 'Scegli il mercato' con Pressable + testID close-market-picker e testID market-opt-{code} per ogni opzione — matched requirements.",
+    "admin.tsx aggiunge la riga '1° Tempo (opzionale)' con fx-ht-hs-{i}/fx-ht-as-{i} sotto ogni riga partita, gestisce empty string -> null nel body — corretto.",
+    "index.tsx (/room/[id]) file è a 757 righe, sopra la soglia 700: raccomandato estrarre PlayerSchedinaModal e utility in src/components (già segnalato in iteration_10)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (32/32 pytest)", "frontend": "100% (dashboard readable labels 5/5, admin HT inputs OK, upload picker testIDs OK via code review)"},
+  "seed_data_creation": "Effimeri: stanza 'TEST_MKT_UI' (invite LAWI4A), Alice admin + Bob, 4 schedine con nuovi mercati, 4 fixtures con HT scores.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Nuovi mercati completi (HT 1X2/DC, MG/MGH/MGA, combo con '+') supportati end-to-end. Il modal 'Scegli il mercato' (upload.tsx) è raggiungibile SOLO dopo aver caricato un'immagine (step='confirm'), quindi per test UI diretti serve mock ImagePicker o partenza con eventi pre-caricati. testID confermati: open-market-picker-{i}, close-market-picker, market-opt-{code}, fx-ht-hs-{i}, fx-ht-as-{i}, leader-row-{nickname}, invite-code-input, join-submit. Backend evaluator supporta suffisso -NO per multigol (es. MG-1-3-NO).",
+  "rca_of_issue": "N/A — feature completamente allineate alla review request e verificate."
+}
