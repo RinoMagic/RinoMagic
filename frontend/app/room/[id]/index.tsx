@@ -25,13 +25,13 @@ type Room = {
   max_events: number;
   color: string;
   invite_code: string;
-  admin_nickname: string;
+  admin_user_id: string;
   status: string;
   members_count: number;
   is_admin: boolean;
 };
 
-type Member = { nickname: string; is_admin?: boolean; submitted: boolean };
+type Member = { user_id: string; nickname: string; role: string; blocked: boolean; submitted: boolean };
 
 type BreakdownItem = {
   home_team: string;
@@ -109,8 +109,10 @@ export default function RoomDetail() {
   };
 
   const logout = async () => {
-    await session.clear();
-    router.replace('/');
+    // Navigate to the role-appropriate home; keep the JWT so the user stays logged in.
+    const s = await session.load();
+    if (s.user?.role === 'admin') router.replace('/admin');
+    else router.replace('/player');
   };
 
   const selectedEntry = useMemo(() => {
@@ -251,8 +253,8 @@ export default function RoomDetail() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowName}>{m.nickname}</Text>
-                  {m.nickname === room.admin_nickname && (
-                    <Text style={styles.rowSub}>Admin stanza</Text>
+                  {m.role === 'admin' && (
+                    <Text style={styles.rowSub}>Admin</Text>
                   )}
                 </View>
                 {m.submitted ? (

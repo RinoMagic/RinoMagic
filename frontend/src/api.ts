@@ -3,8 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
 const TOKEN_KEY = 'schedinabar_token';
-const ROOM_KEY = 'schedinabar_room';
-const NICK_KEY = 'schedinabar_nick';
+const USER_KEY = 'schedinabar_user';
 
 async function _get(k: string) {
   if (Platform.OS === 'web') return AsyncStorage.getItem(k);
@@ -20,23 +19,29 @@ async function _set(k: string, v: string | null) {
   else await SecureStore.deleteItemAsync(k);
 }
 
+export type User = {
+  id: string;
+  role: 'admin' | 'player';
+  username: string | null;
+  email: string | null;
+  blocked: boolean;
+  must_change_password: boolean;
+  created_at: string;
+};
+
 export const session = {
-  async load() {
-    return {
-      token: await _get(TOKEN_KEY),
-      roomId: await _get(ROOM_KEY),
-      nickname: await _get(NICK_KEY),
-    };
+  async load(): Promise<{ token: string | null; user: User | null }> {
+    const token = await _get(TOKEN_KEY);
+    const raw = await _get(USER_KEY);
+    return { token, user: raw ? JSON.parse(raw) : null };
   },
-  async save(token: string, roomId: string, nickname: string) {
+  async save(token: string, user: User) {
     await _set(TOKEN_KEY, token);
-    await _set(ROOM_KEY, roomId);
-    await _set(NICK_KEY, nickname);
+    await _set(USER_KEY, JSON.stringify(user));
   },
   async clear() {
     await _set(TOKEN_KEY, null);
-    await _set(ROOM_KEY, null);
-    await _set(NICK_KEY, null);
+    await _set(USER_KEY, null);
   },
 };
 
@@ -65,7 +70,6 @@ export async function api<T = any>(
       if (typeof data.detail === 'string') {
         msg = data.detail;
       } else if (Array.isArray(data.detail)) {
-        // Pydantic validation errors → extract user-friendly message
         const first = data.detail[0];
         if (first?.msg) {
           msg = String(first.msg).replace(/^Value error,\s*/i, '');

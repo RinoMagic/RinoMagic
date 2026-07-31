@@ -1,65 +1,77 @@
-import { useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  Pressable,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  ActivityIndicator,
+  View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator,
+  ScrollView, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, session } from '@/src/api';
+import { api, session, User } from '@/src/api';
 import { theme } from '@/src/theme';
 
-export default function Home() {
+type Tab = 'player_login' | 'player_register' | 'admin_login' | 'forgot';
+
+export default function Landing() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
-  const [mode, setMode] = useState<'landing' | 'join'>('landing');
-  const [inviteCode, setInviteCode] = useState('');
-  const [nickname, setNickname] = useState('');
+  const [tab, setTab] = useState<Tab>('player_login');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
       const s = await session.load();
-      if (s.token && s.roomId) {
-        try {
-          await api(`/rooms/${s.roomId}`);
-          router.replace(`/room/${s.roomId}`);
-          return;
-        } catch {
-          await session.clear();
-        }
+      if (s.token && s.user) {
+        goHome(s.user);
+      } else {
+        setChecking(false);
       }
-      setChecking(false);
     })();
-  }, [router]);
+  }, []);
 
-  const submitJoin = async () => {
-    setErr(null);
-    const code = inviteCode.trim().toUpperCase();
-    const nick = nickname.trim();
-    if (code.length < 4) return setErr('Codice invito non valido');
-    if (nick.length < 2) return setErr('Nickname minimo 2 caratteri');
-    setBusy(true);
+  const goHome = (user: User) => {
+    if (user.role === 'admin') router.replace('/admin');
+    else router.replace('/player');
+  };
+
+  const submit = async () => {
+    setBusy(true); setMsg(null); setOkMsg(null);
     try {
-      const res = await api<{ token: string; room: any }>(
-        '/rooms/join',
-        { method: 'POST', body: { invite_code: code, nickname: nick }, auth: false }
-      );
-      await session.save(res.token, res.room.id, nick);
-      router.replace(`/room/${res.room.id}`);
+      if (tab === 'player_login') {
+        const res = await api<{ token: string; user: User }>(
+          '/auth/player/login',
+          { method: 'POST', body: { username: username.trim(), password }, auth: false },
+        );
+        await session.save(res.token, res.user);
+        goHome(res.user);
+      } else if (tab === 'player_register') {
+        const res = await api<{ token: string; user: User }>(
+          '/auth/player/register',
+          { method: 'POST', body: { username: username.trim(), password }, auth: false },
+        );
+        await session.save(res.token, res.user);
+        goHome(res.user);
+      } else if (tab === 'admin_login') {
+        const res = await api<{ token: string; user: User }>(
+          '/auth/admin/login',
+          { method: 'POST', body: { email: email.trim(), password }, auth: false },
+        );
+        await session.save(res.token, res.user);
+        goHome(res.user);
+      } else if (tab === 'forgot') {
+        const res = await api<{ message: string }>(
+          '/auth/admin/forgot-password',
+          { method: 'POST', body: { email: email.trim() }, auth: false },
+        );
+        setOkMsg(res.message);
+      }
     } catch (e: any) {
-      setErr(e.message);
-    } finally {
-      setBusy(false);
-    }
+      setMsg(e.message);
+    } finally { setBusy(false); }
   };
 
   if (checking) {
@@ -70,164 +82,147 @@ export default function Home() {
     );
   }
 
+  const isAdmin = tab === 'admin_login' || tab === 'forgot';
+
   return (
-    <View style={styles.wrap}>
-      <SafeAreaView style={{ flex: 1 }} edges={['top', 'bottom']}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={{ flex: 1 }}
-        >
-          <ScrollView
-            contentContainerStyle={styles.scroll}
-            keyboardShouldPersistTaps="handled"
-          >
-            <View style={styles.brand}>
-              <View style={styles.logo}>
-                <Ionicons name="beer" size={30} color={theme.colors.onBrand} />
-              </View>
-              <Text style={styles.brandTitle}>SchedinaBar</Text>
-              <Text style={styles.brandSub}>
-                Chi ha la quota piu bassa, paga da bere.
-              </Text>
-            </View>
+    <SafeAreaView style={styles.wrap} edges={['top', 'bottom']}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          <View style={styles.hero}>
+            <View style={styles.logo}><Ionicons name="beer" size={38} color={theme.colors.brand} /></View>
+            <Text style={styles.title}>SchedinaBar</Text>
+            <Text style={styles.subtitle}>Chi ha la quota più bassa, paga da bere.</Text>
+          </View>
 
-            {mode === 'landing' && (
-              <View style={styles.card}>
-                <Text style={styles.h1}>Inizia</Text>
-                <Text style={styles.p}>Crea una stanza o entra con codice invito</Text>
+          <View style={styles.segments}>
+            <Pressable
+              onPress={() => { setTab('player_login'); setMsg(null); setOkMsg(null); }}
+              style={[styles.segment, !isAdmin && styles.segmentActive]}
+              testID="tab-player"
+            >
+              <Text style={[styles.segmentText, !isAdmin && styles.segmentTextActive]}>Giocatore</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => { setTab('admin_login'); setMsg(null); setOkMsg(null); }}
+              style={[styles.segment, isAdmin && styles.segmentActive]}
+              testID="tab-admin"
+            >
+              <Text style={[styles.segmentText, isAdmin && styles.segmentTextActive]}>Admin</Text>
+            </Pressable>
+          </View>
 
-                <Pressable
-                  testID="cta-create-room"
-                  onPress={() => router.push('/create-room')}
-                  style={[styles.cta, styles.ctaPrimary]}
-                >
-                  <Ionicons name="add-circle" size={20} color={theme.colors.onBrand} />
-                  <Text style={styles.ctaTextPrimary}>Crea una stanza</Text>
-                </Pressable>
+          <View style={styles.card}>
+            {tab === 'player_login' && <>
+              <Text style={styles.cardTitle}>Accedi come Giocatore</Text>
+              <TextInput testID="player-username" placeholder="Nickname" placeholderTextColor={theme.colors.muted}
+                value={username} onChangeText={setUsername} autoCapitalize="none" style={styles.input} />
+              <TextInput testID="player-password" placeholder="Password" placeholderTextColor={theme.colors.muted}
+                value={password} onChangeText={setPassword} secureTextEntry style={styles.input} />
+              <Pressable onPress={() => { setTab('player_register'); setMsg(null); }}>
+                <Text style={styles.linkSmall}>Non hai un account? Registrati</Text>
+              </Pressable>
+            </>}
+            {tab === 'player_register' && <>
+              <Text style={styles.cardTitle}>Registrati come Giocatore</Text>
+              <TextInput testID="register-username" placeholder="Nickname (2-20 caratteri)" placeholderTextColor={theme.colors.muted}
+                value={username} onChangeText={setUsername} autoCapitalize="none" style={styles.input} />
+              <TextInput testID="register-password" placeholder="Password (min 6)" placeholderTextColor={theme.colors.muted}
+                value={password} onChangeText={setPassword} secureTextEntry style={styles.input} />
+              <Pressable onPress={() => { setTab('player_login'); setMsg(null); }}>
+                <Text style={styles.linkSmall}>Hai già un account? Accedi</Text>
+              </Pressable>
+            </>}
+            {tab === 'admin_login' && <>
+              <Text style={styles.cardTitle}>Accesso Admin</Text>
+              <TextInput testID="admin-email" placeholder="Email" placeholderTextColor={theme.colors.muted}
+                value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" style={styles.input} />
+              <TextInput testID="admin-password" placeholder="Password" placeholderTextColor={theme.colors.muted}
+                value={password} onChangeText={setPassword} secureTextEntry style={styles.input} />
+              <Pressable onPress={() => { setTab('forgot'); setMsg(null); }}>
+                <Text style={styles.linkSmall}>Password dimenticata?</Text>
+              </Pressable>
+            </>}
+            {tab === 'forgot' && <>
+              <Text style={styles.cardTitle}>Recupero password</Text>
+              <Text style={styles.help}>Inserisci l&apos;email dell&apos;account admin. Riceverai un link per reimpostare la password.</Text>
+              <TextInput testID="forgot-email" placeholder="Email" placeholderTextColor={theme.colors.muted}
+                value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" style={styles.input} />
+              <Pressable onPress={() => { setTab('admin_login'); setMsg(null); setOkMsg(null); }}>
+                <Text style={styles.linkSmall}>← Torna al login admin</Text>
+              </Pressable>
+            </>}
 
-                <Pressable
-                  testID="cta-join-room"
-                  onPress={() => setMode('join')}
-                  style={[styles.cta, styles.ctaSecondary]}
-                >
-                  <Ionicons name="enter" size={20} color={theme.colors.brand} />
-                  <Text style={styles.ctaTextSecondary}>Entra con codice</Text>
-                </Pressable>
-              </View>
-            )}
+            {msg && <Text style={styles.err}>{msg}</Text>}
+            {okMsg && <Text style={styles.ok}>{okMsg}</Text>}
 
-            {mode === 'join' && (
-              <View style={styles.card}>
-                <View style={styles.rowBetween}>
-                  <Text style={styles.h1}>Entra in stanza</Text>
-                  <Pressable onPress={() => setMode('landing')} hitSlop={10}>
-                    <Ionicons name="close" size={22} color={theme.colors.muted} />
-                  </Pressable>
-                </View>
-                <View style={styles.field}>
-                  <Ionicons name="key" size={18} color={theme.colors.muted} />
-                  <TextInput
-                    testID="invite-code-input"
-                    placeholder="Codice invito"
-                    placeholderTextColor={theme.colors.muted}
-                    value={inviteCode}
-                    onChangeText={(t) => setInviteCode(t.toUpperCase())}
-                    autoCapitalize="characters"
-                    autoCorrect={false}
-                    style={styles.input}
-                  />
-                </View>
-                <View style={styles.field}>
-                  <Ionicons name="person" size={18} color={theme.colors.muted} />
-                  <TextInput
-                    testID="nickname-input"
-                    placeholder="Il tuo nickname"
-                    placeholderTextColor={theme.colors.muted}
-                    value={nickname}
-                    onChangeText={setNickname}
-                    autoCapitalize="words"
-                    autoCorrect={false}
-                    style={styles.input}
-                  />
-                </View>
-                {err && <Text testID="join-error" style={styles.err}>{err}</Text>}
-                <Pressable
-                  testID="join-submit"
-                  onPress={submitJoin}
-                  disabled={busy}
-                  style={[styles.cta, styles.ctaPrimary, busy && { opacity: 0.6 }]}
-                >
-                  {busy ? (
-                    <ActivityIndicator color={theme.colors.onBrand} />
-                  ) : (
-                    <Text style={styles.ctaTextPrimary}>Entra</Text>
-                  )}
-                </Pressable>
-              </View>
-            )}
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    </View>
+            <Pressable
+              onPress={submit}
+              disabled={busy}
+              style={[styles.cta, busy && { opacity: 0.5 }]}
+              testID="auth-submit"
+            >
+              {busy
+                ? <ActivityIndicator color={theme.colors.onBrand} />
+                : <Text style={styles.ctaText}>
+                    {tab === 'player_login' ? 'Accedi'
+                      : tab === 'player_register' ? 'Registrati'
+                      : tab === 'admin_login' ? 'Accedi'
+                      : 'Invia link di reset'}
+                  </Text>}
+            </Pressable>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.colors.surface },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.surface },
-  scroll: { padding: theme.spacing.lg, flexGrow: 1, justifyContent: 'center' },
-  brand: { alignItems: 'center', marginBottom: theme.spacing.xxl, gap: theme.spacing.sm },
+  scroll: { padding: theme.spacing.lg, gap: theme.spacing.lg },
+  hero: { alignItems: 'center', marginTop: theme.spacing.xl, gap: 4 },
   logo: {
-    width: 72,
-    height: 72,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.brand,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: theme.colors.brand,
-    shadowOpacity: 0.4,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 8 },
+    width: 72, height: 72, borderRadius: 16, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: theme.colors.brand + '22', marginBottom: 8,
   },
-  brandTitle: { color: theme.colors.onSurface, fontSize: 32, fontWeight: '800' },
-  brandSub: { color: theme.colors.muted, fontSize: 14, textAlign: 'center' },
+  title: { color: theme.colors.onSurface, fontSize: 28, fontWeight: '800' },
+  subtitle: { color: theme.colors.muted, fontSize: 13 },
+  segments: {
+    flexDirection: 'row',
+    backgroundColor: theme.colors.surfaceSecondary,
+    padding: 4, borderRadius: theme.radius.md,
+    borderWidth: 1, borderColor: theme.colors.border,
+  },
+  segment: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: theme.radius.sm },
+  segmentActive: { backgroundColor: theme.colors.brand },
+  segmentText: { color: theme.colors.onSurfaceSecondary, fontWeight: '700', fontSize: 13 },
+  segmentTextActive: { color: theme.colors.onBrand, fontWeight: '800' },
   card: {
+    padding: theme.spacing.lg,
     backgroundColor: theme.colors.surfaceSecondary,
     borderRadius: theme.radius.lg,
-    padding: theme.spacing.xl,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: 1, borderColor: theme.colors.border,
     gap: theme.spacing.md,
   },
-  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  h1: { color: theme.colors.onSurface, fontSize: 22, fontWeight: '800' },
-  p: { color: theme.colors.muted, marginBottom: theme.spacing.sm },
-  field: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
+  cardTitle: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 16 },
+  input: {
+    color: theme.colors.onSurface,
     backgroundColor: theme.colors.surfaceTertiary,
-    borderRadius: theme.radius.md,
-    paddingHorizontal: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    padding: theme.spacing.md, borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: theme.colors.border,
+    fontSize: 15,
   },
-  input: { flex: 1, color: theme.colors.onSurface, paddingVertical: 14, fontSize: 15 },
+  help: { color: theme.colors.muted, fontSize: 12, lineHeight: 18 },
+  linkSmall: { color: theme.colors.brand, fontWeight: '700', fontSize: 13, textAlign: 'center' },
+  err: { color: theme.colors.error, fontSize: 13, textAlign: 'center' },
+  ok: { color: theme.colors.accent, fontSize: 13, textAlign: 'center' },
   cta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-    height: 52,
-    borderRadius: theme.radius.md,
+    height: 52, backgroundColor: theme.colors.brand, borderRadius: theme.radius.md,
+    alignItems: 'center', justifyContent: 'center',
   },
-  ctaPrimary: { backgroundColor: theme.colors.brand },
-  ctaSecondary: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: theme.colors.brand,
-  },
-  ctaTextPrimary: { color: theme.colors.onBrand, fontWeight: '800', fontSize: 16 },
-  ctaTextSecondary: { color: theme.colors.brand, fontWeight: '800', fontSize: 16 },
-  err: { color: theme.colors.error, fontSize: 13 },
+  ctaText: { color: theme.colors.onBrand, fontWeight: '800', fontSize: 16 },
 });

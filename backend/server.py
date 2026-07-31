@@ -146,12 +146,17 @@ class RoomCreate(BaseModel):
     matchday: int = Field(ge=1, le=38)
     max_events: int = Field(ge=1, le=10, default=5)
     color: Optional[str] = None
-    admin_nickname: str = Field(min_length=2, max_length=20)
+
+
+class RoomUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=40)
+    matchday: Optional[int] = Field(default=None, ge=1, le=38)
+    max_events: Optional[int] = Field(default=None, ge=1, le=10)
+    color: Optional[str] = None
 
 
 class RoomJoin(BaseModel):
     invite_code: str
-    nickname: str = Field(min_length=2, max_length=20)
 
 
 class SchedinaEventIn(BaseModel):
@@ -187,30 +192,29 @@ def gen_code(n: int = 6) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=n))
 
 
-def create_token(room_id: str, nickname: str, is_admin: bool) -> str:
-    payload = {
-        "room_id": room_id,
-        "nickname": nickname,
-        "is_admin": is_admin,
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_MINUTES),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+# Auth router + current-user dep are built from the auth module below.
+from auth import build_auth_router, seed_admin_if_missing  # noqa: E402
+
+_auth_router, _current_user_dep = build_auth_router(db)
+api.include_router(_auth_router)
 
 
-async def current_session(cred: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> dict:
-    if not cred:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        payload = jwt.decode(cred.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    # Sanity: verify membership still exists
-    m = await db.memberships.find_one(
-        {"room_id": payload["room_id"], "nickname": payload["nickname"]}, {"_id": 0}
-    )
-    if not m:
-        raise HTTPException(status_code=401, detail="Session invalid")
-    return payload
+async def current_user(user: dict = Depends(_current_user_dep)) -> dict:
+    return user
+
+
+async def require_admin(user: dict = Depends(_current_user_dep)) -> dict:
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+    return user
+
+
+def display_name(user: dict) -> str:
+    """Return a friendly display name for a user (username or email prefix)."""
+    if user.get("username"):
+        return user["username"]
+    email = user.get("email") or ""
+    return email.split("@")[0] if email else "admin"
 
 
 def _norm_team(name: str) -> str:
@@ -601,9 +605,15 @@ async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
 async def startup():
     await db.rooms.create_index("id", unique=True)
     await db.rooms.create_index("invite_code", unique=True)
-    await db.memberships.create_index([("room_id", 1), ("nickname", 1)], unique=True)
-    await db.schedine.create_index([("room_id", 1), ("nickname", 1)], unique=True)
+    await db.memberships.create_index([("room_id", 1), ("user_id", 1)], unique=True)
+    await db.schedine.create_index([("room_id", 1), ("user_id", 1)], unique=True)
     await db.fixtures.create_index([("room_id", 1), ("home_team", 1), ("away_team", 1)], unique=True)
+    await db.users.create_index("id", unique=True)
+    await db.users.create_index("email", unique=True, sparse=True)
+    await db.users.create_index("username", unique=True, sparse=True)
+    await db.reset_tokens.create_index("token", unique=True)
+    await db.reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    await seed_admin_if_missing(db)
     logger.info("SchedinaBar API started")
 
 
@@ -613,9 +623,13 @@ async def shutdown():
 
 
 # ============ Rooms ============
-async def _room_dict(room: dict, viewer_nickname: Optional[str] = None) -> dict:
+async def _room_dict(room: dict, viewer: Optional[dict] = None) -> dict:
     members_count = await db.memberships.count_documents({"room_id": room["id"]})
     settled = room.get("status") == "settled"
+    is_admin_of_room = False
+    if viewer:
+        # Any user with role=admin controls all rooms; also room creators are admins.
+        is_admin_of_room = viewer["role"] == "admin" or viewer["id"] == room.get("admin_user_id")
     return {
         "id": room["id"],
         "name": room["name"],
@@ -623,17 +637,27 @@ async def _room_dict(room: dict, viewer_nickname: Optional[str] = None) -> dict:
         "max_events": room["max_events"],
         "color": room["color"],
         "invite_code": room["invite_code"],
-        "admin_nickname": room["admin_nickname"],
+        "admin_user_id": room.get("admin_user_id"),
         "status": room.get("status", "open"),
         "created_at": room["created_at"],
         "members_count": members_count,
         "settled": settled,
-        "is_admin": viewer_nickname == room["admin_nickname"] if viewer_nickname else False,
+        "is_admin": is_admin_of_room,
     }
 
 
+async def _ensure_member(room_id: str, user: dict) -> None:
+    """Raise 403 if the user isn't a member of the room (admins bypass)."""
+    if user["role"] == "admin":
+        return
+    m = await db.memberships.find_one({"room_id": room_id, "user_id": user["id"]})
+    if not m:
+        raise HTTPException(status_code=403, detail="Non sei nella stanza")
+
+
+# ---------- ROOM: CRUD ----------
 @api.post("/rooms")
-async def create_room(data: RoomCreate):
+async def create_room(data: RoomCreate, user: dict = Depends(require_admin)):
     for _ in range(10):
         code = gen_code()
         if not await db.rooms.find_one({"invite_code": code}):
@@ -647,85 +671,118 @@ async def create_room(data: RoomCreate):
         "max_events": data.max_events,
         "color": color,
         "invite_code": code,
-        "admin_nickname": data.admin_nickname.strip(),
+        "admin_user_id": user["id"],
         "status": "open",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.rooms.insert_one(doc)
+    # Auto-join the creating admin
     await db.memberships.insert_one({
         "room_id": room_id,
-        "nickname": data.admin_nickname.strip(),
-        "is_admin": True,
+        "user_id": user["id"],
+        "display_name": display_name(user),
         "joined_at": datetime.now(timezone.utc).isoformat(),
     })
-    token = create_token(room_id, data.admin_nickname.strip(), True)
-    return {
-        "token": token,
-        "room": await _room_dict(doc, data.admin_nickname.strip()),
-    }
+    return await _room_dict(doc, user)
+
+
+@api.get("/rooms")
+async def list_my_rooms(user: dict = Depends(current_user)):
+    if user["role"] == "admin":
+        cursor = db.rooms.find({}, {"_id": 0}).sort("created_at", -1)
+    else:
+        member_room_ids = [m["room_id"] async for m in db.memberships.find(
+            {"user_id": user["id"]}, {"room_id": 1, "_id": 0})]
+        cursor = db.rooms.find({"id": {"$in": member_room_ids}}, {"_id": 0}).sort("created_at", -1)
+    rooms = []
+    async for r in cursor:
+        rooms.append(await _room_dict(r, user))
+    return rooms
 
 
 @api.post("/rooms/join")
-async def join_room(data: RoomJoin):
-    room = await db.rooms.find_one({"invite_code": data.invite_code.upper()}, {"_id": 0})
+async def join_room(data: RoomJoin, user: dict = Depends(current_user)):
+    room = await db.rooms.find_one({"invite_code": data.invite_code.upper().strip()}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Codice invito non valido")
     if room.get("status") == "settled":
-        raise HTTPException(status_code=400, detail="Stanza gia chiusa")
-    nickname = data.nickname.strip()
-    existing = await db.memberships.find_one(
-        {"room_id": room["id"], "nickname": nickname}
-    )
+        raise HTTPException(status_code=400, detail="Stanza già chiusa")
+    existing = await db.memberships.find_one({"room_id": room["id"], "user_id": user["id"]})
     if not existing:
-        # Enforce uniqueness of nickname in the room (case-insensitive)
-        conflict = await db.memberships.find_one({
-            "room_id": room["id"],
-            "nickname": {"$regex": f"^{re.escape(nickname)}$", "$options": "i"},
-        })
-        if conflict:
-            raise HTTPException(status_code=409, detail="Nickname gia usato in questa stanza")
         await db.memberships.insert_one({
             "room_id": room["id"],
-            "nickname": nickname,
-            "is_admin": False,
+            "user_id": user["id"],
+            "display_name": display_name(user),
             "joined_at": datetime.now(timezone.utc).isoformat(),
         })
-    is_admin = nickname == room["admin_nickname"]
-    token = create_token(room["id"], nickname, is_admin)
-    return {"token": token, "room": await _room_dict(room, nickname)}
+    return await _room_dict(room, user)
 
 
 @api.get("/rooms/{room_id}")
-async def get_room(room_id: str, session: dict = Depends(current_session)):
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+async def get_room(room_id: str, user: dict = Depends(current_user)):
+    await _ensure_member(room_id, user)
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Stanza non trovata")
-    return await _room_dict(room, session["nickname"])
+    return await _room_dict(room, user)
+
+
+@api.patch("/rooms/{room_id}")
+async def update_room(room_id: str, data: RoomUpdate, user: dict = Depends(require_admin)):
+    patch = {k: v for k, v in data.model_dump().items() if v is not None}
+    if not patch:
+        raise HTTPException(status_code=400, detail="Nessun campo da aggiornare")
+    if "color" in patch and patch["color"] not in ROOM_COLORS:
+        patch.pop("color")
+    result = await db.rooms.update_one({"id": room_id}, {"$set": patch})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    return await _room_dict(room, user)
+
+
+@api.delete("/rooms/{room_id}")
+async def delete_room(room_id: str, user: dict = Depends(require_admin)):
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Stanza non trovata")
+    await db.rooms.delete_one({"id": room_id})
+    await db.memberships.delete_many({"room_id": room_id})
+    await db.schedine.delete_many({"room_id": room_id})
+    await db.fixtures.delete_many({"room_id": room_id})
+    return {"ok": True}
 
 
 @api.get("/rooms/{room_id}/members")
-async def list_members(room_id: str, session: dict = Depends(current_session)):
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
-    cursor = db.memberships.find({"room_id": room_id}, {"_id": 0})
-    members = [m async for m in cursor]
-    # Enrich with schedina submitted flag
-    submitted = set()
-    async for s in db.schedine.find({"room_id": room_id, "status": "confirmed"}, {"nickname": 1, "_id": 0}):
-        submitted.add(s["nickname"])
-    for m in members:
-        m["submitted"] = m["nickname"] in submitted
-    return members
+async def list_members(room_id: str, user: dict = Depends(current_user)):
+    await _ensure_member(room_id, user)
+    memberships = [m async for m in db.memberships.find({"room_id": room_id}, {"_id": 0})]
+    if not memberships:
+        return []
+    user_ids = [m["user_id"] for m in memberships]
+    users_map = {}
+    async for u in db.users.find({"id": {"$in": user_ids}}, {"_id": 0, "password_hash": 0}):
+        users_map[u["id"]] = u
+    submitted_ids = set()
+    async for s in db.schedine.find(
+        {"room_id": room_id, "status": "confirmed"}, {"user_id": 1, "_id": 0}
+    ):
+        submitted_ids.add(s["user_id"])
+    result = []
+    for m in memberships:
+        u = users_map.get(m["user_id"], {})
+        result.append({
+            "user_id": m["user_id"],
+            "nickname": m.get("display_name") or u.get("username") or u.get("email") or "?",
+            "role": u.get("role", "player"),
+            "blocked": u.get("blocked", False),
+            "submitted": m["user_id"] in submitted_ids,
+        })
+    return result
 
 
 @api.post("/rooms/{room_id}/close")
-async def close_room(room_id: str, session: dict = Depends(current_session)):
-    if not session.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Solo l'admin puo chiudere la stanza")
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+async def close_room(room_id: str, user: dict = Depends(require_admin)):
     await db.rooms.update_one({"id": room_id}, {"$set": {"status": "closed"}})
     return {"ok": True}
 
@@ -736,9 +793,8 @@ class ScreenshotIn(BaseModel):
 
 
 @api.post("/rooms/{room_id}/schedina/ocr")
-async def upload_schedina(room_id: str, data: ScreenshotIn, session: dict = Depends(current_session)):
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+async def upload_schedina(room_id: str, data: ScreenshotIn, user: dict = Depends(current_user)):
+    await _ensure_member(room_id, user)
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Stanza non trovata")
@@ -753,17 +809,17 @@ async def upload_schedina(room_id: str, data: ScreenshotIn, session: dict = Depe
     except Exception:
         raise HTTPException(status_code=400, detail="Immagine base64 non valida")
 
-    # Persist draft with screenshot + parsed events
     result = await ocr_screenshot(raw)
     parsed = result["events"]
     if len(parsed) > room["max_events"]:
         parsed = parsed[: room["max_events"]]
 
     await db.schedine.update_one(
-        {"room_id": room_id, "nickname": session["nickname"]},
+        {"room_id": room_id, "user_id": user["id"]},
         {"$set": {
             "room_id": room_id,
-            "nickname": session["nickname"],
+            "user_id": user["id"],
+            "nickname": display_name(user),
             "screenshot_base64": b64,
             "raw_text": result["raw_text"],
             "events": parsed,
@@ -776,9 +832,8 @@ async def upload_schedina(room_id: str, data: ScreenshotIn, session: dict = Depe
 
 
 @api.post("/rooms/{room_id}/schedina/confirm")
-async def confirm_schedina(room_id: str, data: SchedinaConfirm, session: dict = Depends(current_session)):
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+async def confirm_schedina(room_id: str, data: SchedinaConfirm, user: dict = Depends(current_user)):
+    await _ensure_member(room_id, user)
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Stanza non trovata")
@@ -791,10 +846,11 @@ async def confirm_schedina(room_id: str, data: SchedinaConfirm, session: dict = 
 
     events = [e.model_dump() for e in data.events]
     await db.schedine.update_one(
-        {"room_id": room_id, "nickname": session["nickname"]},
+        {"room_id": room_id, "user_id": user["id"]},
         {"$set": {
             "room_id": room_id,
-            "nickname": session["nickname"],
+            "user_id": user["id"],
+            "nickname": display_name(user),
             "events": events,
             "status": "confirmed",
             "confirmed_at": datetime.now(timezone.utc).isoformat(),
@@ -805,11 +861,10 @@ async def confirm_schedina(room_id: str, data: SchedinaConfirm, session: dict = 
 
 
 @api.get("/rooms/{room_id}/schedina")
-async def my_schedina(room_id: str, session: dict = Depends(current_session)):
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+async def my_schedina(room_id: str, user: dict = Depends(current_user)):
+    await _ensure_member(room_id, user)
     s = await db.schedine.find_one(
-        {"room_id": room_id, "nickname": session["nickname"]},
+        {"room_id": room_id, "user_id": user["id"]},
         {"_id": 0, "screenshot_base64": 0, "raw_text": 0},
     )
     return s or {"empty": True}
@@ -817,11 +872,7 @@ async def my_schedina(room_id: str, session: dict = Depends(current_session)):
 
 # ============ Fixtures / Results ============
 @api.post("/rooms/{room_id}/fixtures")
-async def set_fixtures(room_id: str, data: FixturesIn, session: dict = Depends(current_session)):
-    if not session.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Solo l'admin puo inserire i risultati")
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+async def set_fixtures(room_id: str, data: FixturesIn, user: dict = Depends(require_admin)):
     await db.fixtures.delete_many({"room_id": room_id})
     docs = []
     for f in data.fixtures:
@@ -840,19 +891,14 @@ async def set_fixtures(room_id: str, data: FixturesIn, session: dict = Depends(c
 
 
 @api.get("/rooms/{room_id}/fixtures")
-async def get_fixtures(room_id: str, session: dict = Depends(current_session)):
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+async def get_fixtures(room_id: str, user: dict = Depends(current_user)):
+    await _ensure_member(room_id, user)
     cursor = db.fixtures.find({"room_id": room_id}, {"_id": 0})
     return [f async for f in cursor]
 
 
 @api.post("/rooms/{room_id}/fixtures/sync")
-async def sync_fixtures_from_api(room_id: str, season: Optional[int] = None, session: dict = Depends(current_session)):
-    if not session.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Solo l'admin")
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+async def sync_fixtures_from_api(room_id: str, season: Optional[int] = None, user: dict = Depends(require_admin)):
     if not API_FOOTBALL_KEY:
         raise HTTPException(status_code=400, detail="API_FOOTBALL_KEY non configurata")
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
@@ -913,16 +959,14 @@ def _match_prediction_to_fixture(event: dict, fixtures: list[dict]) -> Optional[
     for f in fixtures:
         if _team_match(event["home_team"], f["home_team"]) and _team_match(event["away_team"], f["away_team"]):
             return f
-        # Also try swapped (in case OCR got them backwards)
         if _team_match(event["home_team"], f["away_team"]) and _team_match(event["away_team"], f["home_team"]):
             return f
     return None
 
 
 @api.get("/rooms/{room_id}/leaderboard")
-async def leaderboard(room_id: str, session: dict = Depends(current_session)):
-    if session["room_id"] != room_id:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+async def leaderboard(room_id: str, user: dict = Depends(current_user)):
+    await _ensure_member(room_id, user)
     fixtures = [f async for f in db.fixtures.find({"room_id": room_id}, {"_id": 0})]
     has_results = len(fixtures) > 0
 
@@ -955,7 +999,8 @@ async def leaderboard(room_id: str, session: dict = Depends(current_session)):
             breakdown.append(info)
         total = round(product, 2) if won_count > 0 else 0.0
         entries.append({
-            "nickname": s["nickname"],
+            "user_id": s["user_id"],
+            "nickname": s.get("nickname", "?"),
             "total": total,
             "won_count": won_count,
             "events_count": len(events),

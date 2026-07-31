@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
+    "name": "SchedinaBar",
+    "slug": "schedinabar",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "schedinabar",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -15,7 +15,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000000"
+        "backgroundColor": "#0F1216"
       },
       "edgeToEdgeEnabled": true,
       "package": "com.emergent.fantasycalcio.v03gn9"
@@ -23,7 +23,23 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "name": "SchedinaBar",
+      "shortName": "SchedinaBar",
+      "description": "Sfida i tuoi amici sulle schedine Serie A. Chi ha la quota più bassa, paga da bere.",
+      "lang": "it",
+      "themeColor": "#FFB300",
+      "backgroundColor": "#0F1216",
+      "display": "standalone",
+      "orientation": "portrait",
+      "startUrl": "/",
+      "meta": {
+        "apple-mobile-web-app-capable": "yes",
+        "apple-mobile-web-app-status-bar-style": "black-translucent",
+        "apple-mobile-web-app-title": "SchedinaBar",
+        "mobile-web-app-capable": "yes",
+        "theme-color": "#FFB300"
+      }
     },
     "plugins": [
       "expo-router",
@@ -33,7 +49,7 @@
           "image": "./assets/images/splash-image.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#000000"
+          "backgroundColor": "#0F1216"
         }
       ]
     ],
