@@ -89,7 +89,25 @@ def test_classifier() -> int:
         # Combo (hypothetical layout: pick has '+')
         (("1X2+G/NG", "1+GOL"), "1+GOL"),
         (("1X+U/O 2,5", "1X+OVER"), "1X+OVER-2.5"),
+        # Real staryes combo layouts observed by the user
+        (("1X + GG/NG", "1X + NG"), "1X+NOGOL"),
+        (("1X2 + GG/NG", "1 + NG"), "1+NOGOL"),
+        (("U/O 2,5 + GG/NG", "GG + OV"), "OVER-2.5+GOL"),  # ordered by market
+        (("1X2 + G/NG", "2 + GOL"), "2+GOL"),
+        # Combo with a single pick (staryes shortcut, e.g. "1X + MULTIGOL 1 3: SI")
+        (("1X + MULTIGOL 1 3", "SI"), "1X+MG-1-3"),
+        (("1X2 + U/O 1.5", "1 + UN"), "1+UNDER-1.5"),
+        (("U/O 2.5 + GG/NG", "GG+OV"), "OVER-2.5+GOL"),
     ]
+    fails = 0
+    for (market, pick), expected in cases:
+        got = _classify_bet(market, pick)
+        ok = got == expected
+        print(f"  {'OK' if ok else 'FAIL'}  ({market!r}, {pick!r}) -> {got!r}   expected {expected!r}")
+        if not ok:
+            fails += 1
+    print(f"Classifier: {len(cases) - fails}/{len(cases)} pass")
+    return 0 if fails == 0 else 1
     fails = 0
     for (market, pick), expected in cases:
         got = _classify_bet(market, pick)

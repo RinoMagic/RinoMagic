@@ -140,4 +140,47 @@ export const PREDICTION_GROUPS: PredictionGroup[] = [
       { code: 'MGA-2-3', short: 'O 2-3', label: 'Ospite 2 o 3' },
     ],
   },
+  {
+    title: 'Combo — 1X2 + GOL',
+    options: [
+      { code: '1+GOL', short: '1+G', label: 'Casa + Gol' },
+      { code: 'X+GOL', short: 'X+G', label: 'Pareggio + Gol' },
+      { code: '2+GOL', short: '2+G', label: 'Trasferta + Gol' },
+      { code: '1+NOGOL', short: '1+NG', label: 'Casa + No Gol' },
+      { code: 'X+NOGOL', short: 'X+NG', label: 'Pareggio + No Gol' },
+      { code: '2+NOGOL', short: '2+NG', label: 'Trasferta + No Gol' },
+    ],
+  },
+  {
+    title: 'Combo — DC + GOL',
+    options: [
+      { code: '1X+GOL', short: '1X+G', label: '1X + Gol' },
+      { code: 'X2+GOL', short: 'X2+G', label: 'X2 + Gol' },
+      { code: '12+GOL', short: '12+G', label: '12 + Gol' },
+      { code: '1X+NOGOL', short: '1X+NG', label: '1X + No Gol' },
+      { code: 'X2+NOGOL', short: 'X2+NG', label: 'X2 + No Gol' },
+      { code: '12+NOGOL', short: '12+NG', label: '12 + No Gol' },
+    ],
+  },
+  {
+    title: 'Combo — 1X2 + Over/Under',
+    options: [
+      { code: '1+OVER-2.5', short: '1+O2.5', label: 'Casa + Over 2.5' },
+      { code: 'X+OVER-2.5', short: 'X+O2.5', label: 'Pareggio + Over 2.5' },
+      { code: '2+OVER-2.5', short: '2+O2.5', label: 'Trasferta + Over 2.5' },
+      { code: '1+UNDER-2.5', short: '1+U2.5', label: 'Casa + Under 2.5' },
+      { code: 'X+UNDER-2.5', short: 'X+U2.5', label: 'Pareggio + Under 2.5' },
+      { code: '2+UNDER-2.5', short: '2+U2.5', label: 'Trasferta + Under 2.5' },
+    ],
+  },
+  {
+    title: 'Combo — GOL + Over/Under',
+    options: [
+      { code: 'GOL+OVER-2.5', short: 'G+O2.5', label: 'Gol + Over 2.5' },
+      { code: 'GOL+OVER-1.5', short: 'G+O1.5', label: 'Gol + Over 1.5' },
+      { code: 'GOL+UNDER-3.5', short: 'G+U3.5', label: 'Gol + Under 3.5' },
+      { code: 'NOGOL+UNDER-2.5', short: 'NG+U2.5', label: 'No Gol + Under 2.5' },
+      { code: 'NOGOL+OVER-1.5', short: 'NG+O1.5', label: 'No Gol + Over 1.5' },
+    ],
+  },
 ];

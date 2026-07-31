@@ -355,42 +355,155 @@ def _titleize(name: str) -> str:
     return "".join(p if p.isspace() else (p[:1].upper() + p[1:].lower()) for p in parts)
 
 
+def _normalize_ocr_token(token: str) -> str:
+    """Fix common OCR misreads on staryes bet-slip picks and market labels."""
+    if not token:
+        return token
+    t = token
+    # Common OCR errors on the '1' character: often read as '4', 'l' or 'I'.
+    # Apply the fix ONLY on typical bet tokens so we don't clobber legit digits.
+    for wrong in ("4X", "IX", "LX"):
+        if wrong in t:
+            t = t.replace(wrong, "1X")
+    # 'O' misread as '0' when followed by other capitals ("0V" -> "OV").
+    t = re.sub(r"\b0([A-Z])", r"O\1", t)
+    return t
+
+
 def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
     """Given the market label and pick as printed on staryes.it, return the
     canonical prediction code (or None if unrecognised).
 
     Examples:
-        ("1X2", "2")                  -> "2"
-        ("G/NG", "GOL")               -> "GOL"
-        ("U/O 1,5", "UNDER")          -> "UNDER-1.5"
-        ("1X2 1°TEMPO", "X")          -> "HT-X"
-        ("1X", "1X")                  -> "1X"
-        ("MULTIGOL 0-1 OSPITE", "SI") -> "MGA-0-1"
-        ("MULTIGOL 0-2 CASA", "SI")   -> "MGH-0-2"
-        ("MULTIGOL 1-3", "SI")        -> "MG-1-3"
+        ("1X2", "2")                    -> "2"
+        ("G/NG", "GOL")                 -> "GOL"
+        ("U/O 1,5", "UNDER")            -> "UNDER-1.5"
+        ("1X2 1°TEMPO", "X")            -> "HT-X"
+        ("1X", "1X")                    -> "1X"
+        ("MULTIGOL 0-1 OSPITE", "SI")   -> "MGA-0-1"
+        ("MULTIGOL 0-2 CASA", "SI")     -> "MGH-0-2"
+        ("MULTIGOL 1-3", "SI")          -> "MG-1-3"
+        # Combo layouts observed on real staryes tickets
+        ("1X + GG/NG", "1X + NG")       -> "1X+NOGOL"
+        ("U/O 2,5 + GG/NG", "GG + OV")  -> "GOL+OVER-2.5"   (pick order swapped)
+        ("1X + MULTIGOL 1 3", "SI")     -> "1X+MG-1-3"      (single pick, implicit)
+        ("1X2 + U/O 1,5", "1 + UN")     -> "1+UNDER-1.5"    (UN alias)
     """
     if pick_raw is None:
         return None
-    market = market_raw.upper().replace("°", "").replace(",", ".")
-    pick = re.sub(r"[^A-Z0-9./,+-]", "", pick_raw.upper().replace(",", "."))
+    market = _normalize_ocr_token(market_raw.upper().replace("°", "").replace(",", "."))
+    pick = _normalize_ocr_token(
+        re.sub(r"[^A-Z0-9./,+-]", "", pick_raw.upper().replace(",", "."))
+    )
     if not pick:
         return None
 
-    # Combo: if pick contains '+' (staryes combo layout), classify each atom
-    # against the paired market atom when possible. Fallback: split market
-    # by '+' too and try to match atoms 1-to-1.
-    if "+" in pick:
-        pick_atoms = [p for p in pick.split("+") if p]
-        # Only split market on '+' (do NOT split on '/' -- 'U/O 2.5' is one market)
-        market_atoms = [m.strip() for m in market.split("+") if m.strip()]
+    market_atoms = [m.strip() for m in market.split("+") if m.strip()]
+    pick_atoms = [p for p in pick.split("+") if p]
+
+    # Combo: the market label lists more than one market joined by '+'
+    if len(market_atoms) > 1:
         codes: List[str] = []
-        for i, pa in enumerate(pick_atoms):
-            m_for_atom = market_atoms[i] if i < len(market_atoms) else market
-            code = _classify_bet(m_for_atom, pa)
+        used_picks: set = set()
+        for ma in market_atoms:
+            code = None
+            # 1. Try each unused pick atom (semantic, not positional match)
+            for k, pa in enumerate(pick_atoms):
+                if k in used_picks:
+                    continue
+                c = _classify_bet(ma, pa)
+                if c:
+                    code = c
+                    used_picks.add(k)
+                    break
+            # 2. Implicit: use the market atom as its own pick
+            #    (e.g. market atom "1X" with implicit pick "1X")
+            if not code:
+                c = _classify_bet(ma, ma)
+                if c:
+                    code = c
+            # 3. Default "SI" for Multigol markets (staryes often prints only "SI"
+            #    for the whole combo confirmation)
+            if not code and ("MULTIGOL" in ma or "MULTI GOL" in ma):
+                c = _classify_bet(ma, "SI")
+                if c:
+                    code = c
             if not code:
                 return None
             codes.append(code)
         return "+".join(codes)
+
+    # Detect first-half markets
+    is_ht = any(tag in market for tag in ("1TEMPO", "1 TEMPO", "PRIMO TEMPO", "1T", "HT", "1H"))
+    ht_prefix = "HT-" if is_ht else ""
+
+    # Multigol (total / home / away). Accept both "1-3" and "1 3" separators;
+    # tolerate OCR losing the separator entirely ("MULTIGOL 13" -> range 1-3).
+    if "MULTIGOL" in market or "MULTI GOL" in market:
+        rng = (
+            re.search(r"(\d)\s*[-–]\s*(\d)", market)
+            or re.search(r"(\d)\s+(\d)", market)
+        )
+        if not rng:
+            # Concatenated 2-digit range like "13" (=1-3), "24" (=2-4), "03" (=0-3).
+            # Only accept when the 2 digits form a plausible bet-slip range
+            # (0..5, first digit <= second digit).
+            m2 = re.search(r"\b(\d)(\d)\b", market)
+            if m2:
+                a, b = int(m2.group(1)), int(m2.group(2))
+                if 0 <= a <= b <= 5:
+                    rng = m2
+        if not rng:
+            return None
+        a, b = rng.group(1), rng.group(2)
+        if "CASA" in market or "HOME" in market:
+            base = "MGH"
+        elif "OSPITE" in market or "AWAY" in market or "TRASF" in market:
+            base = "MGA"
+        else:
+            base = "MG"
+        code = f"{base}-{a}-{b}"
+        if pick in {"NO", "N"}:
+            code += "-NO"
+        elif pick not in {"SI", "S", "YES", "Y", "GOL", "1", ""}:
+            # Unexpected pick for multigol
+            return None
+        return code
+
+    # G/NG (both teams to score)
+    if market in {"G/NG", "GG/NG", "GG", "NG"} or "GOL/NOGOL" in market or "GOL/NO GOL" in market:
+        if pick in {"GOL", "GG", "SI", "S", "YES", "1"}:
+            return "GOL"
+        if pick in {"NOGOL", "NG", "NO", "N", "0"}:
+            return "NOGOL"
+        return None
+
+    # Over / Under (threshold-aware)
+    if "U/O" in market or "O/U" in market or "OVER" in market or "UNDER" in market:
+        thr_match = re.search(r"(\d(?:\.\d)?)", market)
+        threshold = thr_match.group(1) if thr_match else "2.5"
+        # normalise threshold to "X.5" or integer
+        if "." not in threshold:
+            threshold = f"{threshold}.5"
+        if pick.startswith("OVER") or pick in {"O", "OV"}:
+            return f"OVER-{threshold}"
+        if pick.startswith("UNDER") or pick in {"U", "UN"}:
+            return f"UNDER-{threshold}"
+        return None
+
+    # 1X2 / Double chance — both full-time and half-time
+    # Market label may be "1X2", "1X", "X2", "12", "IX" (OCR of "1X"), etc.
+    if pick in {"1", "X", "2"}:
+        return f"{ht_prefix}{pick}"
+    if pick in {"1X", "X2", "12", "IX"}:
+        canonical = "1X" if pick == "IX" else pick
+        return f"{ht_prefix}{canonical}"
+    # As a last resort, if the pick is GOL/NOGOL alone
+    if pick in {"GOL", "NOGOL"}:
+        return pick
+
+    _ = pick_atoms  # kept for parity with combo branch
+    return None
 
     # Detect first-half markets
     is_ht = any(tag in market for tag in ("1TEMPO", "1 TEMPO", "PRIMO TEMPO", "1T", "HT", "1H"))
@@ -431,9 +544,9 @@ def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
         # normalise threshold to "X.5" or integer
         if "." not in threshold:
             threshold = f"{threshold}.5"
-        if pick.startswith("OVER") or pick == "O":
+        if pick.startswith("OVER") or pick in {"O", "OV"}:
             return f"OVER-{threshold}"
-        if pick.startswith("UNDER") or pick == "U":
+        if pick.startswith("UNDER") or pick in {"U", "UN"}:
             return f"UNDER-{threshold}"
         return None
 
@@ -454,64 +567,56 @@ def _classify_bet(market_raw: str, pick_raw: str) -> Optional[str]:
 def _parse_staryes_slip(raw_text: str) -> List[dict]:
     """Parse a staryes.it bet slip out of raw OCR text.
 
-    Strategy:
-      1. Split OCR text in trimmed non-empty lines.
-      2. Locate `CALCIO - SERIE A` header lines as block anchors.
-      3. Within each block (until next header), look for a `TEAM - TEAM` line
-         and a bet line ending with an odd. Missing anchors are tolerated
-         (some slips only show teams+bet without a re-printed header).
+    Strategy: use each TEAM line (e.g. `7965 FROSINONE - JUVENTUS`) as an
+    event anchor. For each team line, look forward within its block (until
+    the next team line) for a bet line ending with a decimal odd. This is
+    resilient to:
+      - The very first event missing the `CALCIO - SERIE A` header (image
+        cropped at top).
+      - Extra "trash" lines between events (icons, dates, IDs).
     """
     lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
     if not lines:
         return []
 
-    # Indexes of header lines act as event separators.
-    header_idx = [i for i, ln in enumerate(lines) if STARYES_HEADER_RE.search(ln)]
-    if not header_idx:
-        # Fallback: treat the whole text as one block
-        header_idx = [0]
+    team_anchors: List[tuple[int, str, str]] = []
+    for i, ln in enumerate(lines):
+        m = STARYES_TEAMS_RE.match(ln)
+        if m:
+            team_anchors.append((i, m.group(1).strip(), m.group(2).strip()))
+    if not team_anchors:
+        return []
 
     events: List[dict] = []
-    for i, hi in enumerate(header_idx):
-        end = header_idx[i + 1] if i + 1 < len(header_idx) else len(lines)
-        block = lines[hi:end]
-        home = away = prediction = None
-        odd: Optional[float] = None
-        for ln in block:
-            if home is None:
-                m = STARYES_TEAMS_RE.match(ln)
-                if m:
-                    home, away = m.group(1).strip(), m.group(2).strip()
-                    continue
-            if odd is None:
-                om = STARYES_ODD_TAIL_RE.search(ln)
-                if om:
-                    try:
-                        candidate = float(om.group(1).replace(",", "."))
-                    except ValueError:
-                        candidate = 0.0
-                    if 1.01 <= candidate <= 999:
-                        pred_fragment = ln[: om.start()].strip()
-                        # Split "MARKET: PICK" (last colon wins to survive "U/O 1,5: UNDER")
-                        if ":" in pred_fragment:
-                            market_raw, pick_raw = pred_fragment.rsplit(":", 1)
-                        else:
-                            tokens = pred_fragment.split()
-                            market_raw = " ".join(tokens[:-1]) if len(tokens) > 1 else ""
-                            pick_raw = tokens[-1] if tokens else ""
-                        pred = _classify_bet(market_raw, pick_raw)
-                        if pred:
-                            odd = candidate
-                            prediction = pred
-        if home and away and prediction and odd:
-            events.append({
-                "home_team": _titleize(home),
-                "away_team": _titleize(away),
-                "prediction": prediction,
-                "odd": round(odd, 3),
-            })
+    for k, (idx, home, away) in enumerate(team_anchors):
+        end = team_anchors[k + 1][0] if k + 1 < len(team_anchors) else len(lines)
+        for ln in lines[idx + 1:end]:
+            om = STARYES_ODD_TAIL_RE.search(ln)
+            if not om:
+                continue
+            try:
+                candidate = float(om.group(1).replace(",", "."))
+            except ValueError:
+                continue
+            if not (1.01 <= candidate <= 999):
+                continue
+            pred_fragment = ln[: om.start()].strip()
+            if ":" in pred_fragment:
+                market_raw, pick_raw = pred_fragment.rsplit(":", 1)
+            else:
+                tokens = pred_fragment.split()
+                market_raw = " ".join(tokens[:-1]) if len(tokens) > 1 else ""
+                pick_raw = tokens[-1] if tokens else ""
+            pred = _classify_bet(market_raw, pick_raw)
+            if pred:
+                events.append({
+                    "home_team": _titleize(home),
+                    "away_team": _titleize(away),
+                    "prediction": pred,
+                    "odd": round(candidate, 3),
+                })
+                break  # Only one bet line per event
 
-    # Dedup by (home, away, prediction)
     seen = set()
     dedup: List[dict] = []
     for e in events:
