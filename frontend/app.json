@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "SchedinaBar",
-    "slug": "schedinabar",
+    "name": "RinoMagic",
+    "slug": "rinomagic",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "schedinabar",
+    "scheme": "rinomagic",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -24,8 +24,8 @@
       "bundler": "metro",
       "output": "single",
       "favicon": "./assets/images/favicon.png",
-      "name": "SchedinaBar",
-      "shortName": "SchedinaBar",
+      "name": "RinoMagic",
+      "shortName": "RinoMagic",
       "description": "Sfida i tuoi amici sulle schedine Serie A. Chi ha la quota più bassa, paga da bere.",
       "lang": "it",
       "themeColor": "#FFB300",
@@ -36,7 +36,7 @@
       "meta": {
         "apple-mobile-web-app-capable": "yes",
         "apple-mobile-web-app-status-bar-style": "black-translucent",
-        "apple-mobile-web-app-title": "SchedinaBar",
+        "apple-mobile-web-app-title": "RinoMagic",
         "mobile-web-app-capable": "yes",
         "theme-color": "#FFB300"
       }

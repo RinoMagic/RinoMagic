@@ -93,7 +93,7 @@ export default function Landing() {
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.hero}>
             <View style={styles.logo}><Ionicons name="beer" size={38} color={theme.colors.brand} /></View>
-            <Text style={styles.title}>SchedinaBar</Text>
+            <Text style={styles.title}>RinoMagic</Text>
             <Text style={styles.subtitle}>Chi ha la quota più bassa, paga da bere.</Text>
           </View>
 

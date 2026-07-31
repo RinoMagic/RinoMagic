@@ -50,7 +50,7 @@ TESSERACT_LANG = os.environ.get("TESSERACT_LANG", "ita+eng")
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
-app = FastAPI(title="SchedinaBar API")
+app = FastAPI(title="RinoMagic API")
 api = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
 logger = logging.getLogger("schedinabar")
@@ -682,7 +682,7 @@ async def startup():
                 "revoked_at": None,
             })
     await seed_admin_if_missing(db)
-    logger.info("SchedinaBar API started")
+    logger.info("RinoMagic API started")
 
 
 @app.on_event("shutdown")
@@ -1282,7 +1282,7 @@ async def leaderboard(room_id: str, user: dict = Depends(current_user)):
 
 @api.get("/")
 async def root():
-    return {"service": "SchedinaBar", "status": "ok"}
+    return {"service": "RinoMagic", "status": "ok"}
 
 
 app.include_router(api)

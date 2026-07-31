@@ -110,7 +110,7 @@ export default function InvitesManagement() {
   const copyOrShare = async (invite: Invite) => {
     if (!room) return;
     const link = `${appBaseUrl()}/invite/${invite.code}`;
-    const message = `Sei stato invitato nella stanza "${room.name}" su SchedinaBar!\nCodice: ${invite.code}\n${link}`;
+    const message = `Sei stato invitato nella stanza "${room.name}" su RinoMagic!\nCodice: ${invite.code}\n${link}`;
     if (Platform.OS === 'web') {
       try {
         await (navigator as any).clipboard?.writeText(link);

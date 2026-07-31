@@ -9,7 +9,7 @@ logger = logging.getLogger("schedinabar.email")
 
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"  # constant, do NOT read from env
 EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY", "").strip()
-EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "SchedinaBar").strip()
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "RinoMagic").strip()
 
 
 async def send_email(recipient_email: str, subject: str, html_content: str) -> bool:
@@ -57,7 +57,7 @@ def build_reset_email_html(reset_url: str, expires_minutes: int = 60) -> str:
            style="background:#1B1F26;border-radius:16px;padding:32px;color:#F5F7FA">
       <tr><td align="center" style="padding-bottom:16px">
         <div style="font-size:40px;line-height:1">🍺</div>
-        <div style="font-size:22px;font-weight:800;margin-top:6px">SchedinaBar</div>
+        <div style="font-size:22px;font-weight:800;margin-top:6px">RinoMagic</div>
       </td></tr>
       <tr><td style="font-size:16px;line-height:1.5">
         <p>Ciao,</p>

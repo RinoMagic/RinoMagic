@@ -181,7 +181,7 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
             reset_url = f"{APP_BASE_URL}/reset-password?token={token}"
             await send_email(
                 email,
-                "SchedinaBar — Reset password",
+                "RinoMagic — Reset password",
                 build_reset_email_html(reset_url, expires_minutes=60),
             )
         return {"ok": True, "message": "Se l'email è registrata, riceverai le istruzioni per il reset."}
