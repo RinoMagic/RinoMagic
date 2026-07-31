@@ -302,6 +302,73 @@ async def me(user: dict = Depends(get_current_user)):
     return UserOut(id=user["id"], email=user["email"], username=user["username"])
 
 
+# ============ Password management ============
+class ChangeOwnPasswordIn(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6)
+
+
+class AdminResetPasswordIn(BaseModel):
+    email: EmailStr
+    new_password: str = Field(min_length=6)
+
+
+@api.post("/users/me/password")
+async def change_my_password(data: ChangeOwnPasswordIn, user: dict = Depends(get_current_user)):
+    full = await db.users.find_one({"id": user["id"]})
+    if not full or not verify_password(data.current_password, full["password_hash"]):
+        raise HTTPException(status_code=400, detail="Password attuale errata")
+    if data.current_password == data.new_password:
+        raise HTTPException(status_code=400, detail="La nuova password deve essere diversa")
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"password_hash": hash_password(data.new_password)}}
+    )
+    return {"ok": True}
+
+
+@api.get("/admin/users")
+async def admin_list_users(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    q: Optional[str] = None,
+    admin: dict = Depends(require_system_admin),
+):
+    query = {}
+    if q and q.strip():
+        query = {
+            "$or": [
+                {"email": {"$regex": q.strip(), "$options": "i"}},
+                {"username": {"$regex": q.strip(), "$options": "i"}},
+            ]
+        }
+    total = await db.users.count_documents(query)
+    skip = (page - 1) * limit
+    cursor = (
+        db.users
+        .find(query, {"_id": 0, "password_hash": 0})
+        .sort("email", 1)
+        .skip(skip)
+        .limit(limit)
+    )
+    items = [u async for u in cursor]
+    return {"items": items, "page": page, "limit": limit, "total": total}
+
+
+@api.post("/admin/users/reset-password")
+async def admin_reset_password(data: AdminResetPasswordIn, admin: dict = Depends(require_system_admin)):
+    target = await db.users.find_one({"email": data.email})
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    if target["id"] == admin["id"]:
+        raise HTTPException(status_code=400, detail="Usa il cambio password personale per il tuo account")
+    await db.users.update_one(
+        {"id": target["id"]},
+        {"$set": {"password_hash": hash_password(data.new_password)}}
+    )
+    return {"ok": True, "email": data.email, "username": target.get("username")}
+
+
 # ============ Players ============
 @api.get("/players", response_model=List[Player])
 async def list_players(

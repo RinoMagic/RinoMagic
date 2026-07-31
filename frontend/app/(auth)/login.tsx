@@ -113,6 +113,14 @@ export default function Login() {
                 )}
               </Pressable>
 
+              <Pressable
+                testID="forgot-password"
+                style={styles.forgotRow}
+                onPress={() => setError('Password dimenticata? Contatta l\'amministratore della lega o dell\'app per ricevere una nuova password.')}
+              >
+                <Text style={styles.forgotText}>Password dimenticata?</Text>
+              </Pressable>
+
               <Link href="/(auth)/register" asChild>
                 <Pressable testID="go-to-register" style={styles.linkRow}>
                   <Text style={styles.linkText}>
@@ -193,6 +201,16 @@ const styles = StyleSheet.create({
   },
   linkRow: { marginTop: theme.spacing.lg, alignItems: 'center' },
   linkText: { color: theme.colors.onSurfaceSecondary, fontSize: 14 },
+  forgotRow: {
+    alignItems: 'center',
+    paddingVertical: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
+  },
+  forgotText: {
+    color: theme.colors.brand,
+    fontSize: 13,
+    fontWeight: '600',
+  },
   error: {
     color: theme.colors.error,
     marginBottom: theme.spacing.sm,

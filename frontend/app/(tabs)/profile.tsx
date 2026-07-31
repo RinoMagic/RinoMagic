@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator } from
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/context/AuthContext';
 import { api } from '@/src/api/client';
@@ -25,6 +26,7 @@ const ADMIN_EMAIL = 'admin@fantagiornata.it';
 
 export default function Profile() {
   const { user, signOut } = useAuth();
+  const router = useRouter();
   const isAdmin = user?.email === ADMIN_EMAIL;
   const [sys, setSys] = useState<SystemInfo | null>(null);
   const [sysLoading, setSysLoading] = useState(false);
@@ -143,6 +145,31 @@ export default function Profile() {
             <Rule label="Portiere: gol subito" value="-1 per ogni" />
             <Rule label="Portiere: rigore parato" value="+3" last />
           </View>
+        </View>
+
+        {/* Account actions */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Account</Text>
+          <Pressable
+            testID="goto-change-password"
+            style={styles.actionRow}
+            onPress={() => router.push('/change-password')}
+          >
+            <Ionicons name="key-outline" size={20} color={theme.colors.brand} />
+            <Text style={styles.actionRowText}>Cambia password</Text>
+            <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
+          </Pressable>
+          {isAdmin && (
+            <Pressable
+              testID="goto-admin-users"
+              style={styles.actionRow}
+              onPress={() => router.push('/admin-users')}
+            >
+              <Ionicons name="people-outline" size={20} color={theme.colors.brandSecondary} />
+              <Text style={styles.actionRowText}>Reset password utenti</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
+            </Pressable>
+          )}
         </View>
 
         {isAdmin && sys && (
@@ -341,6 +368,23 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
   },
   logoutText: { color: theme.colors.error, fontWeight: '800' },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    marginBottom: theme.spacing.sm,
+  },
+  actionRowText: {
+    flex: 1,
+    color: theme.colors.onSurface,
+    fontWeight: '600',
+    fontSize: 15,
+  },
   sysRow: {
     flexDirection: 'row',
     alignItems: 'center',
