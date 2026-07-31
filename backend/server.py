@@ -110,6 +110,14 @@ GAMES = {
         "icon": "pulse",
         "enabled": False,  # Coming soon
     },
+    "fantagiornata": {
+        "id": "fantagiornata",
+        "name": "FantaGiornata",
+        "tagline": "Fantacalcio a giornata singola — in arrivo",
+        "color": "#A855F7",
+        "icon": "football",
+        "enabled": False,  # Coming soon (archived project, will be integrated later)
+    },
 }
 DEFAULT_GAME = "thebesttiket"
 

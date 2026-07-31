@@ -62,13 +62,19 @@ export default function Hub() {
   };
 
   const openGame = (g: GameInfo) => {
-    if (!g.enabled) return;
+    if (!g.enabled) {
+      // Show the "Coming Soon" page anyway so users see what's in the pipeline
+      if (g.id === 'scoreandlive') router.push('/scoreandlive');
+      else if (g.id === 'fantagiornata') router.push('/fantagiornata');
+      return;
+    }
     if (g.id === 'thebesttiket') {
-      // Route to the game's dashboard based on user role
       if (me?.role === 'admin') router.push('/admin');
       else router.push('/player');
     } else if (g.id === 'scoreandlive') {
       router.push('/scoreandlive');
+    } else if (g.id === 'fantagiornata') {
+      router.push('/fantagiornata');
     }
   };
 
@@ -111,12 +117,11 @@ export default function Hub() {
             key={g.id}
             testID={`game-card-${g.id}`}
             onPress={() => openGame(g)}
-            disabled={!g.enabled}
             style={({ pressed }) => [
               styles.card,
               { borderColor: g.color, backgroundColor: g.color + '18' },
-              !g.enabled && { opacity: 0.55 },
-              pressed && g.enabled && { transform: [{ scale: 0.98 }] },
+              !g.enabled && { opacity: 0.7 },
+              pressed && { transform: [{ scale: 0.98 }] },
             ]}
           >
             <View style={[styles.iconBox, { backgroundColor: g.color }]}>
@@ -143,7 +148,11 @@ export default function Hub() {
                 </View>
               )}
             </View>
-            {g.enabled && <Ionicons name="chevron-forward" size={22} color={g.color} />}
+            {g.enabled ? (
+              <Ionicons name="chevron-forward" size={22} color={g.color} />
+            ) : (
+              <Ionicons name="information-circle-outline" size={22} color={g.color} />
+            )}
           </Pressable>
         ))}
 
