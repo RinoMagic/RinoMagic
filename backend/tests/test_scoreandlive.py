@@ -219,7 +219,7 @@ class TestMatchdayPickSettle:
                             "postponed_during": []},
                       headers=_h(admin_tok), timeout=15).raise_for_status()
 
-        # Md2: try to pick Barella (Inter) again → must fail
+        # Md2: try to pick Barella (Inter) again → must fail (Inter is blocked)
         md2 = self._md(admin_tok, tid, mdn=4)
         barella = roster[("Barella", "Inter")]["id"]
         immobile = roster[("Immobile", "Lazio")]["id"]
@@ -229,6 +229,89 @@ class TestMatchdayPickSettle:
                           headers=_h(tok0), timeout=15)
         assert r.status_code == 400
         assert "Inter" in r.json()["detail"] and "bloccata" in r.json()["detail"].lower()
+
+    def test_partial_block_allows_opposite_side(self, admin_tok, player_toks, tournament, roster):
+        """Option B: with only one team of the fixture blocked, picking a player
+        from the *other* team must be allowed (was rejected under the old rule)."""
+        tid, _ = tournament
+        # Md1: hit Lautaro → Inter blocked for player 0
+        md1 = self._md(admin_tok, tid, mdn=7)
+        lautaro = roster[("Martinez", "Inter")]["id"]
+        debruyne = roster[("De Bruyne", "Napoli")]["id"]
+        tok0, _ = player_toks[0]
+        requests.post(f"{API}/sal/tournaments/{tid}/matchdays/{md1}/picks",
+                      json={"picks": [{"fixture_idx": 0, "player_id": lautaro},
+                                      {"fixture_idx": 1, "player_id": debruyne}]},
+                      headers=_h(tok0), timeout=15).raise_for_status()
+        requests.post(f"{API}/sal/tournaments/{tid}/matchdays/{md1}/settle",
+                      json={"scorers": [{"fixture_idx": 0, "player_id": lautaro}],
+                            "postponed_during": []},
+                      headers=_h(admin_tok), timeout=15).raise_for_status()
+
+        # Md2: same fixtures. Inter is blocked but Roma is not → pick Dybala (Roma)
+        md2 = self._md(admin_tok, tid, mdn=8)
+        dybala = roster[("Dybala", "Roma")]["id"]
+        lukaku = roster[("Lukaku", "Napoli")]["id"]
+        r = requests.post(f"{API}/sal/tournaments/{tid}/matchdays/{md2}/picks",
+                          json={"picks": [{"fixture_idx": 0, "player_id": dybala},
+                                          {"fixture_idx": 1, "player_id": lukaku}]},
+                          headers=_h(tok0), timeout=15)
+        assert r.status_code == 200, r.text
+        # None of these should have deadlock_override
+        for p in r.json()["picks"]:
+            assert p.get("deadlock_override") is False
+
+    def test_deadlock_override_when_both_teams_blocked(self, admin_tok, player_toks, tournament, roster):
+        """Option B core: when both teams of a fixture are already blocked, the
+        deadlock deroga kicks in and allows any pick, tagged as override."""
+        tid, _ = tournament
+        # Md1: hit ALL 4 teams (Inter, Roma, Napoli, Lazio) for player 0
+        md1 = self._md(admin_tok, tid, mdn=9)
+        lautaro = roster[("Martinez", "Inter")]["id"]
+        dybala = roster[("Dybala", "Roma")]["id"]
+        debruyne = roster[("De Bruyne", "Napoli")]["id"]
+        immobile = roster[("Immobile", "Lazio")]["id"]
+        tok0, _ = player_toks[0]
+        requests.post(f"{API}/sal/tournaments/{tid}/matchdays/{md1}/picks",
+                      json={"picks": [{"fixture_idx": 0, "player_id": lautaro},
+                                      {"fixture_idx": 1, "player_id": debruyne}]},
+                      headers=_h(tok0), timeout=15).raise_for_status()
+        # Settle: both scored → Inter + Napoli blocked
+        requests.post(f"{API}/sal/tournaments/{tid}/matchdays/{md1}/settle",
+                      json={"scorers": [{"fixture_idx": 0, "player_id": lautaro},
+                                        {"fixture_idx": 1, "player_id": debruyne}],
+                            "postponed_during": []},
+                      headers=_h(admin_tok), timeout=15).raise_for_status()
+
+        # Md2: pick from opposite (Roma + Lazio) and hit → Roma + Lazio also blocked
+        md2 = self._md(admin_tok, tid, mdn=10)
+        requests.post(f"{API}/sal/tournaments/{tid}/matchdays/{md2}/picks",
+                      json={"picks": [{"fixture_idx": 0, "player_id": dybala},
+                                      {"fixture_idx": 1, "player_id": immobile}]},
+                      headers=_h(tok0), timeout=15).raise_for_status()
+        requests.post(f"{API}/sal/tournaments/{tid}/matchdays/{md2}/settle",
+                      json={"scorers": [{"fixture_idx": 0, "player_id": dybala},
+                                        {"fixture_idx": 1, "player_id": immobile}],
+                            "postponed_during": []},
+                      headers=_h(admin_tok), timeout=15).raise_for_status()
+
+        # Confirm all 4 teams are now blocked for player 0
+        r = requests.get(f"{API}/sal/tournaments/{tid}", headers=_h(tok0), timeout=15)
+        blocked = set(r.json()["my_blocked_teams"])
+        assert {"Inter", "Roma", "Napoli", "Lazio"}.issubset(blocked)
+
+        # Md3: same fixtures — both fixtures now have both teams blocked
+        # → deroga: any pick is accepted, tagged with deadlock_override=True
+        md3 = self._md(admin_tok, tid, mdn=11)
+        barella = roster[("Barella", "Inter")]["id"]
+        zaccagni = roster[("Zaccagni", "Lazio")]["id"]
+        r = requests.post(f"{API}/sal/tournaments/{tid}/matchdays/{md3}/picks",
+                          json={"picks": [{"fixture_idx": 0, "player_id": barella},
+                                          {"fixture_idx": 1, "player_id": zaccagni}]},
+                          headers=_h(tok0), timeout=15)
+        assert r.status_code == 200, r.text
+        picks = r.json()["picks"]
+        assert all(p.get("deadlock_override") is True for p in picks)
 
     def test_pre_postponed_fixture_not_playable(self, admin_tok, player_toks, tournament, roster):
         tid, _ = tournament

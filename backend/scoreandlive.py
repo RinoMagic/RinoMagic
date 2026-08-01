@@ -5,6 +5,12 @@ picks one scorer per playable fixture; a missed pick costs a life. Zero lives
 means elimination. Once a scorer is hit, the whole team is off-limits for the
 rest of the tournament. Postponed matches never cost lives.
 
+**Deadlock deroga (Option B rule)**: if both teams of a specific fixture are
+already blocked for the user, that fixture accepts any pick regardless (the
+pick is stored with ``deadlock_override: True``). This avoids situations where
+a player would be unable to make a valid pick because both fixture sides are
+already blocked.
+
 Data model (all collections prefixed with `sal_`):
 
 * ``sal_players``        — reference roster (imported from Excel/CSV/PDF)
@@ -575,17 +581,27 @@ def build_router(
                         f"che non fa parte di {fx['home_team']} - {fx['away_team']}"
                     ),
                 )
-            if home in blocked or away in blocked:
-                blocked_team = fx["home_team"] if home in blocked else fx["away_team"]
+            # Option B — team-block rule with deadlock exception:
+            #   * if BOTH teams of this fixture are already blocked for the user,
+            #     the pick is admitted regardless (deroga di stallo).
+            #   * otherwise, reject the pick only if the chosen player's own
+            #     team is blocked (the opposite team is fine).
+            both_blocked = home in blocked and away in blocked
+            if not both_blocked and p_team in blocked:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"La squadra {blocked_team} è bloccata per te.",
+                    detail=(
+                        f"La squadra {player.get('team')} è bloccata per te. "
+                        f"Scegli un giocatore del {fx['away_team'] if p_team == home else fx['home_team']}."
+                    ),
                 )
             pick_docs.append({
                 "fixture_idx": p.fixture_idx,
                 "player_id": p.player_id,
                 "player_name": player.get("full_name"),
                 "team": player.get("team"),
+                # informational — clients can badge these picks in review UIs
+                "deadlock_override": both_blocked,
             })
 
         await db.sal_picks.update_one(
