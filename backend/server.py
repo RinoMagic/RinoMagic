@@ -700,6 +700,7 @@ async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
 
     best_text = ""
     best_events: List[dict] = []
+    best_score: tuple[int, int] = (-1, -1)  # (predictions_ok, events_count)
     ocr_error: Optional[str] = None
     for candidate in (original, processed):
         try:
@@ -714,9 +715,17 @@ async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
         # events (with market_raw) to the backend log.
         logger.info("OCR raw text (%d chars):\n%s", len(text), text)
         logger.info("OCR parsed events: %s", events)
-        if len(events) > len(best_events):
+        # Prefer the OCR run that maximises **recognised predictions** first
+        # and only falls back to raw event count as a tiebreaker. Preprocessing
+        # (grayscale + contrast) sometimes wipes the light-blue pick text,
+        # leaving events with prediction="" — those must lose to the raw run
+        # even at parity of event count.
+        pred_ok = sum(1 for e in events if e.get("prediction"))
+        score = (pred_ok, len(events))
+        if score > best_score:
             best_events = events
             best_text = text
+            best_score = score
         elif not best_text:
             best_text = text
     if not best_text and ocr_error:
