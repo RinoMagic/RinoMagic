@@ -31,6 +31,7 @@ from typing import List, Optional, Dict, Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field, field_validator
+from pymongo import ReturnDocument
 
 logger = logging.getLogger("scoreandlive")
 
@@ -224,13 +225,40 @@ def build_router(
         is_admin = bool(
             viewer and (viewer["role"] == "admin" or viewer["id"] == t.get("admin_user_id"))
         )
+        # Single-use invite stats (mirrors TheBestTiket rooms behaviour).
+        invites_total = await db.sal_invites.count_documents(
+            {"tournament_id": t["id"], "revoked_at": None}
+        )
+        invites_available = await db.sal_invites.count_documents(
+            {"tournament_id": t["id"], "revoked_at": None, "used_by_user_id": None}
+        )
         return {
             **{k: t.get(k) for k in ("id", "name", "status", "current_matchday_number",
                                      "initial_lives", "created_at", "admin_user_id",
                                      "invite_code", "winner_user_id")},
             "participants_total": total,
             "participants_alive": alive,
+            "invites_total": invites_total,
+            "invites_available": invites_available,
             "is_admin": is_admin,
+        }
+
+    async def _invite_dict(inv: dict) -> dict:
+        used_nickname = None
+        if inv.get("used_by_user_id"):
+            u = await db.users.find_one({"id": inv["used_by_user_id"]}, {"_id": 0})
+            if u:
+                used_nickname = display_name(u)
+        return {
+            "id": inv["id"],
+            "code": inv["code"],
+            "tournament_id": inv["tournament_id"],
+            "created_at": inv.get("created_at"),
+            "created_by": inv.get("created_by"),
+            "used_by_user_id": inv.get("used_by_user_id"),
+            "used_by_nickname": used_nickname,
+            "used_at": inv.get("used_at"),
+            "revoked_at": inv.get("revoked_at"),
         }
 
     def _player_dict(p: dict) -> dict:
@@ -366,9 +394,13 @@ def build_router(
 
     @router.post("/tournaments")
     async def create_tournament(data: TournamentCreate, user: dict = Depends(require_admin)):
+        # Generate a unique code (checked against BOTH tournaments' legacy field
+        # AND the sal_invites collection).
         for _ in range(20):
             code = _gen_code()
-            if not await db.sal_tournaments.find_one({"invite_code": code}):
+            existing_t = await db.sal_tournaments.find_one({"invite_code": code})
+            existing_inv = await db.sal_invites.find_one({"code": code})
+            if not existing_t and not existing_inv:
                 break
         else:
             raise HTTPException(status_code=500, detail="Impossibile generare un codice univoco")
@@ -383,7 +415,7 @@ def build_router(
             "initial_lives": data.initial_lives,
             "current_matchday_number": None,
             "created_at": now,
-            "invite_code": code,
+            "invite_code": code,  # legacy field: initial code (also stored in sal_invites)
             "winner_user_id": None,
             "blocked_teams_by_user": {},
         }
@@ -395,6 +427,17 @@ def build_router(
             "lives_remaining": data.initial_lives,
             "eliminated_at_matchday": None,
             "joined_at": now,
+        })
+        # Create the first single-use invite (mirrors TheBestTiket rooms).
+        await db.sal_invites.insert_one({
+            "id": str(uuid.uuid4()),
+            "tournament_id": tid,
+            "code": code,
+            "used_by_user_id": None,
+            "used_at": None,
+            "created_at": now,
+            "created_by": user["id"],
+            "revoked_at": None,
         })
         return await _tournament_dict(doc, user)
 
@@ -442,33 +485,117 @@ def build_router(
 
     @router.get("/tournaments/by-code/{invite_code}")
     async def preview_tournament(invite_code: str):
+        """Public preview by invite code. Rejects used or revoked codes so the
+        UI can distinguish "wrong code" from "already used" like TheBestTiket."""
         code = invite_code.upper().strip()
-        t = await db.sal_tournaments.find_one({"invite_code": code}, {"_id": 0})
-        if not t:
+        inv = await db.sal_invites.find_one({"code": code})
+        if not inv:
             raise HTTPException(status_code=404, detail="Codice invito non valido")
+        if inv.get("revoked_at"):
+            raise HTTPException(status_code=410, detail="Codice invito revocato")
+        if inv.get("used_by_user_id"):
+            raise HTTPException(status_code=410, detail="Codice invito già utilizzato")
+        t = await db.sal_tournaments.find_one({"id": inv["tournament_id"]}, {"_id": 0})
+        if not t:
+            raise HTTPException(status_code=404, detail="Torneo non trovato")
         return {
             "id": t["id"], "name": t["name"], "status": t["status"],
-            "invite_code": t["invite_code"], "game": "scoreandlive",
+            "invite_code": code, "game": "scoreandlive",
         }
+
+    # -------- Single-use invite endpoints (admin only) --------
+
+    @router.get("/tournaments/{tournament_id}/invites")
+    async def list_invites(tournament_id: str, user: dict = Depends(current_user)):
+        await _require_tournament_admin(tournament_id, user)
+        invites = [inv async for inv in db.sal_invites.find(
+            {"tournament_id": tournament_id}, {"_id": 0}
+        ).sort("created_at", -1)]
+        return [await _invite_dict(i) for i in invites]
+
+    @router.post("/tournaments/{tournament_id}/invites")
+    async def create_invite(tournament_id: str, user: dict = Depends(current_user)):
+        await _require_tournament_admin(tournament_id, user)
+        for _ in range(20):
+            code = _gen_code()
+            existing_t = await db.sal_tournaments.find_one({"invite_code": code})
+            existing_inv = await db.sal_invites.find_one({"code": code})
+            if not existing_t and not existing_inv:
+                break
+        else:
+            raise HTTPException(status_code=500, detail="Impossibile generare un codice univoco, riprova")
+        now = _now()
+        doc = {
+            "id": str(uuid.uuid4()),
+            "tournament_id": tournament_id,
+            "code": code,
+            "used_by_user_id": None,
+            "used_at": None,
+            "created_at": now,
+            "created_by": user["id"],
+            "revoked_at": None,
+        }
+        await db.sal_invites.insert_one(doc)
+        return await _invite_dict(doc)
+
+    @router.delete("/tournaments/{tournament_id}/invites/{invite_id}")
+    async def revoke_invite(tournament_id: str, invite_id: str, user: dict = Depends(current_user)):
+        await _require_tournament_admin(tournament_id, user)
+        inv = await db.sal_invites.find_one({"id": invite_id, "tournament_id": tournament_id}, {"_id": 0})
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invito non trovato")
+        if inv.get("used_by_user_id"):
+            raise HTTPException(status_code=400, detail="Impossibile revocare: invito già utilizzato")
+        if inv.get("revoked_at"):
+            return await _invite_dict(inv)
+        now = _now()
+        await db.sal_invites.update_one({"id": invite_id}, {"$set": {"revoked_at": now}})
+        inv["revoked_at"] = now
+        return await _invite_dict(inv)
 
     @router.post("/tournaments/{tournament_id}/join")
     async def join_tournament(tournament_id: str, data: InviteRedeem, user: dict = Depends(current_user)):
+        code = data.invite_code.upper().strip()
+        # Atomically claim the invite — race-safe under concurrent joins.
+        now = _now()
+        claimed = await db.sal_invites.find_one_and_update(
+            {"code": code, "tournament_id": tournament_id,
+             "used_by_user_id": None, "revoked_at": None},
+            {"$set": {"used_by_user_id": user["id"], "used_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not claimed:
+            # Distinguish "wrong code / wrong tournament" from "already used".
+            inv = await db.sal_invites.find_one({"code": code})
+            if not inv or inv.get("tournament_id") != tournament_id:
+                raise HTTPException(status_code=400, detail="Codice invito non valido per questo torneo")
+            if inv.get("revoked_at"):
+                raise HTTPException(status_code=410, detail="Codice invito revocato")
+            if inv.get("used_by_user_id") == user["id"]:
+                # Idempotence: same user retrying → allow entry.
+                t = await _get_tournament(tournament_id)
+                return await _tournament_dict(t, user)
+            raise HTTPException(status_code=410, detail="Codice invito già utilizzato")
+
         t = await _get_tournament(tournament_id)
-        if data.invite_code.upper().strip() != t.get("invite_code"):
-            raise HTTPException(status_code=400, detail="Codice invito non valido per questo torneo")
         if t["status"] not in ("open",):
+            # Roll back the claim if the tournament is closed.
+            await db.sal_invites.update_one(
+                {"id": claimed["id"]},
+                {"$set": {"used_by_user_id": None, "used_at": None}},
+            )
             raise HTTPException(status_code=400, detail="Il torneo non accetta più iscrizioni")
+
         existing = await _participant(tournament_id, user["id"])
-        if existing:
-            return await _tournament_dict(t, user)
-        await db.sal_participants.insert_one({
-            "tournament_id": tournament_id,
-            "user_id": user["id"],
-            "nickname": display_name(user),
-            "lives_remaining": t["initial_lives"],
-            "eliminated_at_matchday": None,
-            "joined_at": _now(),
-        })
+        if not existing:
+            await db.sal_participants.insert_one({
+                "tournament_id": tournament_id,
+                "user_id": user["id"],
+                "nickname": display_name(user),
+                "lives_remaining": t["initial_lives"],
+                "eliminated_at_matchday": None,
+                "joined_at": now,
+            })
         return await _tournament_dict(t, user)
 
     @router.delete("/tournaments/{tournament_id}")
@@ -748,3 +875,38 @@ async def ensure_indexes(db) -> None:
     await db.sal_participants.create_index(
         [("tournament_id", 1), ("user_id", 1)], unique=True
     )
+    # Single-use invites (mirrors the TheBestTiket rooms model).
+    await db.sal_invites.create_index("code", unique=True)
+    await db.sal_invites.create_index(
+        [("tournament_id", 1), ("used_by_user_id", 1)]
+    )
+
+    # Backfill: for legacy tournaments that carry `invite_code` on the document
+    # but have no matching invite record, create the corresponding single-use
+    # invite so existing invite links keep working.
+    now = datetime.now(timezone.utc).isoformat()
+    async for t in db.sal_tournaments.find(
+        {"invite_code": {"$exists": True}},
+        {"id": 1, "invite_code": 1, "admin_user_id": 1, "created_at": 1, "_id": 0},
+    ):
+        existing = await db.sal_invites.find_one({"code": t["invite_code"]})
+        if not existing:
+            # If the tournament already has participants beyond the admin, we
+            # assume the initial code was already redeemed (legacy multi-use
+            # behaviour). Mark it as used-by-admin so it can't be re-consumed.
+            used_by = None
+            used_at = None
+            n_participants = await db.sal_participants.count_documents({"tournament_id": t["id"]})
+            if n_participants > 1:
+                used_by = t.get("admin_user_id")
+                used_at = t.get("created_at") or now
+            await db.sal_invites.insert_one({
+                "id": str(uuid.uuid4()),
+                "tournament_id": t["id"],
+                "code": t["invite_code"],
+                "used_by_user_id": used_by,
+                "used_at": used_at,
+                "created_at": t.get("created_at") or now,
+                "created_by": t.get("admin_user_id"),
+                "revoked_at": None,
+            })

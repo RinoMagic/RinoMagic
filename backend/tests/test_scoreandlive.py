@@ -75,19 +75,30 @@ def roster(admin_tok):
 
 @pytest.fixture
 def tournament(admin_tok, player_toks, roster):
-    """Create a fresh tournament, add all 3 test players. Yields (id, invite)."""
+    """Create a fresh tournament, add all 3 test players. Yields (id, invite).
+
+    Single-use invites: the initial ``invite_code`` is used by the FIRST
+    player only. For the others we generate a new single-use invite each time.
+    """
     r = requests.post(f"{API}/sal/tournaments",
                       json={"name": f"T{uuid.uuid4().hex[:6]}", "initial_lives": 3},
                       headers=_h(admin_tok), timeout=15)
     r.raise_for_status()
     t = r.json()
     tid = t["id"]
-    code = t["invite_code"]
-    for tok, _u in player_toks:
+    initial_code = t["invite_code"]
+    for i, (tok, _u) in enumerate(player_toks):
+        if i == 0:
+            code = initial_code
+        else:
+            rn = requests.post(f"{API}/sal/tournaments/{tid}/invites",
+                               headers=_h(admin_tok), timeout=15)
+            rn.raise_for_status()
+            code = rn.json()["code"]
         rj = requests.post(f"{API}/sal/tournaments/{tid}/join",
                            json={"invite_code": code}, headers=_h(tok), timeout=15)
         rj.raise_for_status()
-    yield tid, code
+    yield tid, initial_code
     # cleanup
     requests.delete(f"{API}/sal/tournaments/{tid}", headers=_h(admin_tok), timeout=15)
 
@@ -121,11 +132,23 @@ class TestTournament:
         ids = [t["id"] for t in r.json()]
         assert tid in ids
 
-    def test_preview_by_code(self, tournament):
-        _tid, code = tournament
-        r = requests.get(f"{API}/sal/tournaments/by-code/{code}", timeout=15)
+    def test_preview_by_code(self, admin_tok, tournament):
+        """Preview a freshly-created (unused) invite."""
+        tid, _code = tournament
+        r = requests.post(f"{API}/sal/tournaments/{tid}/invites",
+                          headers=_h(admin_tok), timeout=15)
+        r.raise_for_status()
+        fresh = r.json()["code"]
+        r = requests.get(f"{API}/sal/tournaments/by-code/{fresh}", timeout=15)
         assert r.status_code == 200
         assert r.json()["game"] == "scoreandlive"
+
+    def test_preview_used_code_returns_410(self, tournament):
+        """The initial invite was consumed by player 0 → preview must 410."""
+        _tid, used_code = tournament
+        r = requests.get(f"{API}/sal/tournaments/by-code/{used_code}", timeout=15)
+        assert r.status_code == 410
+        assert "utilizzato" in r.json()["detail"].lower()
 
     def test_preview_bad_code(self):
         r = requests.get(f"{API}/sal/tournaments/by-code/BADCOD", timeout=15)
@@ -138,6 +161,131 @@ class TestTournament:
         body = r.json()
         # admin + 3 players = 4 participants
         assert body["participants_total"] == 4
+
+
+# ==================== Single-use invite behaviour ====================
+class TestSingleUseInvites:
+    def test_second_user_gets_410_on_used_code(self, admin_tok, player_toks):
+        """Regression test for the "same code lets multiple users join" bug.
+
+        The initial invite is single-use: after the first player consumes it,
+        a second player attempting the same code must be rejected with 410.
+        """
+        # Fresh tournament (no auto-joins)
+        r = requests.post(f"{API}/sal/tournaments",
+                         json={"name": f"SU_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         headers=_h(admin_tok), timeout=15)
+        r.raise_for_status()
+        t = r.json()
+        tid, code = t["id"], t["invite_code"]
+        try:
+            tok0, _ = player_toks[0]
+            tok1, _ = player_toks[1]
+            # Player 0 joins → OK
+            r = requests.post(f"{API}/sal/tournaments/{tid}/join",
+                              json={"invite_code": code}, headers=_h(tok0), timeout=15)
+            assert r.status_code == 200
+
+            # Player 1 uses SAME code → 410
+            r = requests.post(f"{API}/sal/tournaments/{tid}/join",
+                              json={"invite_code": code}, headers=_h(tok1), timeout=15)
+            assert r.status_code == 410
+            assert "utilizzato" in r.json()["detail"].lower()
+        finally:
+            requests.delete(f"{API}/sal/tournaments/{tid}", headers=_h(admin_tok), timeout=15)
+
+    def test_admin_can_generate_new_invite_for_each_player(self, admin_tok, player_toks):
+        r = requests.post(f"{API}/sal/tournaments",
+                         json={"name": f"MI_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         headers=_h(admin_tok), timeout=15)
+        t = r.json()
+        tid = t["id"]
+        try:
+            # Player 0: initial code
+            code0 = t["invite_code"]
+            requests.post(f"{API}/sal/tournaments/{tid}/join",
+                          json={"invite_code": code0},
+                          headers=_h(player_toks[0][0]), timeout=15).raise_for_status()
+            # Players 1 & 2: fresh generated invites
+            for i in (1, 2):
+                inv = requests.post(f"{API}/sal/tournaments/{tid}/invites",
+                                    headers=_h(admin_tok), timeout=15).json()
+                r = requests.post(f"{API}/sal/tournaments/{tid}/join",
+                                  json={"invite_code": inv["code"]},
+                                  headers=_h(player_toks[i][0]), timeout=15)
+                assert r.status_code == 200
+            # Confirm invites list shows 3 used
+            invs = requests.get(f"{API}/sal/tournaments/{tid}/invites",
+                                headers=_h(admin_tok), timeout=15).json()
+            used = [i for i in invs if i["used_by_user_id"]]
+            assert len(used) == 3
+        finally:
+            requests.delete(f"{API}/sal/tournaments/{tid}", headers=_h(admin_tok), timeout=15)
+
+    def test_revoke_unused_invite_blocks_join(self, admin_tok, player_toks):
+        r = requests.post(f"{API}/sal/tournaments",
+                         json={"name": f"RV_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         headers=_h(admin_tok), timeout=15)
+        tid = r.json()["id"]
+        try:
+            inv = requests.post(f"{API}/sal/tournaments/{tid}/invites",
+                                headers=_h(admin_tok), timeout=15).json()
+            # Revoke
+            requests.delete(
+                f"{API}/sal/tournaments/{tid}/invites/{inv['id']}",
+                headers=_h(admin_tok), timeout=15,
+            ).raise_for_status()
+            r = requests.post(f"{API}/sal/tournaments/{tid}/join",
+                              json={"invite_code": inv["code"]},
+                              headers=_h(player_toks[0][0]), timeout=15)
+            assert r.status_code == 410
+            assert "revocat" in r.json()["detail"].lower()
+        finally:
+            requests.delete(f"{API}/sal/tournaments/{tid}", headers=_h(admin_tok), timeout=15)
+
+    def test_cannot_revoke_used_invite(self, admin_tok, player_toks):
+        r = requests.post(f"{API}/sal/tournaments",
+                         json={"name": f"UR_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         headers=_h(admin_tok), timeout=15)
+        t = r.json()
+        tid = t["id"]
+        try:
+            # Consume initial invite
+            invs = requests.get(f"{API}/sal/tournaments/{tid}/invites",
+                                headers=_h(admin_tok), timeout=15).json()
+            initial = invs[0]
+            requests.post(f"{API}/sal/tournaments/{tid}/join",
+                          json={"invite_code": initial["code"]},
+                          headers=_h(player_toks[0][0]), timeout=15).raise_for_status()
+            # Try to revoke → 400
+            r = requests.delete(
+                f"{API}/sal/tournaments/{tid}/invites/{initial['id']}",
+                headers=_h(admin_tok), timeout=15,
+            )
+            assert r.status_code == 400
+        finally:
+            requests.delete(f"{API}/sal/tournaments/{tid}", headers=_h(admin_tok), timeout=15)
+
+    def test_invite_stats_on_tournament_dict(self, admin_tok, player_toks):
+        r = requests.post(f"{API}/sal/tournaments",
+                         json={"name": f"ST_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         headers=_h(admin_tok), timeout=15)
+        t = r.json()
+        tid = t["id"]
+        try:
+            # Fresh tournament: 1 unused invite (the initial one)
+            assert t["invites_total"] == 1
+            assert t["invites_available"] == 1
+            # Consume it
+            requests.post(f"{API}/sal/tournaments/{tid}/join",
+                          json={"invite_code": t["invite_code"]},
+                          headers=_h(player_toks[0][0]), timeout=15).raise_for_status()
+            t2 = requests.get(f"{API}/sal/tournaments/{tid}",
+                              headers=_h(admin_tok), timeout=15).json()
+            assert t2["invites_total"] == 1
+            assert t2["invites_available"] == 0
+        finally:
+            requests.delete(f"{API}/sal/tournaments/{tid}", headers=_h(admin_tok), timeout=15)
 
 
 # ==================== Matchday + picks + settlement ====================

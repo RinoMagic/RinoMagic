@@ -280,6 +280,19 @@ _facts_router = _build_facts_router(
 )
 api.include_router(_facts_router)
 
+# ---------- FantaGiornata mini-game ----------
+from fantagiornata import (  # noqa: E402
+    build_router as _build_fg_router,
+    ensure_indexes as _fg_ensure_indexes,
+)
+_fg_router = _build_fg_router(
+    db=db,
+    current_user=current_user,
+    require_admin=require_admin,
+    display_name=display_name,
+)
+api.include_router(_fg_router)
+
 
 def _norm_team(name: str) -> str:
     """Aggressive team-name normalization for matching predictions vs results.
@@ -763,6 +776,8 @@ async def startup():
     await _sal_ensure_indexes(db)
     # Matchday Facts indexes (universal PDF ingestion)
     await _facts_ensure_indexes(db)
+    # FantaGiornata indexes
+    await _fg_ensure_indexes(db)
     # Backfill: every existing room/invite belongs to TheBestTiket (the game
     # that existed before the multi-game refactor). New rooms/invites carry
     # the field explicitly.
