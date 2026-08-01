@@ -217,16 +217,42 @@ class InviteRedeem(BaseModel):
     invite_code: str
 
 
+MODULE_ROLE_COUNTS: Dict[str, Dict[str, int]] = {
+    # module -> required non-GK role counts (P is always 1)
+    "3-4-3": {"D": 3, "C": 4, "A": 3},
+    "3-5-2": {"D": 3, "C": 5, "A": 2},
+    "4-3-3": {"D": 4, "C": 3, "A": 3},
+    "4-4-2": {"D": 4, "C": 4, "A": 2},
+    "4-5-1": {"D": 4, "C": 5, "A": 1},
+    "5-3-2": {"D": 5, "C": 3, "A": 2},
+    "5-4-1": {"D": 5, "C": 4, "A": 1},
+}
+ALLOWED_MODULES = set(MODULE_ROLE_COUNTS.keys())
+
+
 class LineupIn(BaseModel):
     matchday: int = Field(ge=1, le=38)
     starters: List[str] = Field(min_length=STARTERS_COUNT, max_length=STARTERS_COUNT)
     bench: List[str] = Field(min_length=BENCH_COUNT, max_length=BENCH_COUNT)
+    module: Optional[str] = None  # e.g. "4-3-3" — cosmetic/UI hint, not used in scoring
 
     @field_validator("starters", "bench")
     @classmethod
     def _unique(cls, v: List[str]) -> List[str]:
         if len(set(v)) != len(v):
             raise ValueError("Giocatori duplicati non ammessi")
+        return v
+
+    @field_validator("module")
+    @classmethod
+    def _module_shape(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if v == "":
+            return None
+        if v not in ALLOWED_MODULES:
+            raise ValueError(f"Modulo non supportato: {v}")
         return v
 
 
@@ -505,6 +531,22 @@ def build_router(
         validate_starters({r: [p["id"] for p in starters_p[r]] for r in ROLE_ORDER})
         validate_bench({r: [p["id"] for p in bench_p[r]] for r in ROLE_ORDER})
 
+        # If a module was declared, enforce its D/C/A distribution exactly.
+        if data.module is not None:
+            expected = MODULE_ROLE_COUNTS[data.module]
+            got_d = len(starters_p["D"])
+            got_c = len(starters_p["C"])
+            got_a = len(starters_p["A"])
+            if (got_d, got_c, got_a) != (expected["D"], expected["C"], expected["A"]):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"La formazione non rispetta il modulo {data.module}: "
+                        f"attesi {expected['D']}D/{expected['C']}C/{expected['A']}A, "
+                        f"ricevuti {got_d}D/{got_c}C/{got_a}A"
+                    ),
+                )
+
         now = _now()
         lineup_doc = {
             "league_id": league_id,
@@ -512,6 +554,7 @@ def build_router(
             "matchday": data.matchday,
             "starters": list(data.starters),
             "bench": list(data.bench),
+            "module": data.module,
             "updated_at": now,
         }
         await db.fg_lineups.update_one(
@@ -529,7 +572,7 @@ def build_router(
             {"_id": 0},
         )
         if not doc:
-            return {"league_id": league_id, "matchday": matchday, "starters": [], "bench": []}
+            return {"league_id": league_id, "matchday": matchday, "starters": [], "bench": [], "module": None}
         return doc
 
     # ==================================================================

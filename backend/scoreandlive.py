@@ -389,12 +389,15 @@ def build_router(
     async def list_players(
         q: Optional[str] = Query(default=None, min_length=1, max_length=40),
         team: Optional[str] = None,
-        limit: int = Query(default=50, ge=1, le=200),
+        role: Optional[str] = Query(default=None, pattern=r"^(P|D|C|A)$"),
+        limit: int = Query(default=50, ge=1, le=1000),
         user: dict = Depends(current_user),
     ):
         filt: Dict[str, Any] = {"active": True}
         if team:
             filt["team"] = {"$regex": f"^{team}$", "$options": "i"}
+        if role:
+            filt["role"] = role
         if q:
             filt["full_name"] = {"$regex": q, "$options": "i"}
         cursor = db.sal_players.find(filt, {"_id": 0}).sort("full_name", 1).limit(limit)

@@ -227,6 +227,43 @@ class TestLineup:
                           headers=_h(tokA), timeout=15)
         assert r.status_code == 400
 
+    def test_module_persisted_and_returned(self, admin_tok, roster, league_with_users):
+        """Saving a lineup with a `module` hint persists it and returns it verbatim."""
+        lg, tokA, _ = league_with_users
+        starters, bench = _build_lineup(roster)  # 4-3-3 by construction
+        r = requests.post(f"{API}/fg/leagues/{lg['id']}/lineup",
+                          json={"matchday": TEST_MATCHDAY,
+                                "starters": starters, "bench": bench,
+                                "module": "4-3-3"},
+                          headers=_h(tokA), timeout=15)
+        assert r.status_code == 200, r.text
+        r = requests.get(f"{API}/fg/leagues/{lg['id']}/lineup/{TEST_MATCHDAY}",
+                         headers=_h(tokA), timeout=15)
+        assert r.status_code == 200
+        assert r.json().get("module") == "4-3-3"
+
+    def test_module_unknown_rejected(self, admin_tok, roster, league_with_users):
+        lg, tokA, _ = league_with_users
+        starters, bench = _build_lineup(roster)
+        r = requests.post(f"{API}/fg/leagues/{lg['id']}/lineup",
+                          json={"matchday": TEST_MATCHDAY,
+                                "starters": starters, "bench": bench,
+                                "module": "6-0-4"},
+                          headers=_h(tokA), timeout=15)
+        assert r.status_code == 422 or r.status_code == 400  # pydantic validator
+
+    def test_module_mismatch_rejected(self, admin_tok, roster, league_with_users):
+        """4-3-3 starters + module="3-5-2" must be rejected."""
+        lg, tokA, _ = league_with_users
+        starters, bench = _build_lineup(roster)  # 4-3-3 shape
+        r = requests.post(f"{API}/fg/leagues/{lg['id']}/lineup",
+                          json={"matchday": TEST_MATCHDAY,
+                                "starters": starters, "bench": bench,
+                                "module": "3-5-2"},
+                          headers=_h(tokA), timeout=15)
+        assert r.status_code == 400
+        assert "modulo" in r.json()["detail"].lower() or "3-5-2" in r.json()["detail"]
+
 
 # ------------------------------------------------------------------
 # End-to-end settle using real Voti PDF
