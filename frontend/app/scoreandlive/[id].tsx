@@ -24,7 +24,8 @@ export default function TournamentPage() {
   const router = useRouter();
   const [t, setT] = useState<Detail | null>(null);
   const [mdInput, setMdInput] = useState('1');
-  const [fixInput, setFixInput] = useState('Inter vs Milan\nJuventus vs Roma');
+  const [fixInput, setFixInput] = useState('');
+  const [useCalendar, setUseCalendar] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -37,17 +38,21 @@ export default function TournamentPage() {
   const createMatchday = async () => {
     const n = parseInt(mdInput, 10);
     if (!(n >= 1 && n <= 38)) return alert('Giornata 1-38');
-    const fixtures = fixInput.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
-      const parts = l.split(/\s+vs?\s+|\s*-\s*/i);
-      return parts.length >= 2 ? { home_team: parts[0].trim(), away_team: parts[1].trim() } : null;
-    }).filter(Boolean);
-    if (!fixtures.length) return alert('Inserisci partite tipo "Inter vs Milan"');
+    let fixtures: { home_team: string; away_team: string }[] | undefined = undefined;
+    if (!useCalendar) {
+      const parsed = fixInput.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+        const parts = l.split(/\s+vs?\s+|\s*-\s*/i);
+        return parts.length >= 2 ? { home_team: parts[0].trim(), away_team: parts[1].trim() } : null;
+      }).filter(Boolean) as { home_team: string; away_team: string }[];
+      if (!parsed.length) return alert('Inserisci partite tipo "Inter vs Milan"');
+      fixtures = parsed;
+    }
     setBusy(true);
     try {
-      await api(`/sal/tournaments/${id}/matchdays`, {
-        method: 'POST',
-        body: { matchday_number: n, fixtures },
-      });
+      const body: any = { matchday_number: n };
+      if (fixtures) body.fixtures = fixtures;
+      await api(`/sal/tournaments/${id}/matchdays`, { method: 'POST', body });
+      setFixInput('');
       await load();
     } catch (e: any) { alert(e.message); } finally { setBusy(false); }
   };
@@ -105,8 +110,20 @@ export default function TournamentPage() {
             <Text style={styles.cardTitle}>Crea nuova giornata</Text>
             <TextInput style={styles.input} placeholder="Numero giornata" keyboardType="number-pad"
               placeholderTextColor={theme.colors.muted} value={mdInput} onChangeText={setMdInput} />
-            <TextInput style={[styles.input, { minHeight: 100 }]} placeholder="Partite (una per riga: Inter vs Milan)"
-              placeholderTextColor={theme.colors.muted} value={fixInput} onChangeText={setFixInput} multiline />
+            <Pressable
+              onPress={() => setUseCalendar(!useCalendar)}
+              style={[styles.toggle, { borderColor: useCalendar ? COLOR : theme.colors.border }]}
+              testID="sal-toggle-calendar"
+            >
+              <Ionicons name={useCalendar ? 'checkbox' : 'square-outline'} size={20} color={useCalendar ? COLOR : theme.colors.muted} />
+              <Text style={[styles.toggleText, useCalendar && { color: COLOR }]}>
+                Usa calendario Serie A (10 partite auto)
+              </Text>
+            </Pressable>
+            {!useCalendar && (
+              <TextInput style={[styles.input, { minHeight: 100 }]} placeholder="Partite (una per riga: Inter vs Milan)"
+                placeholderTextColor={theme.colors.muted} value={fixInput} onChangeText={setFixInput} multiline />
+            )}
             <Pressable style={[styles.cta, { backgroundColor: COLOR, opacity: busy ? 0.5 : 1 }]} onPress={createMatchday} disabled={busy}>
               <Ionicons name="add-circle" size={18} color="#fff" />
               <Text style={styles.ctaText}>Crea giornata</Text>
@@ -163,4 +180,10 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   nick: { color: theme.colors.onSurface, fontSize: 14, flex: 1 },
   lives: { color: theme.colors.onSurfaceSecondary, fontSize: 13, fontWeight: '600' },
+  toggle: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    padding: theme.spacing.sm, borderRadius: theme.radius.sm, borderWidth: 1,
+    backgroundColor: theme.colors.surface,
+  },
+  toggleText: { color: theme.colors.onSurfaceSecondary, fontSize: 13, fontWeight: '600', flex: 1 },
 });

@@ -138,7 +138,22 @@ class MatchdayFixtureIn(BaseModel):
 
 class MatchdayCreate(BaseModel):
     matchday_number: int = Field(ge=1, le=38)
-    fixtures: List[MatchdayFixtureIn]
+    # If ``fixtures`` is omitted OR empty, the endpoint auto-loads the 10
+    # fixtures from the season calendar (``sal_calendar``) for that matchday.
+    fixtures: Optional[List[MatchdayFixtureIn]] = None
+
+
+class CalendarFixtureIn(BaseModel):
+    matchday: int = Field(ge=1, le=38)
+    home_team: str = Field(min_length=1, max_length=60)
+    away_team: str = Field(min_length=1, max_length=60)
+    kickoff_iso: Optional[str] = None  # optional ISO datetime
+
+
+class CalendarImportIn(BaseModel):
+    season: str = Field(default="2025-26", max_length=10)
+    fixtures: List[CalendarFixtureIn]
+    replace: bool = True  # wipes previous rows for the season before insert
 
 
 class PickItem(BaseModel):
@@ -618,14 +633,37 @@ def build_router(
         })
         if existing:
             raise HTTPException(status_code=400, detail="Giornata già creata")
+
+        # If no fixtures were provided, load them from the season calendar.
+        # This lets the admin upload the full 380-fixture season once and then
+        # have each matchday auto-populated with its 10 fixtures.
+        provided = list(data.fixtures or [])
+        if not provided:
+            cal_rows = [r async for r in db.sal_calendar.find(
+                {"matchday": data.matchday_number}, {"_id": 0}
+            ).sort("home_team", 1)]
+            if not cal_rows:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Nessuna fixture nel calendario per la giornata "
+                        f"{data.matchday_number}. Carica il calendario stagionale "
+                        f"da /sal/calendar/import o passa 'fixtures' esplicite."
+                    ),
+                )
+            provided = [
+                MatchdayFixtureIn(home_team=r["home_team"], away_team=r["away_team"])
+                for r in cal_rows
+            ]
+
         md_id = str(uuid.uuid4())
         fixtures = []
-        for i, fx in enumerate(data.fixtures):
+        for i, fx in enumerate(provided):
             fixtures.append({
                 "idx": i,
                 "home_team": fx.home_team.strip(),
                 "away_team": fx.away_team.strip(),
-                "postponed_before": bool(fx.postponed),
+                "postponed_before": bool(getattr(fx, "postponed", False)),
                 "postponed_during": False,
             })
         doc = {
@@ -644,6 +682,123 @@ def build_router(
             {"$set": {"current_matchday_number": data.matchday_number, "status": "running"}},
         )
         return {"id": md_id, **{k: doc[k] for k in ("matchday_number", "fixtures", "status")}}
+
+    @router.patch("/tournaments/{tournament_id}/matchdays/{matchday_id}/fixtures/{idx}")
+    async def update_fixture(
+        tournament_id: str, matchday_id: str, idx: int,
+        data: dict, user: dict = Depends(require_admin),
+    ):
+        """Edit a single fixture (admin only). Useful for postponements: set
+        ``postponed_before=True`` or replace home/away team names.
+
+        Body: ``{"home_team"?: str, "away_team"?: str, "postponed_before"?: bool}``
+        """
+        await _require_tournament_admin(tournament_id, user)
+        md = await _get_matchday(matchday_id)
+        if md["tournament_id"] != tournament_id:
+            raise HTTPException(status_code=404, detail="Giornata non trovata")
+        if md["status"] != "open":
+            raise HTTPException(status_code=400, detail="Giornata già chiusa, non modificabile")
+
+        patch: Dict[str, Any] = {}
+        if "home_team" in data and isinstance(data["home_team"], str):
+            patch[f"fixtures.{idx}.home_team"] = data["home_team"].strip()
+        if "away_team" in data and isinstance(data["away_team"], str):
+            patch[f"fixtures.{idx}.away_team"] = data["away_team"].strip()
+        if "postponed_before" in data:
+            patch[f"fixtures.{idx}.postponed_before"] = bool(data["postponed_before"])
+        if not patch:
+            raise HTTPException(status_code=400, detail="Nessun campo da modificare")
+        # ensure idx exists
+        if idx < 0 or idx >= len(md["fixtures"]):
+            raise HTTPException(status_code=400, detail="Indice fixture non valido")
+        await db.sal_matchdays.update_one({"id": matchday_id}, {"$set": patch})
+        return await _get_matchday(matchday_id)
+
+    @router.delete("/tournaments/{tournament_id}/matchdays/{matchday_id}/fixtures/{idx}")
+    async def delete_fixture(
+        tournament_id: str, matchday_id: str, idx: int,
+        user: dict = Depends(require_admin),
+    ):
+        """Remove a single fixture (admin only). Renumbers remaining indices."""
+        await _require_tournament_admin(tournament_id, user)
+        md = await _get_matchday(matchday_id)
+        if md["tournament_id"] != tournament_id:
+            raise HTTPException(status_code=404, detail="Giornata non trovata")
+        if md["status"] != "open":
+            raise HTTPException(status_code=400, detail="Giornata già chiusa, non modificabile")
+        if idx < 0 or idx >= len(md["fixtures"]):
+            raise HTTPException(status_code=400, detail="Indice fixture non valido")
+        new_fixtures = [f for i, f in enumerate(md["fixtures"]) if i != idx]
+        for i, f in enumerate(new_fixtures):
+            f["idx"] = i
+        await db.sal_matchdays.update_one(
+            {"id": matchday_id}, {"$set": {"fixtures": new_fixtures}}
+        )
+        return await _get_matchday(matchday_id)
+
+    # --- Season calendar (admin only) -----------------------------------
+
+    @router.post("/calendar/import")
+    async def import_calendar(data: CalendarImportIn, user: dict = Depends(require_admin)):
+        """Bulk-import the entire Serie A calendar for a season.
+
+        Typical payload: 380 fixtures (38 matchdays × 10 games each).
+        If ``replace=True`` (default), any previous rows for the same season
+        are removed before the insert. Idempotent per (season, matchday,
+        home_team) triplet.
+        """
+        if not data.fixtures:
+            raise HTTPException(status_code=400, detail="Elenco fixtures vuoto")
+        if data.replace:
+            await db.sal_calendar.delete_many({"season": data.season})
+        now = _now()
+        # Basic dedupe within the payload
+        seen = set()
+        docs = []
+        for fx in data.fixtures:
+            key = (data.season, fx.matchday, fx.home_team.strip().lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            docs.append({
+                "id": str(uuid.uuid4()),
+                "season": data.season,
+                "matchday": fx.matchday,
+                "home_team": fx.home_team.strip(),
+                "away_team": fx.away_team.strip(),
+                "kickoff_iso": fx.kickoff_iso,
+                "imported_at": now,
+            })
+        if docs:
+            await db.sal_calendar.insert_many(docs)
+        by_md: Dict[int, int] = {}
+        for d in docs:
+            by_md[d["matchday"]] = by_md.get(d["matchday"], 0) + 1
+        return {
+            "season": data.season,
+            "inserted": len(docs),
+            "matchdays": sorted(by_md.keys()),
+            "counts_by_matchday": by_md,
+        }
+
+    @router.get("/calendar")
+    async def list_calendar(
+        season: str = "2025-26",
+        matchday: Optional[int] = None,
+        user: dict = Depends(current_user),
+    ):
+        q: Dict[str, Any] = {"season": season}
+        if matchday is not None:
+            q["matchday"] = matchday
+        rows = [r async for r in db.sal_calendar.find(q, {"_id": 0})
+                .sort([("matchday", 1), ("home_team", 1)])]
+        return {"season": season, "count": len(rows), "fixtures": rows}
+
+    @router.delete("/calendar")
+    async def clear_calendar(season: str = "2025-26", user: dict = Depends(require_admin)):
+        r = await db.sal_calendar.delete_many({"season": season})
+        return {"season": season, "deleted": r.deleted_count}
 
     @router.get("/tournaments/{tournament_id}/matchdays/{matchday_id}")
     async def get_matchday(tournament_id: str, matchday_id: str, user: dict = Depends(current_user)):
@@ -879,6 +1034,11 @@ async def ensure_indexes(db) -> None:
     await db.sal_invites.create_index("code", unique=True)
     await db.sal_invites.create_index(
         [("tournament_id", 1), ("used_by_user_id", 1)]
+    )
+    # Season calendar
+    await db.sal_calendar.create_index([("season", 1), ("matchday", 1)])
+    await db.sal_calendar.create_index(
+        [("season", 1), ("matchday", 1), ("home_team", 1)], unique=True
     )
 
     # Backfill: for legacy tournaments that carry `invite_code` on the document

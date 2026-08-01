@@ -188,6 +188,19 @@ export default function PdfAdmin() {
           </Text>
         </View>
 
+        <Pressable
+          style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }]}
+          onPress={() => router.push('/calendar-admin')}
+          testID="open-calendar-admin"
+        >
+          <Ionicons name="calendar" size={26} color="#10B981" />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>Calendario Serie A</Text>
+            <Text style={styles.cardSub}>Carica UNA VOLTA tutta la stagione → ScoreAndLive auto-popola le giornate</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+        </Pressable>
+
         {/* -------- 1. Listone (roster giocatori Serie A) -------- */}
         <UploadCard
           testID="upload-listone"
