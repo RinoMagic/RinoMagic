@@ -139,7 +139,10 @@ export default function LeaguePage() {
             {invites.length === 0 && <Text style={styles.muted}>Nessun invito.</Text>}
             {invites.map((inv) => (
               <View key={inv.id} style={styles.inviteRow}>
-                <Text style={styles.code}>{inv.code}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.code}>{inv.code}</Text>
+                  <Text style={styles.gameTag}>FantaGiornata</Text>
+                </View>
                 <Text style={styles.inviteMeta}>
                   {inv.revoked_at ? '❌ revocato' : inv.used_by_nickname ? `✅ ${inv.used_by_nickname}` : '⏳ disponibile'}
                 </Text>
@@ -187,7 +190,11 @@ const styles = StyleSheet.create({
   nick: { color: theme.colors.onSurface, fontSize: 14, flex: 1 },
   pts: { color: COLOR, fontWeight: '800', fontSize: 14 },
   inviteRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  code: { color: theme.colors.onSurface, fontSize: 14, fontWeight: '800', fontFamily: 'monospace' as any, flex: 1 },
+  code: { color: theme.colors.onSurface, fontSize: 14, fontWeight: '800', fontFamily: 'monospace' as any },
+  gameTag: {
+    color: theme.colors.muted, fontSize: 10, fontWeight: '700',
+    letterSpacing: 0.5, marginTop: 1, textTransform: 'uppercase',
+  },
   inviteMeta: { color: theme.colors.muted, fontSize: 12 },
   okBox: {
     padding: theme.spacing.sm, borderRadius: theme.radius.sm,

@@ -306,16 +306,19 @@ function InviteCard({
       testID={`invite-card-${invite.code}`}
     >
       <View style={styles.cardTop}>
-        <Text
-          style={[
-            styles.code,
-            status === 'available' && { color },
-            status === 'used' && { color: theme.colors.onSurface, textDecorationLine: 'line-through' },
-            status === 'revoked' && { color: theme.colors.muted, textDecorationLine: 'line-through' },
-          ]}
-        >
-          {invite.code}
-        </Text>
+        <View style={{ flex: 1 }}>
+          <Text
+            style={[
+              styles.code,
+              status === 'available' && { color },
+              status === 'used' && { color: theme.colors.onSurface, textDecorationLine: 'line-through' },
+              status === 'revoked' && { color: theme.colors.muted, textDecorationLine: 'line-through' },
+            ]}
+          >
+            {invite.code}
+          </Text>
+          <Text style={styles.gameTag}>TheBestTiket</Text>
+        </View>
         <View
           style={[
             styles.statusPill,
@@ -456,6 +459,10 @@ const styles = StyleSheet.create({
     gap: theme.spacing.md,
   },
   code: { fontSize: 22, fontWeight: '800', letterSpacing: 4 },
+  gameTag: {
+    color: theme.colors.muted, fontSize: 10, fontWeight: '700',
+    letterSpacing: 0.5, marginTop: 2, textTransform: 'uppercase',
+  },
   statusPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: theme.radius.pill },
   statusText: { fontSize: 10, fontWeight: '800', letterSpacing: 1 },
   usedBy: { color: theme.colors.muted, fontSize: 12 },

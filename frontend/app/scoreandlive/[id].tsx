@@ -13,6 +13,11 @@ const COLOR = '#10B981';
 
 type Participant = { user_id: string; nickname: string; lives_remaining: number; eliminated_at_matchday: number | null; is_me?: boolean };
 type Matchday = { id: string; matchday_number: number; status: string; fixtures_count: number };
+type SalInvite = {
+  id: string; code: string;
+  used_by_user_id: string | null; used_by_nickname: string | null;
+  revoked_at: string | null;
+};
 type Detail = {
   id: string; name: string; status: string; initial_lives: number; is_admin: boolean;
   invite_code: string; participants: Participant[]; matchdays: Matchday[];
@@ -23,6 +28,7 @@ export default function TournamentPage() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [t, setT] = useState<Detail | null>(null);
+  const [invites, setInvites] = useState<SalInvite[]>([]);
   const [mdInput, setMdInput] = useState('1');
   const [fixInput, setFixInput] = useState('');
   const [useCalendar, setUseCalendar] = useState(true);
@@ -30,7 +36,13 @@ export default function TournamentPage() {
 
   const load = async () => {
     try {
-      setT(await api<Detail>(`/sal/tournaments/${id}`));
+      const detail = await api<Detail>(`/sal/tournaments/${id}`);
+      setT(detail);
+      if (detail.is_admin) {
+        try {
+          setInvites(await api<SalInvite[]>(`/sal/tournaments/${id}/invites`));
+        } catch {}
+      }
     } catch (e: any) { alert(e.message); }
   };
   useFocusEffect(useCallback(() => { load(); }, [id]));
@@ -59,8 +71,7 @@ export default function TournamentPage() {
 
   const genInvite = async () => {
     try {
-      const inv = await api<{ code: string }>(`/sal/tournaments/${id}/invites`, { method: 'POST' });
-      alert(`Nuovo codice: ${inv.code}`);
+      await api<{ code: string }>(`/sal/tournaments/${id}/invites`, { method: 'POST' });
       await load();
     } catch (e: any) { alert(e.message); }
   };
@@ -135,6 +146,36 @@ export default function TournamentPage() {
           </View>
         )}
 
+        {t.is_admin && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Codici invito ({invites.length})</Text>
+            {invites.length === 0 && (
+              <Text style={styles.muted}>Nessun codice. Premi &quot;Genera codice invito&quot; sopra.</Text>
+            )}
+            {invites.map((inv) => {
+              const st = inv.revoked_at ? 'revoked' : inv.used_by_user_id ? 'used' : 'available';
+              return (
+                <View key={inv.id} style={styles.inviteRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.inviteCode,
+                      st !== 'available' && { textDecorationLine: 'line-through', color: theme.colors.muted }
+                    ]}>{inv.code}</Text>
+                    <Text style={styles.gameTag}>ScoreAndLive</Text>
+                  </View>
+                  <Text style={[styles.inviteMeta,
+                    st === 'available' && { color: COLOR },
+                    st === 'used' && { color: theme.colors.accent },
+                    st === 'revoked' && { color: theme.colors.muted },
+                  ]}>
+                    {st === 'revoked' ? '❌ revocato' :
+                     st === 'used' ? `✅ ${inv.used_by_nickname || 'usato'}` : '⏳ disponibile'}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Partecipanti</Text>
           {t.participants.map((p) => (
@@ -180,6 +221,20 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   nick: { color: theme.colors.onSurface, fontSize: 14, flex: 1 },
   lives: { color: theme.colors.onSurfaceSecondary, fontSize: 13, fontWeight: '600' },
+  inviteRow: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    padding: theme.spacing.sm, borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surface,
+  },
+  inviteCode: {
+    color: theme.colors.onSurface, fontSize: 15, fontWeight: '800',
+    letterSpacing: 2, fontFamily: 'monospace' as any,
+  },
+  gameTag: {
+    color: theme.colors.muted, fontSize: 10, fontWeight: '700',
+    letterSpacing: 0.5, marginTop: 1, textTransform: 'uppercase',
+  },
+  inviteMeta: { fontSize: 12, fontWeight: '600' },
   toggle: {
     flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
     padding: theme.spacing.sm, borderRadius: theme.radius.sm, borderWidth: 1,
