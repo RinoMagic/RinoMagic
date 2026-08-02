@@ -222,6 +222,43 @@ class TestSingleUseInvites:
         finally:
             requests.delete(f"{API}/sal/tournaments/{tid}", headers=_h(admin_tok), timeout=15)
 
+    def test_participant_cannot_burn_second_invite(self, admin_tok, player_toks):
+        """A user who is already a participant must NOT consume a fresh invite."""
+        r = requests.post(f"{API}/sal/tournaments",
+                         json={"name": f"DUP_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         headers=_h(admin_tok), timeout=15)
+        t = r.json()
+        tid = t["id"]
+        try:
+            tokA = player_toks[0][0]
+            # User A joins with the initial code
+            requests.post(f"{API}/sal/tournaments/{tid}/join",
+                          json={"invite_code": t["invite_code"]},
+                          headers=_h(tokA), timeout=15).raise_for_status()
+            # Admin generates a fresh code intended for another player
+            inv2 = requests.post(f"{API}/sal/tournaments/{tid}/invites",
+                                 headers=_h(admin_tok), timeout=15).json()
+            # User A tries to use the second code → must be rejected AND the
+            # second code must remain unused (available for another player).
+            r = requests.post(f"{API}/sal/tournaments/{tid}/join",
+                              json={"invite_code": inv2["code"]},
+                              headers=_h(tokA), timeout=15)
+            assert r.status_code == 400, r.text
+            assert "già iscritto" in r.json()["detail"].lower()
+            # Confirm the invite is still unused
+            after = requests.get(f"{API}/sal/tournaments/{tid}/invites",
+                                 headers=_h(admin_tok), timeout=15).json()
+            target = next(i for i in after if i["id"] == inv2["id"])
+            assert target["used_by_user_id"] is None, "Invite was wrongly burned"
+            # And a DIFFERENT user can still redeem it
+            tokB = player_toks[1][0]
+            r = requests.post(f"{API}/sal/tournaments/{tid}/join",
+                              json={"invite_code": inv2["code"]},
+                              headers=_h(tokB), timeout=15)
+            assert r.status_code == 200
+        finally:
+            requests.delete(f"{API}/sal/tournaments/{tid}", headers=_h(admin_tok), timeout=15)
+
     def test_revoke_unused_invite_blocks_join(self, admin_tok, player_toks):
         r = requests.post(f"{API}/sal/tournaments",
                          json={"name": f"RV_{uuid.uuid4().hex[:5]}", "initial_lives": 3},

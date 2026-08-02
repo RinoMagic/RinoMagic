@@ -700,6 +700,22 @@ def build_router(
     @router.post("/tournaments/{tournament_id}/join")
     async def join_tournament(tournament_id: str, data: InviteRedeem, user: dict = Depends(current_user)):
         code = data.invite_code.upper().strip()
+        # Guard: if the user is ALREADY a participant of this tournament,
+        # refuse before consuming a fresh invite (otherwise a valid code
+        # would be burned uselessly, "stealing" it from another player).
+        existing = await _participant(tournament_id, user["id"])
+        if existing:
+            # Idempotence tolerated only if the code they're presenting is the
+            # one they previously redeemed themselves.
+            inv = await db.sal_invites.find_one({"code": code, "tournament_id": tournament_id})
+            if inv and inv.get("used_by_user_id") == user["id"]:
+                t = await _get_tournament(tournament_id)
+                return await _tournament_dict(t, user)
+            raise HTTPException(
+                status_code=400,
+                detail="Sei già iscritto a questo torneo. Ogni utente può usare un solo invito per torneo.",
+            )
+
         # Atomically claim the invite — race-safe under concurrent joins.
         now = _now()
         claimed = await db.sal_invites.find_one_and_update(
@@ -730,16 +746,14 @@ def build_router(
             )
             raise HTTPException(status_code=400, detail="Il torneo non accetta più iscrizioni")
 
-        existing = await _participant(tournament_id, user["id"])
-        if not existing:
-            await db.sal_participants.insert_one({
-                "tournament_id": tournament_id,
-                "user_id": user["id"],
-                "nickname": display_name(user),
-                "lives_remaining": t["initial_lives"],
-                "eliminated_at_matchday": None,
-                "joined_at": now,
-            })
+        await db.sal_participants.insert_one({
+            "tournament_id": tournament_id,
+            "user_id": user["id"],
+            "nickname": display_name(user),
+            "lives_remaining": t["initial_lives"],
+            "eliminated_at_matchday": None,
+            "joined_at": now,
+        })
         return await _tournament_dict(t, user)
 
     @router.delete("/tournaments/{tournament_id}")
