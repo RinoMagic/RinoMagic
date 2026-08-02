@@ -224,12 +224,21 @@ export default function AdminHome() {
               <Text style={styles.modalTitle}>Nuova stanza</Text>
               <Pressable onPress={() => setCreateOpen(false)}><Ionicons name="close" size={24} color={theme.colors.onSurface} /></Pressable>
             </View>
-            <TextInput placeholder="Nome (es. Serata del sabato)" placeholderTextColor={theme.colors.muted}
-              value={name} onChangeText={setName} style={styles.input} />
-            <TextInput placeholder="Giornata (1-38)" placeholderTextColor={theme.colors.muted}
-              value={matchday} onChangeText={setMatchday} keyboardType="number-pad" style={styles.input} />
-            <TextInput placeholder="Max pronostici per schedina (1-10)" placeholderTextColor={theme.colors.muted}
-              value={maxEvents} onChangeText={setMaxEvents} keyboardType="number-pad" style={styles.input} />
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Nome stanza</Text>
+              <TextInput placeholder="es. Serata del sabato" placeholderTextColor={theme.colors.muted}
+                value={name} onChangeText={setName} style={styles.input} />
+            </View>
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Giornata</Text>
+              <TextInput placeholder="1-38" placeholderTextColor={theme.colors.muted}
+                value={matchday} onChangeText={setMatchday} keyboardType="number-pad" style={styles.input} />
+            </View>
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Eventi</Text>
+              <TextInput placeholder="1-10" placeholderTextColor={theme.colors.muted}
+                value={maxEvents} onChangeText={setMaxEvents} keyboardType="number-pad" style={styles.input} />
+            </View>
             {msg && <Text style={styles.err}>{msg}</Text>}
             <Pressable style={[styles.cta, busy && { opacity: 0.5 }]} onPress={createRoom} disabled={busy}>
               {busy ? <ActivityIndicator color={theme.colors.onBrand} /> : <Text style={styles.ctaText}>Crea stanza</Text>}
@@ -262,6 +271,15 @@ const styles = StyleSheet.create({
   modalCard: { backgroundColor: theme.colors.surface, borderTopLeftRadius: theme.radius.lg, borderTopRightRadius: theme.radius.lg, padding: theme.spacing.lg, gap: theme.spacing.md },
   modalHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   modalTitle: { color: theme.colors.onSurface, fontSize: 18, fontWeight: '800' },
+  field: { gap: 6 },
+  fieldLabel: {
+    color: theme.colors.brand,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginLeft: 2,
+  },
   input: { color: theme.colors.onSurface, backgroundColor: theme.colors.surfaceSecondary, padding: theme.spacing.md, borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.colors.border },
   err: { color: theme.colors.error, textAlign: 'center' },
   cta: { height: 52, backgroundColor: theme.colors.brand, borderRadius: theme.radius.md, alignItems: 'center', justifyContent: 'center' },
