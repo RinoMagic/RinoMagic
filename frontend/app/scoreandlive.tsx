@@ -8,6 +8,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, session } from '@/src/api';
 import { theme } from '@/src/theme';
+import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#10B981';
 
@@ -57,6 +58,18 @@ export default function ScoreAndLive() {
     } catch (e: any) { alert(e.message); }
   };
 
+  const deleteTournament = async (t: T) => {
+    if (!await confirmDialog(
+      'Elimina torneo',
+      `Sicuro di eliminare "${t.name}"? Verranno cancellati tutti i partecipanti, le giornate e i pronostici. L'azione è irreversibile.`,
+      { destructive: true, confirmLabel: 'Elimina' },
+    )) return;
+    try {
+      await api(`/sal/tournaments/${t.id}`, { method: 'DELETE' });
+      await load();
+    } catch (e: any) { alert(e.message || 'Errore eliminazione'); }
+  };
+
   return (
     <View style={styles.wrap}>
       <SafeAreaView edges={['top']}>
@@ -100,18 +113,32 @@ export default function ScoreAndLive() {
             <Text style={styles.section}>I tuoi tornei ({items.length})</Text>
             {items.length === 0 && <Text style={styles.muted}>Nessun torneo.</Text>}
             {items.map((t) => (
-              <Pressable key={t.id} style={[styles.tCard, { borderColor: COLOR + '55' }]}
-                onPress={() => router.push(`/scoreandlive/${t.id}`)}
-                testID={`sal-t-${t.id}`}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.tName}>{t.name}</Text>
-                  <Text style={styles.tMeta}>
-                    {t.participants_alive}/{t.participants_total} vivi · {t.initial_lives} vite iniziali
-                    {t.is_admin ? ' · admin' : ''}
-                  </Text>
-                </View>
+              <View key={t.id} style={[styles.tCard, { borderColor: COLOR + '55' }]}>
+                <Pressable
+                  style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}
+                  onPress={() => router.push(`/scoreandlive/${t.id}`)}
+                  testID={`sal-t-${t.id}`}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.tName}>{t.name}</Text>
+                    <Text style={styles.tMeta}>
+                      {t.participants_alive}/{t.participants_total} vivi · {t.initial_lives} vite iniziali
+                      {t.is_admin ? ' · admin' : ''}
+                    </Text>
+                  </View>
+                </Pressable>
+                {t.is_admin && (
+                  <Pressable
+                    onPress={() => deleteTournament(t)}
+                    hitSlop={10}
+                    testID={`sal-delete-${t.id}`}
+                    style={styles.trash}
+                  >
+                    <Ionicons name="trash" size={18} color={theme.colors.error} />
+                  </Pressable>
+                )}
                 <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
-              </Pressable>
+              </View>
             ))}
           </>
         )}
@@ -146,4 +173,9 @@ const styles = StyleSheet.create({
   },
   tName: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15 },
   tMeta: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
+  trash: {
+    padding: 6,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.error + '15',
+  },
 });

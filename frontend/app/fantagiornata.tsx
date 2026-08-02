@@ -8,6 +8,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, session } from '@/src/api';
 import { theme } from '@/src/theme';
+import { confirmDialog } from '@/src/utils/confirm';
 
 type League = {
   id: string; name: string; status: string; invite_code: string;
@@ -65,6 +66,18 @@ export default function FantaGiornata() {
     } catch (e: any) {
       alert(e.message || 'Codice non valido');
     }
+  };
+
+  const deleteLeague = async (lg: League) => {
+    if (!await confirmDialog(
+      'Elimina lega',
+      `Sicuro di eliminare "${lg.name}"? Verranno cancellati tutti i membri, gli inviti, le formazioni e i risultati. L'azione è irreversibile.`,
+      { destructive: true, confirmLabel: 'Elimina' },
+    )) return;
+    try {
+      await api(`/fg/leagues/${lg.id}`, { method: 'DELETE' });
+      await load();
+    } catch (e: any) { alert(e.message || 'Errore eliminazione'); }
   };
 
   return (
@@ -129,21 +142,32 @@ export default function FantaGiornata() {
             <Text style={styles.section}>Le tue leghe ({leagues.length})</Text>
             {leagues.length === 0 && <Text style={styles.muted}>Nessuna lega ancora. {role === 'admin' ? 'Creane una qui sopra.' : 'Chiedi un codice invito al tuo admin.'}</Text>}
             {leagues.map((lg) => (
-              <Pressable
-                key={lg.id}
-                style={[styles.leagueCard, { borderColor: COLOR + '55' }]}
-                onPress={() => router.push(`/fantagiornata/${lg.id}`)}
-                testID={`fg-league-${lg.id}`}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.leagueName}>{lg.name}</Text>
-                  <Text style={styles.leagueMeta}>
-                    {lg.members_count} membri · {lg.current_matchday ? `giornata ${lg.current_matchday}` : 'nessuna giornata'}
-                    {lg.is_admin ? ' · admin' : ''}
-                  </Text>
-                </View>
+              <View key={lg.id} style={[styles.leagueCard, { borderColor: COLOR + '55' }]}>
+                <Pressable
+                  style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}
+                  onPress={() => router.push(`/fantagiornata/${lg.id}`)}
+                  testID={`fg-league-${lg.id}`}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.leagueName}>{lg.name}</Text>
+                    <Text style={styles.leagueMeta}>
+                      {lg.members_count} membri · {lg.current_matchday ? `giornata ${lg.current_matchday}` : 'nessuna giornata'}
+                      {lg.is_admin ? ' · admin' : ''}
+                    </Text>
+                  </View>
+                </Pressable>
+                {lg.is_admin && (
+                  <Pressable
+                    onPress={() => deleteLeague(lg)}
+                    hitSlop={10}
+                    testID={`fg-delete-${lg.id}`}
+                    style={styles.trash}
+                  >
+                    <Ionicons name="trash" size={18} color={theme.colors.error} />
+                  </Pressable>
+                )}
                 <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
-              </Pressable>
+              </View>
             ))}
           </>
         )}
@@ -184,4 +208,9 @@ const styles = StyleSheet.create({
   },
   leagueName: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15 },
   leagueMeta: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
+  trash: {
+    padding: 6,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.error + '15',
+  },
 });
