@@ -25,6 +25,8 @@ export default function ScoreAndLive() {
   const [role, setRole] = useState<'admin' | 'player' | null>(null);
   const [name, setName] = useState('');
   const [lives, setLives] = useState('10');
+  const [startMd, setStartMd] = useState('1');
+  const [season, setSeason] = useState('2026-27');
   const [joinCode, setJoinCode] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -41,10 +43,17 @@ export default function ScoreAndLive() {
     if (name.trim().length < 2) return;
     const iv = parseInt(lives, 10);
     if (!(iv >= 1 && iv <= 20)) return alert('Vite 1-20');
+    const smd = parseInt(startMd, 10);
+    if (!(smd >= 1 && smd <= 38)) return alert('Giornata di partenza deve essere 1-38');
     setBusy(true);
     try {
-      await api('/sal/tournaments', { method: 'POST', body: { name: name.trim(), initial_lives: iv } });
-      setName(''); await load();
+      await api('/sal/tournaments', { method: 'POST', body: {
+        name: name.trim(),
+        initial_lives: iv,
+        start_matchday: smd,
+        season: season.trim() || '2026-27',
+      } });
+      setName(''); setStartMd('1'); await load();
     } catch (e: any) { alert(e.message); } finally { setBusy(false); }
   };
 
@@ -92,6 +101,20 @@ export default function ScoreAndLive() {
                   value={name} onChangeText={setName} testID="sal-new-name" />
                 <TextInput style={styles.input} placeholder="Vite iniziali (default 10)" placeholderTextColor={theme.colors.muted}
                   keyboardType="number-pad" value={lives} onChangeText={setLives} />
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TextInput style={[styles.input, { flex: 1 }]}
+                    placeholder="Parti dalla giornata (1-38)"
+                    placeholderTextColor={theme.colors.muted}
+                    keyboardType="number-pad" value={startMd} onChangeText={setStartMd}
+                    testID="sal-new-startmd" />
+                  <TextInput style={[styles.input, { width: 110 }]}
+                    placeholder="2026-27"
+                    placeholderTextColor={theme.colors.muted}
+                    value={season} onChangeText={setSeason} />
+                </View>
+                <Text style={styles.hint}>
+                  Il torneo si sviluppa dalla giornata scelta fino alla 38ª (o finché tutti perdono le vite).
+                </Text>
                 <Pressable style={[styles.cta, { backgroundColor: COLOR }]} onPress={create} disabled={busy} testID="sal-create">
                   <Ionicons name="add-circle" size={18} color="#fff" />
                   <Text style={styles.ctaText}>Crea torneo</Text>
@@ -177,5 +200,11 @@ const styles = StyleSheet.create({
     padding: 6,
     borderRadius: theme.radius.sm,
     backgroundColor: theme.colors.error + '15',
+  },
+  hint: {
+    color: theme.colors.muted,
+    fontSize: 11,
+    fontStyle: 'italic',
+    marginTop: -theme.spacing.xs,
   },
 });

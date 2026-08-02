@@ -23,7 +23,7 @@ import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#10B981';
 
-type Fixture = { season: string; matchday: number; home_team: string; away_team: string };
+type Fixture = { id: string; season: string; matchday: number; home_team: string; away_team: string };
 
 function parseCalendarText(txt: string): { matchday: number; home_team: string; away_team: string }[] {
   const out: { matchday: number; home_team: string; away_team: string }[] = [];
@@ -101,6 +101,18 @@ export default function CalendarAdmin() {
       setFlash('Calendario cancellato');
       await load();
     } catch (e: any) { alert(e.message); }
+  };
+
+  const deleteFixture = async (f: Fixture) => {
+    if (!await confirmDialog(
+      'Elimina partita',
+      `Rimuovere "${f.home_team} - ${f.away_team}" dalla giornata ${f.matchday}?`,
+      { destructive: true, confirmLabel: 'Elimina' },
+    )) return;
+    try {
+      await api(`/sal/calendar/fixture/${f.id}`, { method: 'DELETE' });
+      await load();
+    } catch (e: any) { alert(e.message || 'Errore'); }
   };
 
   // -------------------- PDF upload --------------------
@@ -339,10 +351,16 @@ Milan - Juventus
           {mdsPresent.map((md) => (
             <View key={md} style={styles.mdBlock}>
               <Text style={styles.mdHeader}>G{md} ({byMdCurrent[md].length} partite)</Text>
-              {byMdCurrent[md].map((f, i) => (
-                <Text key={i} style={styles.fixLine}>
-                  · {f.home_team} - {f.away_team}
-                </Text>
+              {byMdCurrent[md].map((f) => (
+                <View key={f.id} style={styles.fixRow}>
+                  <Text style={styles.fixLine}>
+                    · {f.home_team} - {f.away_team}
+                  </Text>
+                  <Pressable onPress={() => deleteFixture(f)} hitSlop={8}
+                    style={styles.fixTrash} testID={`cal-fx-del-${f.id}`}>
+                    <Ionicons name="trash-outline" size={16} color={theme.colors.error} />
+                  </Pressable>
+                </View>
               ))}
             </View>
           ))}
@@ -394,5 +412,13 @@ const styles = StyleSheet.create({
   okText: { color: theme.colors.success, fontSize: 13, flex: 1, fontWeight: '600' },
   mdBlock: { paddingVertical: 6, borderTopWidth: 1, borderTopColor: theme.colors.border },
   mdHeader: { color: COLOR, fontWeight: '800', fontSize: 13, marginBottom: 4 },
-  fixLine: { color: theme.colors.onSurfaceSecondary, fontSize: 12, marginLeft: theme.spacing.sm },
+  fixLine: { color: theme.colors.onSurfaceSecondary, fontSize: 12, marginLeft: theme.spacing.sm, flex: 1 },
+  fixRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 2,
+  },
+  fixTrash: {
+    padding: 6, borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.error + '12',
+  },
 });

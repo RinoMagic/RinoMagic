@@ -62,18 +62,13 @@ def test_calendar_import_and_list(admin_tok, sample_calendar):
 
 
 def test_matchday_autoloads_from_calendar(admin_tok, sample_calendar):
-    # Create a tournament and a matchday WITHOUT passing fixtures
+    # Create a tournament explicitly bound to the "2025-26" season used below.
     r = requests.post(f"{API}/sal/tournaments",
-                      json={"name": f"CAL_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                      json={"name": f"CAL_{uuid.uuid4().hex[:5]}", "initial_lives": 3,
+                            "season": "2025-26"},
                       headers=_h(admin_tok), timeout=15)
     tid = r.json()["id"]
     try:
-        # Set season on the tournament? Not needed — calendar lookup is by matchday.
-        # However our default query is `season="2025-26"` — we need to point the
-        # calendar helper to our test SEASON. Since the endpoint currently
-        # defaults to matchday only, and there's no season on tournaments yet,
-        # we simulate by using the DEFAULT season for the auto-load test:
-        # switch test to import into default season and roll back.
         fixtures = [
             {"matchday": 33, "home_team": f"HomeA{i}", "away_team": f"AwayA{i}"}
             for i in range(10)
@@ -101,9 +96,28 @@ def test_matchday_autoloads_from_calendar(admin_tok, sample_calendar):
             break
 
 
+def test_start_matchday_prevents_earlier_matchdays(admin_tok):
+    """A tournament with start_matchday=15 must reject creation of matchday 3."""
+    r = requests.post(f"{API}/sal/tournaments",
+                      json={"name": f"SMD_{uuid.uuid4().hex[:5]}", "initial_lives": 3,
+                            "start_matchday": 15, "season": "test-x"},
+                      headers=_h(admin_tok), timeout=15)
+    assert r.status_code == 200, r.text
+    tid = r.json()["id"]
+    try:
+        r = requests.post(f"{API}/sal/tournaments/{tid}/matchdays",
+                          json={"matchday_number": 3},
+                          headers=_h(admin_tok), timeout=15)
+        assert r.status_code == 400
+        assert "giornata 15" in r.json()["detail"].lower()
+    finally:
+        requests.delete(f"{API}/sal/tournaments/{tid}", headers=_h(admin_tok), timeout=15)
+
+
 def test_matchday_autoload_fails_when_no_calendar(admin_tok):
     r = requests.post(f"{API}/sal/tournaments",
-                      json={"name": f"NoCal_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                      json={"name": f"NoCal_{uuid.uuid4().hex[:5]}", "initial_lives": 3,
+                            "season": f"empty-{uuid.uuid4().hex[:4]}"},
                       headers=_h(admin_tok), timeout=15)
     tid = r.json()["id"]
     try:

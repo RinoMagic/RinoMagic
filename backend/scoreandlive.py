@@ -249,6 +249,8 @@ class PlayerImport(BaseModel):
 class TournamentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=60)
     initial_lives: int = Field(default=10, ge=1, le=50)
+    start_matchday: int = Field(default=1, ge=1, le=38)
+    season: str = Field(default="2026-27", max_length=10)
 
 
 class MatchdayFixtureIn(BaseModel):
@@ -371,7 +373,8 @@ def build_router(
         return {
             **{k: t.get(k) for k in ("id", "name", "status", "current_matchday_number",
                                      "initial_lives", "created_at", "admin_user_id",
-                                     "invite_code", "winner_user_id")},
+                                     "invite_code", "winner_user_id",
+                                     "start_matchday", "season")},
             "participants_total": total,
             "participants_alive": alive,
             "invites_total": invites_total,
@@ -553,6 +556,8 @@ def build_router(
             "status": "open",
             "initial_lives": data.initial_lives,
             "current_matchday_number": None,
+            "start_matchday": data.start_matchday,
+            "season": data.season,
             "created_at": now,
             "invite_code": code,  # legacy field: initial code (also stored in sal_invites)
             "winner_user_id": None,
@@ -751,6 +756,17 @@ def build_router(
     @router.post("/tournaments/{tournament_id}/matchdays")
     async def create_matchday(tournament_id: str, data: MatchdayCreate, user: dict = Depends(require_admin)):
         await _require_tournament_admin(tournament_id, user)
+        # Fetch the tournament to enforce start_matchday and use its season.
+        t = await db.sal_tournaments.find_one({"id": tournament_id}, {"_id": 0})
+        if not t:
+            raise HTTPException(status_code=404, detail="Torneo non trovato")
+        start_md = int(t.get("start_matchday") or 1)
+        if data.matchday_number < start_md:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Questo torneo parte dalla giornata {start_md}. Non puoi creare la giornata {data.matchday_number}.",
+            )
+        season = t.get("season") or "2026-27"
         existing = await db.sal_matchdays.find_one({
             "tournament_id": tournament_id,
             "matchday_number": data.matchday_number,
@@ -764,13 +780,13 @@ def build_router(
         provided = list(data.fixtures or [])
         if not provided:
             cal_rows = [r async for r in db.sal_calendar.find(
-                {"matchday": data.matchday_number}, {"_id": 0}
+                {"season": season, "matchday": data.matchday_number}, {"_id": 0}
             ).sort("home_team", 1)]
             if not cal_rows:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"Nessuna fixture nel calendario per la giornata "
+                        f"Nessuna fixture nel calendario {season} per la giornata "
                         f"{data.matchday_number}. Carica il calendario stagionale "
                         f"da /sal/calendar/import o passa 'fixtures' esplicite."
                     ),
@@ -1005,6 +1021,41 @@ def build_router(
     async def clear_calendar(season: str = "2025-26", user: dict = Depends(require_admin)):
         r = await db.sal_calendar.delete_many({"season": season})
         return {"season": season, "deleted": r.deleted_count}
+
+    @router.delete("/calendar/fixture/{fixture_id}")
+    async def delete_calendar_fixture(fixture_id: str, user: dict = Depends(require_admin)):
+        """Delete a single fixture from the season calendar.
+
+        Used by admins to remove a postponed / cancelled match. Does NOT
+        affect matchdays already created inside tournaments — those keep
+        their own copy of the fixture snapshot.
+        """
+        r = await db.sal_calendar.delete_one({"id": fixture_id})
+        if r.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Partita non trovata")
+        return {"deleted": True}
+
+    @router.put("/calendar/fixture/{fixture_id}")
+    async def update_calendar_fixture(
+        fixture_id: str,
+        payload: CalendarFixtureIn,
+        user: dict = Depends(require_admin),
+    ):
+        """Edit a fixture (rename teams, move to a different matchday)."""
+        r = await db.sal_calendar.find_one_and_update(
+            {"id": fixture_id},
+            {"$set": {
+                "matchday": payload.matchday,
+                "home_team": payload.home_team.strip(),
+                "away_team": payload.away_team.strip(),
+                "kickoff_iso": payload.kickoff_iso,
+            }},
+            projection={"_id": 0},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not r:
+            raise HTTPException(status_code=404, detail="Partita non trovata")
+        return r
 
     @router.get("/tournaments/{tournament_id}/matchdays/{matchday_id}")
     async def get_matchday(tournament_id: str, matchday_id: str, user: dict = Depends(current_user)):
