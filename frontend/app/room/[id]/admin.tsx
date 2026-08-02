@@ -52,11 +52,38 @@ export default function AdminFixtures() {
   };
   const add = () => setFixtures((arr) => [...arr, { home_team: '', away_team: '', home_score: 0, away_score: 0 }]);
 
+  const [computeMd, setComputeMd] = useState<string>('');
+  const [computePreview, setComputePreview] = useState<null | {
+    matchday: number;
+    facts_count: number;
+    fixtures_settled: number;
+    fixtures_unresolved: number;
+    unresolved: { home_team: string; away_team: string; home_resolved: string | null; away_resolved: string | null }[];
+  }>(null);
+
   const trySyncFromApi = async () => {
-    setBusy(true); setMsg(null);
+    const raw = (computeMd || '').trim();
+    const md = raw ? parseInt(raw, 10) : NaN;
+    if (!md || md < 1 || md > 38) {
+      setMsg('Inserisci una giornata valida (1..38) per calcolare i risultati');
+      return;
+    }
+    setBusy(true); setMsg(null); setComputePreview(null);
     try {
-      const r = await api<{ count: number }>(`/rooms/${id}/fixtures/sync`, { method: 'POST' });
-      setMsg(`Scaricate ${r.count} partite dall&apos;API`);
+      const r = await api<{
+        matchday: number;
+        facts_count: number;
+        fixtures_settled: number;
+        fixtures_unresolved: number;
+        unresolved: { home_team: string; away_team: string; home_resolved: string | null; away_resolved: string | null }[];
+        settled: { home_team: string; away_team: string; home_score: number; away_score: number }[];
+      }>(`/rooms/${id}/fixtures/compute-from-facts?matchday=${md}`, { method: 'POST' });
+      setComputePreview(r);
+      if (r.fixtures_settled === 0) {
+        setMsg(`Nessuna partita calcolata: verifica i nomi delle squadre.`);
+      } else {
+        setMsg(`Calcolate ${r.fixtures_settled} partite dalla giornata ${r.matchday} (${r.facts_count} righe voti).`);
+      }
       await load();
     } catch (e: any) {
       setMsg(e.message);
@@ -103,15 +130,61 @@ export default function AdminFixtures() {
       </SafeAreaView>
 
       <ScrollView contentContainerStyle={{ padding: theme.spacing.lg, paddingBottom: 140 }}>
-        <Pressable
-          testID="sync-api"
-          onPress={trySyncFromApi}
-          disabled={busy}
-          style={[styles.syncBtn, busy && { opacity: 0.5 }]}
-        >
-          <Ionicons name="cloud-download" size={18} color={theme.colors.brand} />
-          <Text style={styles.syncBtnText}>Prova sync automatico API-Football</Text>
-        </Pressable>
+        <View style={styles.computeBox}>
+          <Text style={styles.computeTitle}>Calcola Giornata dai Voti</Text>
+          <Text style={styles.computeSub}>
+            Deriva automaticamente i risultati dalle partite del PDF Voti caricato dall&apos;admin.
+          </Text>
+          <View style={styles.computeRow}>
+            <TextInput
+              testID="compute-md"
+              placeholder="Giornata (1..38)"
+              placeholderTextColor={theme.colors.muted}
+              value={computeMd}
+              onChangeText={setComputeMd}
+              keyboardType="number-pad"
+              style={styles.computeInput}
+            />
+            <Pressable
+              testID="compute-run"
+              onPress={trySyncFromApi}
+              disabled={busy}
+              style={[styles.computeBtn, busy && { opacity: 0.5 }]}
+            >
+              {busy ? (
+                <ActivityIndicator color={theme.colors.onBrand} />
+              ) : (
+                <>
+                  <Ionicons name="calculator" size={18} color={theme.colors.onBrand} />
+                  <Text style={styles.computeBtnText}>Calcola Giornata</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+          {computePreview && (
+            <View style={styles.computePreview}>
+              <Text style={styles.previewLine}>
+                Giornata <Text style={{ fontWeight: '800' }}>{computePreview.matchday}</Text>
+                {' · '}
+                Righe voti: <Text style={{ fontWeight: '800' }}>{computePreview.facts_count}</Text>
+              </Text>
+              <Text style={styles.previewLine}>
+                Partite calcolate: <Text style={{ fontWeight: '800', color: theme.colors.brand }}>{computePreview.fixtures_settled}</Text>
+                {computePreview.fixtures_unresolved > 0 && (
+                  <>
+                    {' · '}
+                    Non risolte: <Text style={{ fontWeight: '800', color: theme.colors.error }}>{computePreview.fixtures_unresolved}</Text>
+                  </>
+                )}
+              </Text>
+              {computePreview.unresolved.slice(0, 5).map((u, idx) => (
+                <Text key={idx} style={styles.previewWarn}>
+                  ⚠ {u.home_team} vs {u.away_team} — nome squadra non trovato nel PDF Voti
+                </Text>
+              ))}
+            </View>
+          )}
+        </View>
         <Text style={styles.orText}>oppure inseriscili manualmente</Text>
 
         {fixtures.map((f, i) => (
@@ -204,6 +277,65 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.md,
   },
   syncBtnText: { color: theme.colors.brand, fontWeight: '700' },
+  computeBox: {
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.brand,
+    gap: theme.spacing.sm,
+  },
+  computeTitle: {
+    color: theme.colors.brand,
+    fontWeight: '800',
+    fontSize: 15,
+  },
+  computeSub: {
+    color: theme.colors.muted,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  computeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
+  },
+  computeInput: {
+    flex: 1,
+    color: theme.colors.onSurface,
+    backgroundColor: theme.colors.surfaceTertiary,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    fontSize: 14,
+  },
+  computeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
+    backgroundColor: theme.colors.brand,
+    borderRadius: theme.radius.sm,
+    minWidth: 150,
+  },
+  computeBtnText: {
+    color: theme.colors.onBrand,
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  computePreview: {
+    marginTop: theme.spacing.sm,
+    padding: theme.spacing.sm,
+    backgroundColor: theme.colors.surfaceTertiary,
+    borderRadius: theme.radius.sm,
+    gap: 4,
+  },
+  previewLine: { color: theme.colors.onSurface, fontSize: 12 },
+  previewWarn: { color: theme.colors.error, fontSize: 11, marginTop: 2 },
   orText: {
     color: theme.colors.muted,
     fontSize: 12,

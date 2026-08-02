@@ -1360,6 +1360,145 @@ def build_router(
             ),
         )
 
+    @router.post("/rooms/{room_id}/fixtures/compute-from-facts")
+    async def compute_fixtures_from_facts(
+        room_id: str,
+        matchday: Optional[int] = None,
+        user: dict = Depends(require_admin),
+    ):
+        """Auto-derive fixture scores from the ``matchday_facts`` collection.
+
+        Flow:
+        1. Aggregate goals per team from ``matchday_facts`` for the given
+           matchday: ``own_goals[team] = Σ(gf+rf)``, ``autogoals[team] = Σ(au)``.
+        2. Collect all unique (home, away) pairs from the room's confirmed
+           schedine — those are the fixtures we need to settle.
+        3. For every fixture, fuzzy-match the team names against the
+           aggregation and compute the score:
+               home_score = own_goals[home] + autogoals[away_opponent]
+               away_score = own_goals[away] + autogoals[home_opponent]
+        4. Persist the resulting fixtures into ``fixtures`` (replacing any
+           previous entries for this room).
+
+        Returns a preview with the number of fixtures settled and any pairs
+        that could not be resolved (so the admin can spot mismatched names).
+        """
+        room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+        if not room:
+            raise HTTPException(status_code=404, detail="Stanza non trovata")
+
+        md = matchday if matchday is not None else room.get("matchday")
+        if not md or md < 1 or md > 38:
+            raise HTTPException(status_code=400, detail="Giornata non valida (1..38)")
+
+        # --- 1) Aggregate goals per team from matchday_facts ---
+        facts_cur = db.matchday_facts.find(
+            {"matchday": md},
+            {"_id": 0, "team": 1, "gf": 1, "rf": 1, "au": 1},
+        )
+        own_goals: Dict[str, int] = {}
+        autogoals: Dict[str, int] = {}
+        facts_count = 0
+        async for f in facts_cur:
+            facts_count += 1
+            team = f.get("team") or ""
+            own_goals[team] = own_goals.get(team, 0) + int(f.get("gf") or 0) + int(f.get("rf") or 0)
+            autogoals[team] = autogoals.get(team, 0) + int(f.get("au") or 0)
+
+        if facts_count == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Nessun dato Voti per la giornata {md}. "
+                    "Carica prima il PDF Voti dall'area Admin (Voti → Carica PDF)."
+                ),
+            )
+
+        # --- 2) Unique fixture pairs from the room's confirmed schedine ---
+        pairs: List[tuple[str, str]] = []
+        seen = set()
+        async for s in db.schedine.find(
+            {"room_id": room_id, "status": "confirmed"},
+            {"_id": 0, "events": 1},
+        ):
+            for e in s.get("events") or []:
+                key = (e.get("home_team", "").strip(), e.get("away_team", "").strip())
+                if not key[0] or not key[1] or key in seen:
+                    continue
+                seen.add(key)
+                pairs.append(key)
+
+        if not pairs:
+            raise HTTPException(
+                status_code=400,
+                detail="Nessuna schedina confermata: non c'è nulla da calcolare.",
+            )
+
+        # --- 3) Match team names → build fixtures ---
+        teams_in_facts = list(own_goals.keys())
+
+        def _resolve(name: str) -> Optional[str]:
+            """Return the canonical facts-team name matching *name* (fuzzy)."""
+            for t in teams_in_facts:
+                if _team_match(name, t):
+                    return t
+            return None
+
+        settled: List[dict] = []
+        unresolved: List[dict] = []
+        for home, away in pairs:
+            h_team = _resolve(home)
+            a_team = _resolve(away)
+            if not h_team or not a_team:
+                unresolved.append({
+                    "home_team": home,
+                    "away_team": away,
+                    "home_resolved": h_team,
+                    "away_resolved": a_team,
+                })
+                continue
+            home_score = own_goals.get(h_team, 0) + autogoals.get(a_team, 0)
+            away_score = own_goals.get(a_team, 0) + autogoals.get(h_team, 0)
+            settled.append({
+                "room_id": room_id,
+                "home_team": home,
+                "away_team": away,
+                "home_score": home_score,
+                "away_score": away_score,
+                "both_scored": home_score > 0 and away_score > 0,
+                "source": f"voti_pdf_md{md}",
+                "resolved_home": h_team,
+                "resolved_away": a_team,
+            })
+
+        # --- 4) Persist ---
+        await db.fixtures.delete_many({"room_id": room_id})
+        if settled:
+            # Strip helper fields before insert (keep only fixture schema).
+            docs = [
+                {k: v for k, v in f.items() if k not in ("source", "resolved_home", "resolved_away")}
+                for f in settled
+            ]
+            await db.fixtures.insert_many(docs)
+
+        return {
+            "matchday": md,
+            "facts_count": facts_count,
+            "teams_found": len(teams_in_facts),
+            "fixtures_settled": len(settled),
+            "fixtures_unresolved": len(unresolved),
+            "unresolved": unresolved,
+            "settled": [
+                {
+                    "home_team": f["home_team"],
+                    "away_team": f["away_team"],
+                    "home_score": f["home_score"],
+                    "away_score": f["away_score"],
+                }
+                for f in settled
+            ],
+        }
+
     # ==================================================================
     # Leaderboard
     # ==================================================================
