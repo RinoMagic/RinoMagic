@@ -197,6 +197,13 @@ export default function AdminFixtures() {
         </View>
         <Text style={styles.orText}>oppure inseriscili manualmente</Text>
 
+        {fixtures.length > 0 && (
+          <View style={styles.fxHeader}>
+            <Text style={styles.fxHeaderTitle}>Partite ({fixtures.length})</Text>
+            <Text style={styles.fxHeaderSub}>Modifica manualmente se serve</Text>
+          </View>
+        )}
+
         {fixtures.map((f, i) => (
           <View key={i} style={styles.card}>
             <View style={styles.rowHead}>
@@ -205,14 +212,17 @@ export default function AdminFixtures() {
                 <Ionicons name="trash" size={16} color={theme.colors.error} />
               </Pressable>
             </View>
-            <View style={styles.matchRow}>
+            <View style={styles.teamRow}>
+              <View style={styles.teamBadge}>
+                <Text style={styles.teamBadgeText}>CASA</Text>
+              </View>
               <TextInput
                 testID={`fx-home-${i}`}
-                placeholder="Casa"
+                placeholder="Squadra di casa"
                 placeholderTextColor={theme.colors.muted}
                 value={f.home_team}
                 onChangeText={(t) => updateFixture(i, { home_team: t })}
-                style={styles.input}
+                style={styles.teamInput}
               />
               <TextInput
                 testID={`fx-hs-${i}`}
@@ -221,21 +231,25 @@ export default function AdminFixtures() {
                 onChangeText={(t) => updateFixture(i, { home_score: parseInt(t || '0', 10) || 0 })}
                 style={styles.scoreInput}
               />
-              <Text style={styles.dash}>-</Text>
+            </View>
+            <View style={styles.teamRow}>
+              <View style={[styles.teamBadge, { backgroundColor: theme.colors.surfaceTertiary }]}>
+                <Text style={[styles.teamBadgeText, { color: theme.colors.muted }]}>OSPITE</Text>
+              </View>
+              <TextInput
+                testID={`fx-away-${i}`}
+                placeholder="Squadra ospite"
+                placeholderTextColor={theme.colors.muted}
+                value={f.away_team}
+                onChangeText={(t) => updateFixture(i, { away_team: t })}
+                style={styles.teamInput}
+              />
               <TextInput
                 testID={`fx-as-${i}`}
                 keyboardType="number-pad"
                 value={String(f.away_score)}
                 onChangeText={(t) => updateFixture(i, { away_score: parseInt(t || '0', 10) || 0 })}
                 style={styles.scoreInput}
-              />
-              <TextInput
-                testID={`fx-away-${i}`}
-                placeholder="Trasferta"
-                placeholderTextColor={theme.colors.muted}
-                value={f.away_team}
-                onChangeText={(t) => updateFixture(i, { away_team: t })}
-                style={styles.input}
               />
             </View>
           </View>
@@ -361,6 +375,53 @@ const styles = StyleSheet.create({
   },
   rowHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   rowNum: { color: theme.colors.brand, fontWeight: '800' },
+  fxHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    marginTop: theme.spacing.sm,
+    marginBottom: theme.spacing.sm,
+  },
+  fxHeaderTitle: {
+    color: theme.colors.onSurface,
+    fontWeight: '800',
+    fontSize: 15,
+  },
+  fxHeaderSub: {
+    color: theme.colors.muted,
+    fontSize: 11,
+  },
+  teamRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  teamBadge: {
+    backgroundColor: theme.colors.brand,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 4,
+    borderRadius: 6,
+    minWidth: 56,
+    alignItems: 'center',
+  },
+  teamBadgeText: {
+    color: theme.colors.onBrand,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  teamInput: {
+    flex: 1,
+    color: theme.colors.onSurface,
+    backgroundColor: theme.colors.surfaceTertiary,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm + 2,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    fontSize: 14,
+    minWidth: 0,
+  },
   matchRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   input: {
     flex: 1,
@@ -373,14 +434,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   scoreInput: {
-    width: 44,
+    width: 52,
     color: theme.colors.onSurface,
     backgroundColor: theme.colors.surfaceTertiary,
-    padding: theme.spacing.md,
+    padding: theme.spacing.sm,
     borderRadius: theme.radius.sm,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: '800',
     textAlign: 'center',
   },
