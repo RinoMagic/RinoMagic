@@ -707,7 +707,7 @@ def _gen_code(n: int = 6) -> str:
 class RoomCreate(BaseModel):
     name: str = Field(min_length=2, max_length=40)
     matchday: int = Field(ge=1, le=38)
-    max_events: int = Field(ge=1, le=10, default=5)
+    max_events: int = Field(ge=1, le=5, default=5)
     color: Optional[str] = None
     game: str = Field(default=DEFAULT_GAME)
 
@@ -715,7 +715,7 @@ class RoomCreate(BaseModel):
 class RoomUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=2, max_length=40)
     matchday: Optional[int] = Field(default=None, ge=1, le=38)
-    max_events: Optional[int] = Field(default=None, ge=1, le=10)
+    max_events: Optional[int] = Field(default=None, ge=1, le=5)
     color: Optional[str] = None
     deadline_at: Optional[str] = None
 

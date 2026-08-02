@@ -62,6 +62,7 @@ export default function AdminHome() {
     try {
       const md = parseInt(matchday, 10); const me = parseInt(maxEvents, 10);
       if (!name.trim() || !md || !me) throw new Error('Compila tutti i campi');
+      if (me < 1 || me > 5) throw new Error('Il numero di eventi deve essere tra 1 e 5');
       const room = await api<Room>('/rooms', {
         method: 'POST',
         body: { name: name.trim(), matchday: md, max_events: me, game: 'thebesttiket' },
@@ -236,7 +237,7 @@ export default function AdminHome() {
             </View>
             <View style={styles.field}>
               <Text style={styles.fieldLabel}>Eventi</Text>
-              <TextInput placeholder="1-10" placeholderTextColor={theme.colors.muted}
+              <TextInput placeholder="1-5" placeholderTextColor={theme.colors.muted}
                 value={maxEvents} onChangeText={setMaxEvents} keyboardType="number-pad" style={styles.input} />
             </View>
             {msg && <Text style={styles.err}>{msg}</Text>}
