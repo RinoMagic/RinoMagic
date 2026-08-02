@@ -37,7 +37,7 @@ export default function AdminHome() {
   const [tab, setTab] = useState<'rooms' | 'users'>('rooms');
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState(''); const [matchday, setMatchday] = useState('');
-  const [maxEvents, setMaxEvents] = useState('5');
+  const [maxEvents, setMaxEvents] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -66,7 +66,7 @@ export default function AdminHome() {
         method: 'POST',
         body: { name: name.trim(), matchday: md, max_events: me, game: 'thebesttiket' },
       });
-      setCreateOpen(false); setName(''); setMatchday(''); setMaxEvents('5');
+      setCreateOpen(false); setName(''); setMatchday(''); setMaxEvents('');
       router.push(`/room/${room.id}`);
     } catch (e: any) { setMsg(e.message); }
     finally { setBusy(false); }
