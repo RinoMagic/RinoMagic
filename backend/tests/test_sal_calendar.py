@@ -134,7 +134,8 @@ def test_matchday_autoload_fails_when_no_calendar(admin_tok):
 def test_edit_and_delete_fixture(admin_tok):
     """Admin can edit and delete individual fixtures on an open matchday."""
     r = requests.post(f"{API}/sal/tournaments",
-                      json={"name": f"EDIT_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                      json={"name": f"EDIT_{uuid.uuid4().hex[:5]}", "initial_lives": 3,
+                            "season": f"edit-{uuid.uuid4().hex[:4]}"},
                       headers=_h(admin_tok), timeout=15)
     tid = r.json()["id"]
     try:

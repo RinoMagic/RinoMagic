@@ -2,7 +2,7 @@
  * ScoreAndLive tournament detail: matchdays list, participants, admin actions.
  */
 import { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,9 +29,6 @@ export default function TournamentPage() {
   const router = useRouter();
   const [t, setT] = useState<Detail | null>(null);
   const [invites, setInvites] = useState<SalInvite[]>([]);
-  const [mdInput, setMdInput] = useState('1');
-  const [fixInput, setFixInput] = useState('');
-  const [useCalendar, setUseCalendar] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -47,33 +44,12 @@ export default function TournamentPage() {
   };
   useFocusEffect(useCallback(() => { load(); }, [id]));
 
-  const createMatchday = async () => {
-    const n = parseInt(mdInput, 10);
-    if (!(n >= 1 && n <= 38)) return alert('Giornata 1-38');
-    let fixtures: { home_team: string; away_team: string }[] | undefined = undefined;
-    if (!useCalendar) {
-      const parsed = fixInput.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
-        const parts = l.split(/\s+vs?\s+|\s*-\s*/i);
-        return parts.length >= 2 ? { home_team: parts[0].trim(), away_team: parts[1].trim() } : null;
-      }).filter(Boolean) as { home_team: string; away_team: string }[];
-      if (!parsed.length) return alert('Inserisci partite tipo "Inter vs Milan"');
-      fixtures = parsed;
-    }
-    setBusy(true);
-    try {
-      const body: any = { matchday_number: n };
-      if (fixtures) body.fixtures = fixtures;
-      await api(`/sal/tournaments/${id}/matchdays`, { method: 'POST', body });
-      setFixInput('');
-      await load();
-    } catch (e: any) { alert(e.message); } finally { setBusy(false); }
-  };
-
   const genInvite = async () => {
+    setBusy(true);
     try {
       await api<{ code: string }>(`/sal/tournaments/${id}/invites`, { method: 'POST' });
       await load();
-    } catch (e: any) { alert(e.message); }
+    } catch (e: any) { alert(e.message); } finally { setBusy(false); }
   };
 
   if (!t) return <View style={styles.center}><ActivityIndicator color={COLOR} /></View>;
@@ -118,39 +94,25 @@ export default function TournamentPage() {
 
         {t.is_admin && (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Crea nuova giornata</Text>
-            <TextInput style={styles.input} placeholder="Numero giornata" keyboardType="number-pad"
-              placeholderTextColor={theme.colors.muted} value={mdInput} onChangeText={setMdInput} />
-            <Pressable
-              onPress={() => setUseCalendar(!useCalendar)}
-              style={[styles.toggle, { borderColor: useCalendar ? COLOR : theme.colors.border }]}
-              testID="sal-toggle-calendar"
-            >
-              <Ionicons name={useCalendar ? 'checkbox' : 'square-outline'} size={20} color={useCalendar ? COLOR : theme.colors.muted} />
-              <Text style={[styles.toggleText, useCalendar && { color: COLOR }]}>
-                Usa calendario Serie A (10 partite auto)
-              </Text>
-            </Pressable>
-            {!useCalendar && (
-              <TextInput style={[styles.input, { minHeight: 100 }]} placeholder="Partite (una per riga: Inter vs Milan)"
-                placeholderTextColor={theme.colors.muted} value={fixInput} onChangeText={setFixInput} multiline />
-            )}
-            <Pressable style={[styles.cta, { backgroundColor: COLOR, opacity: busy ? 0.5 : 1 }]} onPress={createMatchday} disabled={busy}>
-              <Ionicons name="add-circle" size={18} color="#fff" />
-              <Text style={styles.ctaText}>Crea giornata</Text>
-            </Pressable>
-            <Pressable style={[styles.ctaOutline, { borderColor: COLOR }]} onPress={genInvite}>
-              <Ionicons name="link" size={16} color={COLOR} />
-              <Text style={[styles.ctaTextOutline, { color: COLOR }]}>Genera codice invito ({t.invites_available} liberi)</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {t.is_admin && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Codici invito ({invites.length})</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Text style={[styles.cardTitle, { flex: 1 }]}>Codici invito ({invites.length})</Text>
+              <Pressable
+                style={[styles.ctaSmall, { backgroundColor: COLOR, opacity: busy ? 0.5 : 1 }]}
+                onPress={genInvite} disabled={busy}
+                testID="sal-gen-invite"
+              >
+                {busy
+                  ? <ActivityIndicator color="#fff" size="small" />
+                  : (
+                    <>
+                      <Ionicons name="add" size={16} color="#fff" />
+                      <Text style={styles.ctaText}>Genera</Text>
+                    </>
+                  )}
+              </Pressable>
+            </View>
             {invites.length === 0 && (
-              <Text style={styles.muted}>Nessun codice. Premi &quot;Genera codice invito&quot; sopra.</Text>
+              <Text style={styles.muted}>Nessun codice. Premi &quot;Genera&quot; per crearne uno.</Text>
             )}
             {invites.map((inv) => {
               const st = inv.revoked_at ? 'revoked' : inv.used_by_user_id ? 'used' : 'available';
@@ -212,6 +174,11 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: theme.colors.border, fontSize: 13,
   },
   cta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing.sm, paddingVertical: 10, borderRadius: theme.radius.pill },
+  ctaSmall: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 12, paddingVertical: 6,
+    borderRadius: theme.radius.pill,
+  },
   ctaText: { color: '#fff', fontWeight: '800', fontSize: 14 },
   ctaOutline: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, borderRadius: theme.radius.pill, borderWidth: 1 },
   ctaTextOutline: { fontWeight: '700', fontSize: 13 },

@@ -81,7 +81,7 @@ def tournament(admin_tok, player_toks, roster):
     player only. For the others we generate a new single-use invite each time.
     """
     r = requests.post(f"{API}/sal/tournaments",
-                      json={"name": f"T{uuid.uuid4().hex[:6]}", "initial_lives": 3},
+                      json={"name": f"T{uuid.uuid4().hex[:6]}", "initial_lives": 3, "season": f"test-{uuid.uuid4().hex[:5]}"},
                       headers=_h(admin_tok), timeout=15)
     r.raise_for_status()
     t = r.json()
@@ -173,7 +173,7 @@ class TestSingleUseInvites:
         """
         # Fresh tournament (no auto-joins)
         r = requests.post(f"{API}/sal/tournaments",
-                         json={"name": f"SU_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         json={"name": f"SU_{uuid.uuid4().hex[:5]}", "initial_lives": 3, "season": f"test-{uuid.uuid4().hex[:5]}"},
                          headers=_h(admin_tok), timeout=15)
         r.raise_for_status()
         t = r.json()
@@ -196,7 +196,7 @@ class TestSingleUseInvites:
 
     def test_admin_can_generate_new_invite_for_each_player(self, admin_tok, player_toks):
         r = requests.post(f"{API}/sal/tournaments",
-                         json={"name": f"MI_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         json={"name": f"MI_{uuid.uuid4().hex[:5]}", "initial_lives": 3, "season": f"test-{uuid.uuid4().hex[:5]}"},
                          headers=_h(admin_tok), timeout=15)
         t = r.json()
         tid = t["id"]
@@ -225,7 +225,7 @@ class TestSingleUseInvites:
     def test_participant_cannot_burn_second_invite(self, admin_tok, player_toks):
         """A user who is already a participant must NOT consume a fresh invite."""
         r = requests.post(f"{API}/sal/tournaments",
-                         json={"name": f"DUP_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         json={"name": f"DUP_{uuid.uuid4().hex[:5]}", "initial_lives": 3, "season": f"test-{uuid.uuid4().hex[:5]}"},
                          headers=_h(admin_tok), timeout=15)
         t = r.json()
         tid = t["id"]
@@ -261,7 +261,7 @@ class TestSingleUseInvites:
 
     def test_revoke_unused_invite_blocks_join(self, admin_tok, player_toks):
         r = requests.post(f"{API}/sal/tournaments",
-                         json={"name": f"RV_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         json={"name": f"RV_{uuid.uuid4().hex[:5]}", "initial_lives": 3, "season": f"test-{uuid.uuid4().hex[:5]}"},
                          headers=_h(admin_tok), timeout=15)
         tid = r.json()["id"]
         try:
@@ -282,7 +282,7 @@ class TestSingleUseInvites:
 
     def test_cannot_revoke_used_invite(self, admin_tok, player_toks):
         r = requests.post(f"{API}/sal/tournaments",
-                         json={"name": f"UR_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         json={"name": f"UR_{uuid.uuid4().hex[:5]}", "initial_lives": 3, "season": f"test-{uuid.uuid4().hex[:5]}"},
                          headers=_h(admin_tok), timeout=15)
         t = r.json()
         tid = t["id"]
@@ -305,7 +305,7 @@ class TestSingleUseInvites:
 
     def test_invite_stats_on_tournament_dict(self, admin_tok, player_toks):
         r = requests.post(f"{API}/sal/tournaments",
-                         json={"name": f"ST_{uuid.uuid4().hex[:5]}", "initial_lives": 3},
+                         json={"name": f"ST_{uuid.uuid4().hex[:5]}", "initial_lives": 3, "season": f"test-{uuid.uuid4().hex[:5]}"},
                          headers=_h(admin_tok), timeout=15)
         t = r.json()
         tid = t["id"]

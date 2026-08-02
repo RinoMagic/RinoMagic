@@ -583,6 +583,39 @@ def build_router(
             "created_by": user["id"],
             "revoked_at": None,
         })
+
+        # Auto-create ALL matchdays from ``start_matchday`` to 38 using the
+        # season calendar. Matchdays without fixtures in the calendar are
+        # skipped silently — the admin can still fill them later via the
+        # low-level ``POST /tournaments/{id}/matchdays`` endpoint.
+        matchday_docs = []
+        for md_num in range(data.start_matchday, 39):
+            cal_rows = [r async for r in db.sal_calendar.find(
+                {"season": data.season, "matchday": md_num}, {"_id": 0}
+            ).sort("home_team", 1)]
+            if not cal_rows:
+                continue
+            matchday_docs.append({
+                "id": str(uuid.uuid4()),
+                "tournament_id": tid,
+                "matchday_number": md_num,
+                "fixtures": [
+                    {
+                        "idx": i,
+                        "home_team": r["home_team"].strip(),
+                        "away_team": r["away_team"].strip(),
+                        "postponed_before": False,
+                        "postponed_during": False,
+                    }
+                    for i, r in enumerate(cal_rows)
+                ],
+                "scorers": [],
+                "status": "open",
+                "created_at": now,
+            })
+        if matchday_docs:
+            await db.sal_matchdays.insert_many(matchday_docs)
+
         return await _tournament_dict(doc, user)
 
     @router.get("/tournaments")
