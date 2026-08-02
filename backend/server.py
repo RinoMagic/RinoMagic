@@ -33,6 +33,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pydantic import BaseModel, Field, field_validator
 
+from schedina_vision import (
+    extract_events_from_image as vision_extract_events,
+    is_available as vision_is_available,
+)
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
@@ -139,6 +144,7 @@ _SIMPLE_ATOM_RE = re.compile(
     r"|GOL|NOGOL"
     r"|(?:OVER|UNDER)-\d(?:\.\d)?"       # Over/Under with threshold
     r"|MG[HA]?-\d-\d(?:-NO)?"            # Multigol total/home/away
+    r"|RE-\d+-\d+"                       # Risultato esatto
     r")$"
 )
 
@@ -698,15 +704,56 @@ def _parse_staryes_slip(raw_text: str) -> List[dict]:
     return dedup
 
 
-async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
-    """Run OCR with two strategies (raw + preprocessed) and pick the best
-    parsed result. The staryes.it slip uses light blue text over a dark blue
-    background: heavy preprocessing sometimes wipes the coloured predictions,
-    so keeping the raw image as a fallback is important."""
+async def ocr_screenshot(image_bytes: bytes, use_vision: bool = True) -> Dict[str, Any]:
+    """Extract events from a bet-slip screenshot.
+
+    New behaviour (June 2026): the primary extractor is **Gemini 3 Flash
+    Vision** via the Emergent LLM Key — dramatically more robust than
+    Tesseract when the slip contains combined markets, unusual fonts or
+    tinted backgrounds. Tesseract is kept as a last-resort fallback for
+    when the vision provider is unavailable / returns nothing.
+
+    Pass ``use_vision=False`` to bypass the LLM (used by regression tests
+    that lock in the Tesseract parser behaviour without hitting the API).
+    """
+    # ---- 1) AI Vision (primary) --------------------------------------
+    if use_vision and vision_is_available():
+        try:
+            vres = await vision_extract_events(image_bytes)
+        except Exception as exc:  # pragma: no cover
+            logger.exception("AI Vision call raised unexpectedly")
+            vres = {"events": [], "raw_text": "", "error": str(exc)}
+
+        events = vres.get("events") or []
+        # Consider it a success when we recovered at least one usable event.
+        if events:
+            logger.info(
+                "Schedina extracted via AI Vision (provider=%s, events=%d)",
+                vres.get("provider"), len(events),
+            )
+            note = vres.get("note")
+            return {
+                "raw_text": vres.get("raw_text") or (f"AI Vision — {note}" if note else "AI Vision"),
+                "events": events,
+                "provider": vres.get("provider") or "ai-vision",
+            }
+        # Vision returned zero events — log why and continue to Tesseract
+        # only if the failure looks technical (API error). If the model
+        # itself said "not a slip" we still fall through — Tesseract is
+        # unlikely to do better but it's better than nothing.
+        logger.warning(
+            "AI Vision returned 0 events — falling back to Tesseract. error=%r note=%r",
+            vres.get("error"), vres.get("note"),
+        )
+
+    # ---- 2) Tesseract fallback ---------------------------------------
     if not _ensure_tesseract():
         raise HTTPException(
             status_code=503,
-            detail="Motore OCR non disponibile sul server. Riprova tra qualche secondo o inserisci manualmente i pronostici.",
+            detail=(
+                "Impossibile analizzare la schedina: né AI Vision né OCR locale "
+                "sono disponibili. Riprova tra qualche secondo."
+            ),
         )
     original = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     processed = _preprocess_image(image_bytes)
@@ -723,16 +770,8 @@ async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
             logger.warning("OCR failure: %s", exc)
             continue
         events = _parse_staryes_slip(text)
-        # Debug logging: helps diagnose why a market is flagged as
-        # "MERCATO NON AMMESSO" — writes the raw OCR text and the parsed
-        # events (with market_raw) to the backend log.
         logger.info("OCR raw text (%d chars):\n%s", len(text), text)
         logger.info("OCR parsed events: %s", events)
-        # Prefer the OCR run that maximises **recognised predictions** first
-        # and only falls back to raw event count as a tiebreaker. Preprocessing
-        # (grayscale + contrast) sometimes wipes the light-blue pick text,
-        # leaving events with prediction="" — those must lose to the raw run
-        # even at parity of event count.
         pred_ok = sum(1 for e in events if e.get("prediction"))
         score = (pred_ok, len(events))
         if score > best_score:
@@ -744,9 +783,9 @@ async def ocr_screenshot(image_bytes: bytes) -> Dict[str, Any]:
     if not best_text and ocr_error:
         raise HTTPException(
             status_code=503,
-            detail=f"OCR fallito: {ocr_error}. Riprova o inserisci manualmente i pronostici.",
+            detail=f"Analisi schedina fallita: {ocr_error}. Riprova o contatta l'admin.",
         )
-    return {"raw_text": best_text, "events": best_events}
+    return {"raw_text": best_text, "events": best_events, "provider": "tesseract"}
 
 
 # ============ Startup ============

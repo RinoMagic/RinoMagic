@@ -23,7 +23,11 @@ FIX = pathlib.Path(__file__).parent / "fixtures"
 def _run(image_path: pathlib.Path) -> list[dict]:
     assert image_path.exists(), f"Missing fixture: {image_path}"
     raw = image_path.read_bytes()
-    result = asyncio.get_event_loop().run_until_complete(ocr_screenshot(raw))
+    # Tesseract-only path — these regression tests lock in the local parser
+    # behaviour without hitting the AI Vision provider.
+    result = asyncio.get_event_loop().run_until_complete(
+        ocr_screenshot(raw, use_vision=False)
+    )
     return result["events"]
 
 
