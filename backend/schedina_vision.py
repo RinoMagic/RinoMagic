@@ -62,6 +62,13 @@ Devi estrarre, per ogni evento della schedina, i seguenti campi in JSON:
 - "prediction": il codice CANONICO del pronostico (regole più sotto).
 - "odd": quota decimale (float, es. 1.85).
 
+DEVI ANCHE IDENTIFICARE IL BOOKMAKER (sito di scommesse) da cui proviene lo screenshot,
+osservando logo, header, footer, colori dominanti, layout, watermark, testi visibili tipo
+"STARYES", "SNAI", "SISAL", "BETFLAG", "BET365", "WILLIAM HILL", "GOLDBET", "PLANETWIN",
+"LOTTOMATICA", "BETFAIR", "888", ecc. Restituisci il nome del sito in minuscolo nel
+campo "bookmaker" (es. "staryes.it", "snai", "sisal", "bet365"). Se non riesci a
+identificarlo con ragionevole certezza usa "unknown".
+
 CODICI CANONICI DEL PRONOSTICO (obbligatori — nessun altro formato è accettato):
   Risultato finale 1X2:        "1", "X", "2"
   Doppia Chance:               "1X", "X2", "12"
@@ -87,14 +94,14 @@ RIFIUTI (imposta prediction="" se non traducibile in questi codici):
 REGOLE DI OUTPUT:
 1. Rispondi SOLO con JSON puro, senza markdown, senza ``` ``` , senza commenti.
 2. Formato JSON:
-   {"events": [ {home_team, away_team, market_raw, prediction, odd}, ... ], "note": "opzionale"}
+   {"bookmaker": "<sito>", "events": [ {home_team, away_team, market_raw, prediction, odd}, ... ], "note": "opzionale"}
 3. Ordine degli eventi = ordine sulla schedina (dall'alto in basso).
 4. Nomi squadre come li leggi (rispettando maiuscole/minuscole originali; niente sigle inventate).
 5. Quote come float con "." (es. 1.85). Se la quota non è leggibile, usa 0.
 6. Se la schedina è già un ticket giocato e mostra il totale finale, IGNORALO — estrai solo i singoli eventi.
 7. Se una partita ha un mercato non traducibile (vedi RIFIUTI), lascia prediction="" ma includi comunque l'evento con market_raw compilato.
 8. NON inventare eventi che non ci sono. Meglio 3 eventi certi che 5 di cui alcuni inventati.
-9. Se lo screenshot non è una schedina o è illeggibile, restituisci {"events": [], "note": "motivazione breve"}."""
+9. Se lo screenshot non è una schedina o è illeggibile, restituisci {"bookmaker": "unknown", "events": [], "note": "motivazione breve"}."""
 
 
 USER_PROMPT_TEXT = (
@@ -186,16 +193,18 @@ async def extract_events_from_image(image_bytes: bytes) -> Dict[str, Any]:
     parsed = _parse_json_reply(raw_text)
     events = _sanitize_events(parsed.get("events", []))
     note = parsed.get("note")
+    bookmaker = (parsed.get("bookmaker") or "").strip().lower()
 
     logger.info(
-        "Vision extraction: %d events (provider=%s, chars=%d, note=%s)",
-        len(events), _MODEL_NAME, len(raw_text), (note or "")[:80],
+        "Vision extraction: %d events (provider=%s, bookmaker=%s, chars=%d, note=%s)",
+        len(events), _MODEL_NAME, bookmaker or "?", len(raw_text), (note or "")[:80],
     )
 
     return {
         "events": events,
         "raw_text": raw_text,
         "note": note,
+        "bookmaker": bookmaker,
         "error": None if events or note else "Nessun evento rilevato",
         "provider": _MODEL_NAME,
     }

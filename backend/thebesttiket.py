@@ -530,6 +530,58 @@ def _parse_staryes_slip(raw_text: str) -> List[dict]:
     return dedup
 
 
+# =========================================================================
+# Bookmaker validation
+# =========================================================================
+# TheBestTiket accepts ONLY staryes.it bet slips (anti-cheat: staryes doesn't
+# offer live cash-out on odds, and the layout is stable enough for the
+# OCR/Vision pipeline to be robust). Slips from other bookmakers are rejected
+# outright with a clear message.
+ALLOWED_BOOKMAKER_TOKENS = ("staryes", "star yes", "starcasino")
+
+# Common tokens that indicate the slip is from a DIFFERENT bookmaker — used
+# to detect non-staryes slips in the Tesseract fallback path (where we don't
+# have a dedicated "site" field from the LLM).
+NON_STARYES_TOKENS = (
+    "snai", "sisal", "bet365", "goldbet", "planetwin", "planet win",
+    "lottomatica", "betflag", "bet flag", "eurobet", "william hill",
+    "betfair", "888sport", "888 sport", "netbet", "leovegas", "pokerstars",
+    "unibet", "betaland", "gioco digitale", "big bet", "starvegas",
+    "admiral", "vincitu", "sistemabet",
+)
+
+
+def _is_staryes_bookmaker(name: Optional[str]) -> bool:
+    """Return True if *name* looks like a staryes.it identifier.
+
+    Accepts variations like "staryes", "staryes.it", "Star Yes", "starcasino".
+    Empty / None / other bookmaker names return False.
+    """
+    if not name:
+        return False
+    low = name.strip().lower()
+    if not low or low in {"unknown", "?", "n/a"}:
+        return False
+    return any(tok in low for tok in ALLOWED_BOOKMAKER_TOKENS)
+
+
+def _detect_non_staryes_hint(raw_text: str) -> Optional[str]:
+    """Scan the OCR raw text for keywords of well-known non-staryes bookmakers.
+
+    Returns the offending bookmaker name if found, otherwise None. This is a
+    best-effort defence: OCR can misspell brand names, so absence of a match
+    doesn't guarantee staryes. See ``_is_staryes_bookmaker`` for the positive
+    check (LLM-based).
+    """
+    if not raw_text:
+        return None
+    low = raw_text.lower()
+    for token in NON_STARYES_TOKENS:
+        if token in low:
+            return token.upper()
+    return None
+
+
 async def ocr_screenshot(image_bytes: bytes, use_vision: bool = True) -> Dict[str, Any]:
     """Extract events from a bet-slip screenshot.
 
@@ -548,16 +600,18 @@ async def ocr_screenshot(image_bytes: bytes, use_vision: bool = True) -> Dict[st
             vres = {"events": [], "raw_text": "", "error": str(exc)}
 
         events = vres.get("events") or []
+        vision_bookmaker = (vres.get("bookmaker") or "").strip()
         if events:
             logger.info(
-                "Schedina extracted via AI Vision (provider=%s, events=%d)",
-                vres.get("provider"), len(events),
+                "Schedina extracted via AI Vision (provider=%s, events=%d, bookmaker=%s)",
+                vres.get("provider"), len(events), vision_bookmaker or "?",
             )
             note = vres.get("note")
             return {
                 "raw_text": vres.get("raw_text") or (f"AI Vision — {note}" if note else "AI Vision"),
                 "events": events,
                 "provider": vres.get("provider") or "ai-vision",
+                "bookmaker": vision_bookmaker,
             }
         logger.warning(
             "AI Vision returned 0 events — falling back to Tesseract. error=%r note=%r",
@@ -603,7 +657,17 @@ async def ocr_screenshot(image_bytes: bytes, use_vision: bool = True) -> Dict[st
             status_code=503,
             detail=f"Analisi schedina fallita: {ocr_error}. Riprova o contatta l'admin.",
         )
-    return {"raw_text": best_text, "events": best_events, "provider": "tesseract"}
+    # Tesseract has no explicit "bookmaker" field: infer heuristically from raw
+    # text. If we can spot a NON-staryes token we return it so the caller can
+    # reject the slip; otherwise "staryes" (best-effort assumption).
+    detected_hint = _detect_non_staryes_hint(best_text)
+    tess_bookmaker = detected_hint.lower() if detected_hint else "staryes"
+    return {
+        "raw_text": best_text,
+        "events": best_events,
+        "provider": "tesseract",
+        "bookmaker": tess_bookmaker,
+    }
 
 
 # =========================================================================
@@ -1203,6 +1267,28 @@ def build_router(
 
         result = await ocr_screenshot(raw)
         parsed = result["events"]
+
+        # ---- ANTI-CHEAT: reject non-staryes slips -----------------------
+        # TheBestTiket accepts ONLY bet slips from staryes.it. Slips from
+        # other bookmakers can have different odds, cash-out policies and
+        # market variants that break the fairness of the game.
+        detected_bookie = (result.get("bookmaker") or "").strip()
+        if detected_bookie and not _is_staryes_bookmaker(detected_bookie):
+            logger.warning(
+                "Rejected non-staryes slip (room=%s, actor=%s, bookmaker=%s)",
+                room_id,
+                user.get("username") or user.get("email"),
+                detected_bookie,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Schedina rifiutata: proviene da «{detected_bookie.upper()}». "
+                    "TheBestTiket accetta SOLO schedine di staryes.it. "
+                    "Carica una schedina dal sito ufficiale staryes.it."
+                ),
+            )
+
         if len(parsed) > room["max_events"]:
             parsed = parsed[: room["max_events"]]
 
