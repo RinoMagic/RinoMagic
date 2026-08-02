@@ -1512,6 +1512,71 @@ def build_router(
         )
         return s or {"empty": True}
 
+    @router.get("/rooms/{room_id}/schedina-review/{user_id}")
+    async def schedina_review(
+        room_id: str,
+        user_id: str,
+        user: dict = Depends(current_user),
+    ):
+        """Admin-only review: return the FULL schedina of *user_id* including
+        the raw screenshot (base64) and per-event tamper flags.
+
+        Response shape::
+
+            {
+              "user_id": str, "nickname": str,
+              "screenshot_base64": str, "raw_text": str,
+              "status": "draft" | "confirmed",
+              "events": [
+                {
+                  "home_team", "away_team", "market_raw", "prediction", "odd",
+                  # anti-tamper metadata (added by this endpoint):
+                  "odd_cap": float,               # max plausible odd for this market
+                  "odd_exceeds_cap": bool,        # true if OCR odd is above cap
+                  "quota_tampering_suspect": bool # flagged by Gemini AI
+                }, ...
+              ],
+            }
+        """
+        # Only room admins (or global admins) can review someone else's slip.
+        room = await db.rooms.find_one({"id": room_id}, {"admin_user_id": 1, "_id": 0})
+        if not room:
+            raise HTTPException(status_code=404, detail="Stanza non trovata")
+        is_room_admin = user["role"] == "admin" or user["id"] == room.get("admin_user_id")
+        if not is_room_admin:
+            raise HTTPException(status_code=403, detail="Solo admin possono ispezionare le schedine")
+
+        s = await db.schedine.find_one(
+            {"room_id": room_id, "user_id": user_id}, {"_id": 0},
+        )
+        if not s:
+            raise HTTPException(status_code=404, detail="Schedina non trovata")
+
+        # Enrich events with anti-tamper metadata for the admin UI.
+        events_out = []
+        for e in s.get("events") or []:
+            pred = e.get("prediction") or ""
+            odd = float(e.get("odd") or 0)
+            events_out.append({
+                **e,
+                "odd_cap": _max_odd_for_prediction(pred),
+                "odd_exceeds_cap": _odd_exceeds_cap(pred, odd),
+                # Preserve any AI tamper flag saved at OCR time (default false).
+                "quota_tampering_suspect": bool(e.get("quota_tampering_suspect")),
+            })
+        return {
+            "user_id": s["user_id"],
+            "nickname": s.get("nickname", "?"),
+            "screenshot_base64": s.get("screenshot_base64", ""),
+            "raw_text": s.get("raw_text", ""),
+            "status": s.get("status", "draft"),
+            "events": events_out,
+            "uploaded_by": s.get("uploaded_by"),
+            "confirmed_by": s.get("confirmed_by"),
+            "confirmed_at": s.get("confirmed_at"),
+            "updated_at": s.get("updated_at"),
+        }
+
     # ==================================================================
     # Fixtures / Results
     # ==================================================================

@@ -11,6 +11,7 @@ import {
   Platform,
   Modal,
   TextInput,
+  Image,
 } from 'react-native';
 import * as React from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -543,6 +544,9 @@ export default function RoomDetail() {
         entry={selectedEntry}
         hasResults={hasResults}
         color={room.color}
+        roomId={room.id}
+        isAdmin={room.is_admin}
+        members={members}
       />
 
       {/* Deadline edit modal (admin only) */}
@@ -639,13 +643,58 @@ function PlayerSchedinaModal({
   entry,
   hasResults,
   color,
+  roomId,
+  isAdmin,
+  members,
 }: {
   visible: boolean;
   onClose: () => void;
   entry: LeaderEntry | null;
   hasResults: boolean;
   color: string;
+  roomId: string;
+  isAdmin: boolean;
+  members: Member[];
 }) {
+  const [review, setReview] = useState<{
+    screenshot_base64: string;
+    events: {
+      home_team: string;
+      away_team: string;
+      market_raw: string;
+      prediction: string;
+      odd: number;
+      odd_cap: number;
+      odd_exceeds_cap: boolean;
+      quota_tampering_suspect: boolean;
+    }[];
+    status: string;
+  } | null>(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [showScreenshot, setShowScreenshot] = useState(false);
+
+  useEffect(() => {
+    setReview(null);
+    setShowScreenshot(false);
+    if (!visible || !isAdmin || !entry?.nickname) return;
+    const m = members.find((mm) => mm.nickname === entry.nickname);
+    if (!m?.user_id) return;
+    setReviewLoading(true);
+    api<typeof review extends null ? any : NonNullable<typeof review>>(
+      `/rooms/${roomId}/schedina-review/${m.user_id}`,
+    )
+      .then((r: any) => setReview(r))
+      .catch(() => setReview(null))
+      .finally(() => setReviewLoading(false));
+  }, [visible, isAdmin, entry?.nickname, members, roomId]);
+
+  const suspectCount = useMemo(() => {
+    if (!review?.events) return 0;
+    return review.events.filter(
+      (e) => e.odd_exceeds_cap || e.quota_tampering_suspect,
+    ).length;
+  }, [review]);
+
   return (
     <Modal
       animationType="slide"
@@ -684,11 +733,68 @@ function PlayerSchedinaModal({
             style={{ maxHeight: '75%' }}
             contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.sm }}
           >
+            {isAdmin && (
+              <View style={styles.adminReview}>
+                {reviewLoading && (
+                  <View style={{ padding: theme.spacing.sm, alignItems: 'center' }}>
+                    <ActivityIndicator color={color} size="small" />
+                  </View>
+                )}
+                {!reviewLoading && review && suspectCount > 0 && (
+                  <View style={styles.suspectBanner}>
+                    <Ionicons name="warning" size={18} color={theme.colors.error} />
+                    <Text style={styles.suspectText}>
+                      {suspectCount === 1
+                        ? '1 quota sospetta rilevata'
+                        : `${suspectCount} quote sospette rilevate`}
+                    </Text>
+                  </View>
+                )}
+                {!reviewLoading && review?.screenshot_base64 ? (
+                  <Pressable
+                    style={styles.screenshotToggle}
+                    onPress={() => setShowScreenshot((v) => !v)}
+                    testID="toggle-screenshot"
+                  >
+                    <Ionicons
+                      name={showScreenshot ? 'eye-off' : 'eye'}
+                      size={16}
+                      color={color}
+                    />
+                    <Text style={[styles.screenshotToggleText, { color }]}>
+                      {showScreenshot
+                        ? 'Nascondi screenshot originale'
+                        : 'Mostra screenshot originale'}
+                    </Text>
+                  </Pressable>
+                ) : null}
+                {showScreenshot && review?.screenshot_base64 ? (
+                  <Image
+                    source={{ uri: `data:image/jpeg;base64,${review.screenshot_base64}` }}
+                    style={styles.screenshotImg}
+                    resizeMode="contain"
+                  />
+                ) : null}
+              </View>
+            )}
             {entry?.breakdown?.length ? (
               entry.breakdown.map((b, i) => {
                 const evaluated = hasResults && b.matched_fixture;
                 const isWin = !!b.won;
                 const isLose = evaluated && !b.won;
+                // Admin-only: match this breakdown item to the review to
+                // surface anti-tamper flags.
+                const reviewMatch = isAdmin
+                  ? review?.events?.find(
+                      (re) =>
+                        re.home_team === b.home_team &&
+                        re.away_team === b.away_team &&
+                        re.prediction === b.prediction,
+                    )
+                  : null;
+                const suspect =
+                  !!reviewMatch &&
+                  (reviewMatch.odd_exceeds_cap || reviewMatch.quota_tampering_suspect);
                 const borderColor = isWin
                   ? theme.colors.success
                   : isLose
@@ -705,9 +811,21 @@ function PlayerSchedinaModal({
                     testID={`schedina-event-${i}`}
                     style={[
                       styles.eventCard,
-                      { backgroundColor: bg, borderColor },
+                      { backgroundColor: bg, borderColor: suspect ? theme.colors.error : borderColor },
+                      suspect && { borderWidth: 2 },
                     ]}
                   >
+                    {suspect && (
+                      <View style={styles.suspectPill}>
+                        <Ionicons name="warning" size={12} color="#FFFFFF" />
+                        <Text style={styles.suspectPillText}>
+                          Quota sospetta
+                          {reviewMatch?.odd_exceeds_cap
+                            ? ` · max ${reviewMatch.odd_cap.toFixed(2)}`
+                            : ''}
+                        </Text>
+                      </View>
+                    )}
                     <View style={styles.eventRow}>
                       <Text style={styles.eventTeams} numberOfLines={2}>
                         {b.home_team} — {b.away_team}
@@ -1004,6 +1122,63 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.md,
     borderWidth: 1,
     gap: theme.spacing.sm,
+  },
+  adminReview: {
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.sm,
+  },
+  suspectBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: theme.spacing.sm + 2,
+    backgroundColor: theme.colors.error + '22',
+    borderWidth: 1,
+    borderColor: theme.colors.error,
+    borderRadius: theme.radius.sm,
+  },
+  suspectText: {
+    color: theme.colors.error,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  screenshotToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    padding: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.sm,
+  },
+  screenshotToggleText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  screenshotImg: {
+    width: '100%',
+    height: 380,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  suspectPill: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: theme.colors.error,
+    borderRadius: 6,
+  },
+  suspectPillText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   eventRow: {
     flexDirection: 'row',
