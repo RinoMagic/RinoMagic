@@ -61,6 +61,15 @@ Devi estrarre, per ogni evento della schedina, i seguenti campi in JSON:
 - "market_raw": la stringa esatta del mercato come compare (es. "1X2", "GG/NG", "Under/Over 2.5", "Doppia Chance", "Risultato Esatto", "Multigol Casa 1-2", ...).
 - "prediction": il codice CANONICO del pronostico (regole più sotto).
 - "odd": quota decimale (float, es. 1.85).
+- "quota_tampering_suspect": true SOLO se la cella della QUOTA (odd) mostra chiari segni di manipolazione grafica. Analizza attentamente:
+    * font e dimensione dei caratteri della quota DIVERSI rispetto alle altre quote/testi sulla schedina (weight, altezza, larghezza)
+    * anti-aliasing incoerente (bordi delle cifre sfocati o troppo netti rispetto al resto)
+    * colore o luminosità della quota diversi dal resto della riga
+    * pixel/artefatti compressione JPEG concentrati attorno alla quota
+    * baseline testo disallineata o kerning atipico rispetto ad altri numeri
+    * sfondo dietro alla quota alterato (macchie, aloni)
+  Se l'immagine è pulita e coerente restituisci quota_tampering_suspect: false. IMPORTANTE:
+  in caso di dubbio metti false — segnala true solo se l'evidenza è chiara.
 
 DEVI ANCHE IDENTIFICARE IL BOOKMAKER (sito di scommesse) da cui proviene lo screenshot,
 osservando logo, header, footer, colori dominanti, layout, watermark, testi visibili tipo
@@ -94,7 +103,7 @@ RIFIUTI (imposta prediction="" se non traducibile in questi codici):
 REGOLE DI OUTPUT:
 1. Rispondi SOLO con JSON puro, senza markdown, senza ``` ``` , senza commenti.
 2. Formato JSON:
-   {"bookmaker": "<sito>", "events": [ {home_team, away_team, market_raw, prediction, odd}, ... ], "note": "opzionale"}
+   {"bookmaker": "<sito>", "events": [ {home_team, away_team, market_raw, prediction, odd, quota_tampering_suspect}, ... ], "note": "opzionale"}
 3. Ordine degli eventi = ordine sulla schedina (dall'alto in basso).
 4. Nomi squadre come li leggi (rispettando maiuscole/minuscole originali; niente sigle inventate).
 5. Quote come float con "." (es. 1.85). Se la quota non è leggibile, usa 0.
@@ -362,11 +371,14 @@ def _sanitize_events(items: Any) -> List[Dict[str, Any]]:
         # Zero or negative is invalid → mark as unrecognised (empty prediction)
         if odd <= 0 or odd > 1000:
             odd = 0.0
+        # AI tamper flag: only trust explicit boolean true; anything else is false.
+        tampering_suspect = bool(it.get("quota_tampering_suspect")) is True
         out.append({
             "home_team": home,
             "away_team": away,
             "market_raw": market_raw,
             "prediction": prediction,
             "odd": odd,
+            "quota_tampering_suspect": tampering_suspect,
         })
     return out

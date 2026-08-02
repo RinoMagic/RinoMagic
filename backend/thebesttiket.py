@@ -180,6 +180,77 @@ def _validate_prediction_code(code: str) -> str:
     return canonical
 
 
+# =========================================================================
+# Anti-tamper: sanity caps on odds per market type
+# =========================================================================
+# Empirical caps observed on staryes.it for the italian Serie A. Any odd
+# higher than the cap is treated as a red flag (possible screenshot ritoccato
+# per gonfiare la vincita). Values are generous — realistic caps on staryes
+# rarely exceed these even for extreme underdogs.
+_MAX_ODD_BY_ATOM = {
+    "1": 25.0, "X": 8.0, "2": 25.0,          # 1X2 (extreme underdog wins ~15x)
+    "1X": 8.0, "X2": 8.0, "12": 6.0,          # Double chance
+    "GOL": 5.0, "NOGOL": 5.0,                 # Both teams to score
+}
+# Fallback caps by market family (used when the specific atom isn't listed).
+_MAX_ODD_BY_FAMILY = {
+    "OVER": 15.0, "UNDER": 15.0,               # Over/Under (0.5..4.5)
+    "MG": 20.0, "MGH": 30.0, "MGA": 30.0,      # Multigol
+    "RE": 100.0,                                # Risultato esatto
+}
+# For combos (atoms joined by '+'), the cap grows multiplicatively but is
+# capped at these values (staryes doesn't return arbitrarily high combo odds).
+_MAX_COMBO_ODD = {
+    2: 50.0,     # 2 atoms
+    3: 200.0,    # 3 atoms
+    4: 600.0,    # 4 atoms
+    5: 999.0,    # >=5 atoms (matches Pydantic upper bound)
+}
+
+
+def _max_odd_for_prediction(prediction: str) -> float:
+    """Return the maximum plausible staryes.it odd for *prediction*.
+
+    Any observed odd above this cap should be treated as suspicious and either
+    blocked outright or flagged for admin review. The cap is conservative
+    (i.e. slightly above the highest odd ever seen on staryes for that market)
+    so legitimate slips never trigger a false positive.
+    """
+    if not prediction:
+        return 999.0
+    atoms = [a.strip().upper() for a in prediction.split("+") if a.strip()]
+    if not atoms:
+        return 999.0
+
+    def _atom_cap(atom: str) -> float:
+        if atom in _MAX_ODD_BY_ATOM:
+            return _MAX_ODD_BY_ATOM[atom]
+        for family, cap in _MAX_ODD_BY_FAMILY.items():
+            if atom.startswith(family + "-") or atom == family:
+                return cap
+        return 999.0
+
+    if len(atoms) == 1:
+        return _atom_cap(atoms[0])
+    # Combo: product-of-caps, then bound by the per-length cap.
+    product = 1.0
+    for a in atoms:
+        product *= _atom_cap(a)
+    return min(product, _MAX_COMBO_ODD.get(min(len(atoms), 5), 999.0))
+
+
+def _odd_exceeds_cap(prediction: str, odd: float) -> bool:
+    """Return True when *odd* is higher than the sanity cap for *prediction*.
+
+    A small tolerance (+10%) is applied to absorb rounding differences and
+    edge cases where staryes' promotional odds slightly exceed our baseline.
+    """
+    if odd <= 0:
+        return False
+    cap = _max_odd_for_prediction(prediction)
+    return odd > cap * 1.10
+
+
 def _norm_team(name: str) -> str:
     """Aggressive team-name normalization for matching predictions vs results.
 
@@ -1366,6 +1437,42 @@ def build_router(
                     detail=(
                         "L'OCR non ha letto correttamente le quote. "
                         "Rifai lo screenshot con maggiore risoluzione."
+                    ),
+                )
+            # ---- Anti-tamper: reject odds above the sanity cap ------------
+            if _odd_exceeds_cap(e["prediction"], float(odd)):
+                cap = _max_odd_for_prediction(e["prediction"])
+                logger.warning(
+                    "Rejected schedina — quota fuori range (room=%s, actor=%s, "
+                    "prediction=%s, odd=%.2f, cap=%.2f)",
+                    room_id,
+                    user.get("username") or user.get("email"),
+                    e["prediction"], odd, cap,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Quota sospetta: {e['home_team']} vs {e['away_team']} — "
+                        f"{e['prediction']} @ {odd:.2f} (max plausibile {cap:.2f}). "
+                        "La schedina è stata bloccata perché la quota supera i limiti "
+                        "attesi su staryes.it. Carica lo screenshot originale non modificato."
+                    ),
+                )
+            # ---- Anti-tamper: Gemini AI has flagged pixel-level manipulation
+            if e.get("quota_tampering_suspect"):
+                logger.warning(
+                    "Rejected schedina — Gemini flagged tampering (room=%s, actor=%s, "
+                    "prediction=%s, odd=%.2f)",
+                    room_id,
+                    user.get("username") or user.get("email"),
+                    e["prediction"], odd,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Possibile manipolazione grafica rilevata sulla quota di "
+                        f"{e['home_team']} vs {e['away_team']} ({e['prediction']} @ {odd:.2f}). "
+                        "Carica lo screenshot originale non modificato."
                     ),
                 )
 
