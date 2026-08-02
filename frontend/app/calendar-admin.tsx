@@ -12,13 +12,14 @@
  *   Milan - Juventus
  *   ...
  */
-import { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api } from '@/src/api';
+import { api, apiUpload } from '@/src/api';
 import { theme } from '@/src/theme';
+import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#10B981';
 
@@ -54,6 +55,14 @@ export default function CalendarAdmin() {
   const [flash, setFlash] = useState<string | null>(null);
   const [current, setCurrent] = useState<Fixture[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pdfPreview, setPdfPreview] = useState<null | {
+    extracted: number; matchdays: number[];
+    counts_by_matchday: Record<number, number>;
+    sample: { matchday: number; home_team: string; away_team: string }[];
+    file: File;
+  }>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -85,12 +94,63 @@ export default function CalendarAdmin() {
   };
 
   const clearAll = async () => {
-    if (!confirm(`Cancellare TUTTO il calendario ${season}?`)) return;
+    if (!await confirmDialog('Cancella calendario',
+      `Cancellare TUTTO il calendario ${season}?`, { destructive: true, confirmLabel: 'Cancella' })) return;
     try {
       await api(`/sal/calendar?season=${encodeURIComponent(season)}`, { method: 'DELETE' });
       setFlash('Calendario cancellato');
       await load();
     } catch (e: any) { alert(e.message); }
+  };
+
+  // -------------------- PDF upload --------------------
+  const openPdfPicker = () => {
+    if (Platform.OS === 'web' && fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
+  };
+
+  const onPdfChosen = async (evt: any) => {
+    const file: File | undefined = evt?.target?.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      alert('Serve un file .pdf');
+      return;
+    }
+    setPdfBusy(true);
+    setFlash(null);
+    try {
+      const preview = await apiUpload<{
+        extracted: number; matchdays: number[];
+        counts_by_matchday: Record<number, number>;
+        sample: { matchday: number; home_team: string; away_team: string }[];
+      }>(
+        `/sal/calendar/import-pdf`,
+        { blob: file, name: file.name, type: file.type || 'application/pdf' },
+        { season, dry_run: true },
+      );
+      setPdfPreview({ ...preview, file });
+    } catch (e: any) {
+      alert(e.message || 'Errore lettura PDF');
+    } finally { setPdfBusy(false); }
+  };
+
+  const confirmPdfImport = async () => {
+    if (!pdfPreview) return;
+    setPdfBusy(true);
+    try {
+      const r = await apiUpload<{ inserted: number; matchdays: number[] }>(
+        `/sal/calendar/import-pdf`,
+        { blob: pdfPreview.file, name: pdfPreview.file.name, type: 'application/pdf' },
+        { season, dry_run: false, replace: true },
+      );
+      setFlash(`PDF importato: ${r.inserted} partite su ${r.matchdays.length} giornate`);
+      setPdfPreview(null);
+      await load();
+    } catch (e: any) {
+      alert(e.message || 'Errore import PDF');
+    } finally { setPdfBusy(false); }
   };
 
   const byMdCurrent = current.reduce<Record<number, Fixture[]>>((acc, f) => {
@@ -123,9 +183,95 @@ export default function CalendarAdmin() {
         )}
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Formato accettato</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Ionicons name="document-attach" size={18} color={COLOR} />
+            <Text style={[styles.cardTitle, { flex: 1 }]}>Carica calendario da PDF</Text>
+          </View>
           <Text style={styles.muted}>
-            Incolla la stagione in questo formato (una giornata per volta):
+            Rapido: seleziona il PDF del calendario Serie A e ti mostro un&apos;anteprima.
+            Se ti convince, confermi e viene salvato per la stagione <Text style={{ fontWeight: '800' }}>{season}</Text>.
+          </Text>
+
+          {Platform.OS === 'web' && (
+            /* Hidden native file input (only web has it as HTMLInputElement) */
+            // @ts-ignore
+            <input
+              ref={fileInputRef as any}
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={onPdfChosen}
+              style={{ display: 'none' }}
+            />
+          )}
+
+          {!pdfPreview && (
+            <Pressable
+              style={[styles.cta, { backgroundColor: COLOR, opacity: pdfBusy ? 0.5 : 1 }]}
+              onPress={openPdfPicker} disabled={pdfBusy}
+              testID="cal-pdf-pick"
+            >
+              {pdfBusy ? <ActivityIndicator color="#fff" /> : (
+                <>
+                  <Ionicons name="cloud-upload" size={18} color="#fff" />
+                  <Text style={styles.ctaText}>Scegli PDF calendario</Text>
+                </>
+              )}
+            </Pressable>
+          )}
+
+          {pdfPreview && (
+            <View style={{ gap: theme.spacing.sm }}>
+              <View style={styles.okBox}>
+                <Ionicons name="document-text" size={16} color={theme.colors.success} />
+                <Text style={styles.okText}>
+                  {pdfPreview.extracted} partite trovate su {pdfPreview.matchdays.length} giornate
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+                {Object.entries(pdfPreview.counts_by_matchday).sort((a, b) => Number(a[0]) - Number(b[0])).map(([md, n]) => (
+                  <View key={md} style={styles.chip}>
+                    <Text style={styles.chipText}>G{md} · {n}</Text>
+                  </View>
+                ))}
+              </View>
+              <Text style={styles.muted}>Anteprima (prime 20 righe):</Text>
+              <View style={styles.codeBlock}>
+                {pdfPreview.sample.map((f, i) => (
+                  <Text key={i} style={styles.codeText}>
+                    G{f.matchday} · {f.home_team} - {f.away_team}
+                  </Text>
+                ))}
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <Pressable
+                  style={[styles.cta, { flex: 1, backgroundColor: theme.colors.surfaceTertiary }]}
+                  onPress={() => setPdfPreview(null)}
+                  disabled={pdfBusy}
+                >
+                  <Ionicons name="close" size={16} color={theme.colors.onSurface} />
+                  <Text style={[styles.ctaText, { color: theme.colors.onSurface }]}>Annulla</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.cta, { flex: 2, backgroundColor: COLOR, opacity: pdfBusy ? 0.5 : 1 }]}
+                  onPress={confirmPdfImport} disabled={pdfBusy}
+                  testID="cal-pdf-confirm"
+                >
+                  {pdfBusy ? <ActivityIndicator color="#fff" /> : (
+                    <>
+                      <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                      <Text style={styles.ctaText}>Conferma e importa</Text>
+                    </>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Oppure incolla il testo</Text>
+          <Text style={styles.muted}>
+            Formato accettato (una giornata per volta):
           </Text>
           <View style={styles.codeBlock}>
             <Text style={styles.codeText}>{`G1

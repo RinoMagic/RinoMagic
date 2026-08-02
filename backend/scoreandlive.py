@@ -45,6 +45,127 @@ SERIE_A_TEAMS = {
 }
 
 
+def _parse_calendar_pdf(pdf_bytes: bytes) -> List[dict]:
+    """Extract Serie A fixtures from a season-calendar PDF.
+
+    The Lega Serie A publishes the season fixtures in several layouts. This
+    parser is intentionally tolerant:
+
+      * Matchday headers are detected via patterns like
+        ``1ª GIORNATA``, ``GIORNATA 1``, ``1a giornata``, ``1° giornata``.
+      * Fixture lines can be one of:
+            ``Home - Away``
+            ``Home-Away``
+            ``Home vs Away``
+            ``Home  Away``  (only when both are recognised team names)
+      * Optional kickoff time / date around the line is ignored.
+
+    Returns ``[{ "matchday": int, "home_team": str, "away_team": str }, ...]``.
+    Rows without a recognised team pair are silently skipped.
+    """
+    try:
+        import pdfplumber
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"pdfplumber non installato: {e}") from e
+
+    import io as _io
+    md_re = re.compile(
+        r"(?:^|\s)(\d{1,2})\s*[ªa°.\-)]?\s*giornata\b|\bgiornata\s+(\d{1,2})\b",
+        re.IGNORECASE,
+    )
+    # Fixture separator: any of  " - " "-" " – " "–" " — " "—" " vs " " V "
+    sep_re = re.compile(r"\s*(?:-|–|—|\s+vs\.?\s+|\s+V\s+)\s*")
+
+    teams = sorted(SERIE_A_TEAMS | {"Hellas Verona", "Empoli", "Monza", "Frosinone", "Salernitana", "Venezia"}, key=len, reverse=True)
+    team_pattern = "|".join(re.escape(t) for t in teams)
+    fixture_re = re.compile(rf"\b({team_pattern})\b.*?\b({team_pattern})\b", re.IGNORECASE)
+
+    def _canonical_team(name: str) -> str:
+        low = name.strip().lower()
+        for t in teams:
+            if t.lower() == low:
+                return t
+        return name.strip()
+
+    fixtures: List[dict] = []
+    seen: set[tuple[int, str, str]] = set()
+    current_md: Optional[int] = None
+
+    with pdfplumber.open(_io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            for raw in text.split("\n"):
+                line = raw.strip()
+                if not line:
+                    continue
+
+                # 1) Matchday marker
+                m = md_re.search(line)
+                if m:
+                    n = m.group(1) or m.group(2)
+                    if n:
+                        try:
+                            mdn = int(n)
+                            if 1 <= mdn <= 38:
+                                current_md = mdn
+                                continue
+                        except ValueError:
+                            pass
+
+                if current_md is None:
+                    continue
+
+                # 2) Try the strict "TeamA <sep> TeamB" form first
+                strict_parts = sep_re.split(line)
+                if len(strict_parts) >= 2:
+                    a = strict_parts[0].strip()
+                    b = strict_parts[1].strip()
+                    # Strip time/date noise around teams
+                    a_clean = re.sub(r"^\d{1,2}[:.]\d{2}\s*", "", a)
+                    a_clean = re.sub(r"^\d{1,2}/\d{1,2}(?:/\d{2,4})?\s*", "", a_clean)
+                    b_clean = re.sub(r"\s*\d{1,2}[:.]\d{2}$", "", b)
+                    b_clean = re.sub(r"\s*\d{1,2}/\d{1,2}(?:/\d{2,4})?$", "", b_clean)
+                    # Try to match against known teams (either direction).
+                    for cand_home, cand_away in ((a_clean, b_clean),):
+                        # Extract only the recognised team substrings.
+                        home_match = re.search(rf"\b({team_pattern})\b", cand_home, re.IGNORECASE)
+                        away_match = re.search(rf"\b({team_pattern})\b", cand_away, re.IGNORECASE)
+                        if home_match and away_match:
+                            ht = _canonical_team(home_match.group(0))
+                            at = _canonical_team(away_match.group(0))
+                            key = (current_md, ht.lower(), at.lower())
+                            if ht and at and ht != at and key not in seen:
+                                seen.add(key)
+                                fixtures.append({
+                                    "matchday": current_md,
+                                    "home_team": ht,
+                                    "away_team": at,
+                                })
+                            break
+                    else:
+                        # fall through to loose match below
+                        pass
+                    if fixtures and fixtures[-1]["matchday"] == current_md:
+                        continue
+
+                # 3) Loose fallback — find any two team names on the line
+                m2 = fixture_re.search(line)
+                if m2:
+                    ht = _canonical_team(m2.group(1))
+                    at = _canonical_team(m2.group(2))
+                    if ht and at and ht.lower() != at.lower():
+                        key = (current_md, ht.lower(), at.lower())
+                        if key not in seen:
+                            seen.add(key)
+                            fixtures.append({
+                                "matchday": current_md,
+                                "home_team": ht,
+                                "away_team": at,
+                            })
+
+    return fixtures
+
+
 def _parse_listone_pdf(pdf_bytes: bytes) -> List[dict]:
     """Extract Serie A players from a "Listone Fantacalcio" PDF.
 
@@ -784,6 +905,88 @@ def build_router(
             "matchdays": sorted(by_md.keys()),
             "counts_by_matchday": by_md,
         }
+
+    @router.post("/calendar/import-pdf")
+    async def import_calendar_pdf(
+        file: UploadFile = File(...),
+        season: str = "2025-26",
+        dry_run: bool = True,
+        replace: bool = True,
+        user: dict = Depends(require_admin),
+    ):
+        """Upload the season calendar as a PDF and populate ``sal_calendar``.
+
+        - ``dry_run=true`` (default) → parses the PDF and returns a preview
+          (fixtures grouped by matchday) without touching the DB.
+        - ``dry_run=false`` → actually writes the fixtures. Use ``replace=true``
+          (default) to wipe the previous rows for the same ``season``.
+        """
+        if not file.filename or not file.filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Serve un file .pdf")
+        raw = await file.read()
+        if len(raw) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="PDF troppo grande (max 20MB)")
+        try:
+            fixtures = _parse_calendar_pdf(raw)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Calendar PDF parse error")
+            raise HTTPException(status_code=400, detail=f"Errore nell'analisi del PDF: {e}")
+
+        if not fixtures:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Nessuna partita riconosciuta nel PDF. "
+                    "Verifica che sia il calendario Serie A e che i nomi delle "
+                    "squadre siano nella lista attesa."
+                ),
+            )
+
+        by_md: Dict[int, int] = {}
+        for f in fixtures:
+            by_md[f["matchday"]] = by_md.get(f["matchday"], 0) + 1
+
+        preview_sample = fixtures[:20]
+
+        result: Dict[str, Any] = {
+            "season": season,
+            "extracted": len(fixtures),
+            "matchdays": sorted(by_md.keys()),
+            "counts_by_matchday": dict(sorted(by_md.items())),
+            "sample": preview_sample,
+            "dry_run": dry_run,
+        }
+
+        if dry_run:
+            return result
+
+        # Persist
+        if replace:
+            await db.sal_calendar.delete_many({"season": season})
+        now = _now()
+        docs = []
+        seen = set()
+        for fx in fixtures:
+            key = (season, fx["matchday"], fx["home_team"].lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            docs.append({
+                "id": str(uuid.uuid4()),
+                "season": season,
+                "matchday": fx["matchday"],
+                "home_team": fx["home_team"],
+                "away_team": fx["away_team"],
+                "kickoff_iso": None,
+                "imported_at": now,
+            })
+        if docs:
+            await db.sal_calendar.insert_many(docs)
+        result["inserted"] = len(docs)
+        result["stored_total"] = await db.sal_calendar.count_documents({"season": season})
+        return result
 
     @router.get("/calendar")
     async def list_calendar(
