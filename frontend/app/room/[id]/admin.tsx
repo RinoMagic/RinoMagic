@@ -29,11 +29,19 @@ export default function AdminFixtures() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [roomMatchday, setRoomMatchday] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const f = await api<Fixture[]>(`/rooms/${id}/fixtures`);
+      const [f, room] = await Promise.all([
+        api<Fixture[]>(`/rooms/${id}/fixtures`),
+        api<{ matchday: number }>(`/rooms/${id}`).catch(() => null),
+      ]);
       setFixtures(f);
+      if (room?.matchday) {
+        setRoomMatchday(room.matchday);
+        setComputeMd((prev) => prev || String(room.matchday));
+      }
     } catch {} finally {
       setLoading(false);
     }
@@ -133,7 +141,9 @@ export default function AdminFixtures() {
         <View style={styles.computeBox}>
           <Text style={styles.computeTitle}>Calcola Giornata dai Voti</Text>
           <Text style={styles.computeSub}>
-            Deriva automaticamente i risultati dalle partite del PDF Voti caricato dall&apos;admin.
+            {roomMatchday
+              ? `Deriva automaticamente i risultati dal PDF Voti caricato dall'admin. Giornata pre-impostata: ${roomMatchday}ª.`
+              : "Deriva automaticamente i risultati dal PDF Voti caricato dall'admin."}
           </Text>
           <View style={styles.computeRow}>
             <TextInput
