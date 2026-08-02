@@ -1,5 +1,14 @@
-/**
- * ScoreAndLive — landing: tournaments list + create/join.
+/*
+ * ScoreAndLive — home.
+ *
+ * Design (after the auto-progression refactor):
+ *  - No manual "Crea nuovo torneo" form: tournaments are auto-created by the
+ *    server as soon as a previous round ends (0/1 survivors) or when a new
+ *    season calendar is imported.
+ *  - Users see the LIVE tournaments they are part of (or admin of) at the
+ *    top, and a permanent "Archivio" section at the bottom listing every
+ *    finished tournament with its winner (visible to everyone).
+ *  - Anyone can tap an archived tournament to inspect its picks history.
  */
 import { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput } from 'react-native';
@@ -10,52 +19,46 @@ import { api, session } from '@/src/api';
 import { theme } from '@/src/theme';
 import { confirmDialog } from '@/src/utils/confirm';
 
-const COLOR = '#10B981';
+const COLOR = '#22C55E'; // ScoreAndLive green
 
 type T = {
-  id: string; name: string; status: string; invite_code: string;
-  initial_lives: number; participants_total: number; participants_alive: number;
-  is_admin: boolean; current_matchday_number: number | null;
+  id: string; name: string; status: string; is_admin: boolean;
+  participants_total: number; participants_alive: number;
+  initial_lives: number; invite_code: string;
+  season?: string; start_matchday?: number;
 };
 
-export default function ScoreAndLive() {
+type Archived = {
+  id: string; name: string; season: string; start_matchday: number;
+  created_at: string; finished_at: string | null;
+  winner_user_id: string | null; winner_nickname: string | null;
+  participants_total: number; settled_matchdays: number;
+};
+
+export default function ScoreAndLiveHome() {
   const router = useRouter();
   const [items, setItems] = useState<T[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [role, setRole] = useState<'admin' | 'player' | null>(null);
-  const [name, setName] = useState('');
-  const [lives, setLives] = useState('10');
-  const [startMd, setStartMd] = useState('1');
-  const [season, setSeason] = useState('2026-27');
+  const [archive, setArchive] = useState<Archived[]>([]);
   const [joinCode, setJoinCode] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [showArchive, setShowArchive] = useState(false);
+  const [role, setRole] = useState<'admin' | 'player' | null>(null);
 
   const load = async () => {
-    const s = await session.load();
-    setRole(s.user?.role === 'admin' ? 'admin' : 'player');
+    setLoading(true);
     try {
-      setItems(await api<T[]>('/sal/tournaments'));
-    } catch {} finally { setLoading(false); }
+      const s = await session.load();
+      setRole(s.user?.role === 'admin' ? 'admin' : 'player');
+      const [list, arch] = await Promise.all([
+        api<T[]>('/sal/tournaments'),
+        api<Archived[]>('/sal/tournaments/archive/list'),
+      ]);
+      setItems(list);
+      setArchive(arch);
+    } catch (e: any) { alert(e.message); }
+    finally { setLoading(false); }
   };
   useFocusEffect(useCallback(() => { load(); }, []));
-
-  const create = async () => {
-    if (name.trim().length < 2) return;
-    const iv = parseInt(lives, 10);
-    if (!(iv >= 1 && iv <= 20)) return alert('Vite 1-20');
-    const smd = parseInt(startMd, 10);
-    if (!(smd >= 1 && smd <= 38)) return alert('Giornata di partenza deve essere 1-38');
-    setBusy(true);
-    try {
-      await api('/sal/tournaments', { method: 'POST', body: {
-        name: name.trim(),
-        initial_lives: iv,
-        start_matchday: smd,
-        season: season.trim() || '2026-27',
-      } });
-      setName(''); setStartMd('1'); await load();
-    } catch (e: any) { alert(e.message); } finally { setBusy(false); }
-  };
 
   const doJoin = async () => {
     const code = joinCode.trim().toUpperCase();
@@ -79,52 +82,53 @@ export default function ScoreAndLive() {
     } catch (e: any) { alert(e.message || 'Errore eliminazione'); }
   };
 
+  const deleteArchived = async (a: Archived) => {
+    if (!await confirmDialog(
+      'Elimina torneo archiviato',
+      `Attenzione: stai per cancellare "${a.name}" con TUTTO lo storico (${a.settled_matchdays} giornate, ${a.participants_total} partecipanti). Sicuro?`,
+      { destructive: true, confirmLabel: 'Continua' },
+    )) return;
+    if (!await confirmDialog(
+      'Conferma DEFINITIVA',
+      'Ultima conferma: perderai per sempre ogni traccia di questo torneo dallo storico. Procedere?',
+      { destructive: true, confirmLabel: 'ELIMINA per sempre' },
+    )) return;
+    try {
+      await api(`/sal/tournaments/${a.id}?force=true`, { method: 'DELETE' });
+      await load();
+    } catch (e: any) { alert(e.message || 'Errore'); }
+  };
+
+  const activeItems = items.filter((t) => t.status !== 'finished');
+  const isAdmin = role === 'admin';
+
   return (
-    <View style={styles.wrap}>
+    <View style={{ flex: 1, backgroundColor: theme.colors.surface }}>
       <SafeAreaView edges={['top']}>
         <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={12}>
-            <Ionicons name="chevron-back" size={26} color={theme.colors.onSurface} />
+          <Pressable onPress={() => router.replace('/hub')} hitSlop={12}>
+            <Ionicons name="home" size={22} color={theme.colors.onSurface} />
           </Pressable>
-          <Text style={styles.title}>ScoreAndLive</Text>
-          <Ionicons name="flame" size={22} color={COLOR} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>ScoreAndLive</Text>
+            <Text style={styles.subtitle}>Sopravvivi indovinando marcatori</Text>
+          </View>
+          {isAdmin && (
+            <Pressable onPress={() => router.push('/calendar-admin')} hitSlop={12}>
+              <Ionicons name="calendar" size={22} color={COLOR} />
+            </Pressable>
+          )}
         </View>
       </SafeAreaView>
 
-      <ScrollView contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg, paddingBottom: 60 }}>
+      <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
         {loading ? <ActivityIndicator color={COLOR} /> : (
           <>
-            {role === 'admin' && (
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>Crea nuovo torneo</Text>
-                <TextInput style={styles.input} placeholder="Nome torneo" placeholderTextColor={theme.colors.muted}
-                  value={name} onChangeText={setName} testID="sal-new-name" />
-                <TextInput style={styles.input} placeholder="Vite iniziali (default 10)" placeholderTextColor={theme.colors.muted}
-                  keyboardType="number-pad" value={lives} onChangeText={setLives} />
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <TextInput style={[styles.input, { flex: 1 }]}
-                    placeholder="Parti dalla giornata (1-38)"
-                    placeholderTextColor={theme.colors.muted}
-                    keyboardType="number-pad" value={startMd} onChangeText={setStartMd}
-                    testID="sal-new-startmd" />
-                  <TextInput style={[styles.input, { width: 110 }]}
-                    placeholder="2026-27"
-                    placeholderTextColor={theme.colors.muted}
-                    value={season} onChangeText={setSeason} />
-                </View>
-                <Text style={styles.hint}>
-                  Il torneo si sviluppa dalla giornata scelta fino alla 38ª (o finché tutti perdono le vite).
-                </Text>
-                <Pressable style={[styles.cta, { backgroundColor: COLOR }]} onPress={create} disabled={busy} testID="sal-create">
-                  <Ionicons name="add-circle" size={18} color="#fff" />
-                  <Text style={styles.ctaText}>Crea torneo</Text>
-                </Pressable>
-              </View>
-            )}
-            {role === 'player' && (
+            {!isAdmin && (
               <View style={styles.card}>
                 <Text style={styles.cardTitle}>Iscriviti con codice</Text>
-                <TextInput style={styles.input} placeholder="Codice invito" placeholderTextColor={theme.colors.muted}
+                <TextInput style={styles.input} placeholder="Codice invito"
+                  placeholderTextColor={theme.colors.muted}
                   autoCapitalize="characters" value={joinCode} onChangeText={setJoinCode} />
                 <Pressable style={[styles.cta, { backgroundColor: COLOR }]} onPress={doJoin}>
                   <Ionicons name="log-in" size={18} color="#fff" />
@@ -133,9 +137,26 @@ export default function ScoreAndLive() {
               </View>
             )}
 
-            <Text style={styles.section}>I tuoi tornei ({items.length})</Text>
-            {items.length === 0 && <Text style={styles.muted}>Nessun torneo.</Text>}
-            {items.map((t) => (
+            {isAdmin && (
+              <View style={[styles.card, { backgroundColor: COLOR + '18', borderColor: COLOR + '55', borderWidth: 1 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Ionicons name="flash" size={18} color={COLOR} />
+                  <Text style={[styles.cardTitle, { flex: 1, color: COLOR }]}>Auto-progressione attiva</Text>
+                </View>
+                <Text style={styles.hint}>
+                  I tornei vengono creati automaticamente: quando l&apos;ultimo
+                  sopravvissuto del round è decretato, viene aperto un nuovo
+                  round con un nuovo codice invito. Il primo torneo di una
+                  stagione parte all&apos;upload del calendario stagionale.
+                </Text>
+              </View>
+            )}
+
+            <Text style={styles.section}>Tornei attivi ({activeItems.length})</Text>
+            {activeItems.length === 0 && (
+              <Text style={styles.muted}>Nessun torneo attivo al momento.</Text>
+            )}
+            {activeItems.map((t) => (
               <View key={t.id} style={[styles.tCard, { borderColor: COLOR + '55' }]}>
                 <Pressable
                   style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}
@@ -151,16 +172,48 @@ export default function ScoreAndLive() {
                   </View>
                 </Pressable>
                 {t.is_admin && (
-                  <Pressable
-                    onPress={() => deleteTournament(t)}
-                    hitSlop={10}
-                    testID={`sal-delete-${t.id}`}
-                    style={styles.trash}
-                  >
+                  <Pressable onPress={() => deleteTournament(t)} hitSlop={10}
+                    testID={`sal-delete-${t.id}`} style={styles.trash}>
                     <Ionicons name="trash" size={18} color={theme.colors.error} />
                   </Pressable>
                 )}
                 <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+              </View>
+            ))}
+
+            <Pressable
+              style={[styles.archiveToggle]}
+              onPress={() => setShowArchive((v) => !v)}
+              testID="sal-archive-toggle"
+            >
+              <Ionicons name={showArchive ? 'chevron-down' : 'chevron-forward'} size={18} color={theme.colors.onSurface} />
+              <Text style={styles.section}>Archivio storico ({archive.length})</Text>
+            </Pressable>
+
+            {showArchive && archive.length === 0 && (
+              <Text style={styles.muted}>Nessun torneo concluso ancora.</Text>
+            )}
+            {showArchive && archive.map((a) => (
+              <View key={a.id} style={styles.aCard}>
+                <Pressable
+                  style={{ flex: 1 }}
+                  onPress={() => router.push(`/scoreandlive/${a.id}/history`)}
+                  testID={`sal-archived-${a.id}`}
+                >
+                  <Text style={styles.aName}>{a.name}</Text>
+                  <Text style={styles.aMeta}>
+                    🏆 {a.winner_nickname || 'Nessun vincitore'} · G{a.start_matchday}+ · {a.settled_matchdays} giornate
+                  </Text>
+                  <Text style={styles.aDate}>
+                    Concluso {a.finished_at ? new Date(a.finished_at).toLocaleDateString('it-IT') : '—'}
+                  </Text>
+                </Pressable>
+                {isAdmin && (
+                  <Pressable onPress={() => deleteArchived(a)} hitSlop={10} style={styles.trash}>
+                    <Ionicons name="trash" size={16} color={theme.colors.error} />
+                  </Pressable>
+                )}
+                <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
               </View>
             ))}
           </>
@@ -171,40 +224,65 @@ export default function ScoreAndLive() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: theme.colors.surface },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: theme.spacing.lg },
+  header: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg, paddingVertical: theme.spacing.md,
+  },
   title: { color: theme.colors.onSurface, fontSize: 18, fontWeight: '800' },
+  subtitle: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
+  body: { padding: theme.spacing.lg, gap: theme.spacing.md, paddingBottom: 48 },
+
   card: {
-    padding: theme.spacing.md, borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceSecondary, gap: theme.spacing.sm,
-    borderWidth: 1, borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md, gap: theme.spacing.sm,
   },
   cardTitle: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15 },
   input: {
-    color: theme.colors.onSurface, backgroundColor: theme.colors.surface,
-    padding: theme.spacing.sm, borderRadius: theme.radius.sm,
-    borderWidth: 1, borderColor: theme.colors.border, fontSize: 14,
+    backgroundColor: theme.colors.surface, borderWidth: 1,
+    borderColor: theme.colors.border, borderRadius: theme.radius.sm,
+    padding: theme.spacing.sm, color: theme.colors.onSurface,
   },
-  cta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing.sm, paddingVertical: 10, borderRadius: theme.radius.pill },
+  cta: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: theme.spacing.sm, paddingVertical: 10, borderRadius: theme.radius.pill,
+  },
   ctaText: { color: '#fff', fontWeight: '800', fontSize: 14 },
-  section: { color: theme.colors.onSurfaceSecondary, fontSize: 13, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+
+  section: {
+    color: theme.colors.onSurface, fontWeight: '800',
+    fontSize: 15, marginTop: theme.spacing.md,
+  },
   muted: { color: theme.colors.muted, fontSize: 13, fontStyle: 'italic' },
+
   tCard: {
     flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
-    padding: theme.spacing.md, borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceSecondary, borderWidth: 1,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.md, borderWidth: 1, padding: theme.spacing.md,
   },
   tName: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15 },
   tMeta: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
   trash: {
-    padding: 6,
-    borderRadius: theme.radius.sm,
+    padding: 6, borderRadius: theme.radius.sm,
     backgroundColor: theme.colors.error + '15',
   },
   hint: {
-    color: theme.colors.muted,
-    fontSize: 11,
-    fontStyle: 'italic',
-    marginTop: -theme.spacing.xs,
+    color: theme.colors.onSurfaceSecondary, fontSize: 12,
+    fontStyle: 'italic', lineHeight: 16,
   },
+
+  archiveToggle: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginTop: theme.spacing.md,
+  },
+  aCard: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.md,
+    borderWidth: 1, borderColor: theme.colors.border,
+    padding: theme.spacing.md,
+  },
+  aName: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 14 },
+  aMeta: { color: theme.colors.onSurfaceSecondary, fontSize: 12, marginTop: 2 },
+  aDate: { color: theme.colors.muted, fontSize: 11, marginTop: 2, fontStyle: 'italic' },
 });

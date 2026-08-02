@@ -534,45 +534,48 @@ def build_router(
 
     # --- Tournaments ----------------------------------------------------
 
-    @router.post("/tournaments")
-    async def create_tournament(data: TournamentCreate, user: dict = Depends(require_admin)):
-        # Generate a unique code (checked against BOTH tournaments' legacy field
-        # AND the sal_invites collection).
-        for _ in range(20):
+    async def _create_tournament_doc(
+        *, admin_user_id: str, name: str, initial_lives: int,
+        start_matchday: int, season: str,
+        previous_tournament_id: Optional[str] = None,
+    ) -> dict:
+        """Create a fresh tournament doc + unique invite code + auto matchdays.
+
+        Shared helper used both by the manual POST endpoint and by the
+        auto-progression flow (when a tournament ends with 0/1 alive, we
+        immediately spawn the next round starting from the next unplayed
+        matchday, with a brand-new invite code).
+        """
+        # Unique invite code
+        for _ in range(50):
             code = _gen_code()
-            existing_t = await db.sal_tournaments.find_one({"invite_code": code})
-            existing_inv = await db.sal_invites.find_one({"code": code})
-            if not existing_t and not existing_inv:
+            if not await db.sal_tournaments.find_one({"invite_code": code}) \
+               and not await db.sal_invites.find_one({"code": code}):
                 break
         else:
             raise HTTPException(status_code=500, detail="Impossibile generare un codice univoco")
+
         now = _now()
         tid = str(uuid.uuid4())
         doc = {
             "id": tid,
-            "name": data.name.strip(),
-            "admin_user_id": user["id"],
+            "name": name.strip(),
+            "admin_user_id": admin_user_id,
             "game": "scoreandlive",
             "status": "open",
-            "initial_lives": data.initial_lives,
+            "initial_lives": initial_lives,
             "current_matchday_number": None,
-            "start_matchday": data.start_matchday,
-            "season": data.season,
+            "start_matchday": start_matchday,
+            "season": season,
             "created_at": now,
-            "invite_code": code,  # legacy field: initial code (also stored in sal_invites)
+            "finished_at": None,
+            "invite_code": code,
             "winner_user_id": None,
             "blocked_teams_by_user": {},
+            "previous_tournament_id": previous_tournament_id,
+            "next_tournament_id": None,
         }
         await db.sal_tournaments.insert_one(doc)
-        await db.sal_participants.insert_one({
-            "tournament_id": tid,
-            "user_id": user["id"],
-            "nickname": display_name(user),
-            "lives_remaining": data.initial_lives,
-            "eliminated_at_matchday": None,
-            "joined_at": now,
-        })
-        # Create the first single-use invite (mirrors TheBestTiket rooms).
         await db.sal_invites.insert_one({
             "id": str(uuid.uuid4()),
             "tournament_id": tid,
@@ -580,42 +583,105 @@ def build_router(
             "used_by_user_id": None,
             "used_at": None,
             "created_at": now,
-            "created_by": user["id"],
+            "created_by": admin_user_id,
             "revoked_at": None,
         })
 
-        # Auto-create ALL matchdays from ``start_matchday`` to 38 using the
-        # season calendar. Matchdays without fixtures in the calendar are
-        # skipped silently — the admin can still fill them later via the
-        # low-level ``POST /tournaments/{id}/matchdays`` endpoint.
-        matchday_docs = []
-        for md_num in range(data.start_matchday, 39):
+        # Auto-create matchdays from ``start_matchday`` to 38.
+        md_docs = []
+        for md_num in range(start_matchday, 39):
             cal_rows = [r async for r in db.sal_calendar.find(
-                {"season": data.season, "matchday": md_num}, {"_id": 0}
+                {"season": season, "matchday": md_num}, {"_id": 0}
             ).sort("home_team", 1)]
             if not cal_rows:
                 continue
-            matchday_docs.append({
+            md_docs.append({
                 "id": str(uuid.uuid4()),
                 "tournament_id": tid,
                 "matchday_number": md_num,
                 "fixtures": [
-                    {
-                        "idx": i,
-                        "home_team": r["home_team"].strip(),
-                        "away_team": r["away_team"].strip(),
-                        "postponed_before": False,
-                        "postponed_during": False,
-                    }
+                    {"idx": i, "home_team": r["home_team"].strip(),
+                     "away_team": r["away_team"].strip(),
+                     "postponed_before": False, "postponed_during": False}
                     for i, r in enumerate(cal_rows)
                 ],
                 "scorers": [],
                 "status": "open",
+                "starts_at": None,   # set when admin locks the matchday
                 "created_at": now,
             })
-        if matchday_docs:
-            await db.sal_matchdays.insert_many(matchday_docs)
+        if md_docs:
+            await db.sal_matchdays.insert_many(md_docs)
+        return doc
 
+    async def _close_tournament_and_advance(t: dict, last_settled_md: int) -> Optional[str]:
+        """Called after a matchday settles with <=1 survivors.
+
+        - Marks the tournament as ``finished`` with winner + timestamp.
+        - Attempts to spawn a follow-up tournament starting from the next
+          unplayed matchday (if any calendar rows exist). The new tournament
+          inherits ``initial_lives`` from its predecessor and gets a fresh
+          unique invite code. Returns the new tournament's id (or None if
+          the season is done).
+        """
+        # Determine the winner (0 or 1 alive)
+        alive = [p async for p in db.sal_participants.find(
+            {"tournament_id": t["id"], "eliminated_at_matchday": None}, {"_id": 0})]
+        winner = alive[0]["user_id"] if len(alive) == 1 else None
+        await db.sal_tournaments.update_one(
+            {"id": t["id"]},
+            {"$set": {"status": "finished", "winner_user_id": winner,
+                      "finished_at": _now()}},
+        )
+
+        # Try to spawn the next round
+        next_start = last_settled_md + 1
+        if next_start > 38:
+            return None
+        remaining = await db.sal_calendar.count_documents(
+            {"season": t.get("season"), "matchday": {"$gte": next_start}}
+        )
+        if remaining == 0:
+            return None
+
+        # Naming: "Serie A 2026-27 · Round 1" → "· Round 2"
+        base_name = t["name"]
+        m = re.search(r"·\s*Round\s+(\d+)\s*$", base_name)
+        if m:
+            n = int(m.group(1)) + 1
+            new_name = re.sub(r"·\s*Round\s+\d+\s*$", f"· Round {n}", base_name)
+        else:
+            new_name = f"{base_name} · Round 2"
+
+        new_doc = await _create_tournament_doc(
+            admin_user_id=t["admin_user_id"],
+            name=new_name,
+            initial_lives=t["initial_lives"],
+            start_matchday=next_start,
+            season=t.get("season") or "2026-27",
+            previous_tournament_id=t["id"],
+        )
+        await db.sal_tournaments.update_one(
+            {"id": t["id"]}, {"$set": {"next_tournament_id": new_doc["id"]}}
+        )
+        return new_doc["id"]
+
+    @router.post("/tournaments")
+    async def create_tournament(data: TournamentCreate, user: dict = Depends(require_admin)):
+        doc = await _create_tournament_doc(
+            admin_user_id=user["id"], name=data.name,
+            initial_lives=data.initial_lives,
+            start_matchday=data.start_matchday, season=data.season,
+        )
+        # Enrol the admin as first participant so they can play too.
+        await db.sal_participants.insert_one({
+            "tournament_id": doc["id"],
+            "user_id": user["id"],
+            "nickname": display_name(user),
+            "lives_remaining": data.initial_lives,
+            "eliminated_at_matchday": None,
+            "joined_at": _now(),
+        })
         return await _tournament_dict(doc, user)
 
     @router.get("/tournaments")
@@ -790,12 +856,157 @@ def build_router(
         return await _tournament_dict(t, user)
 
     @router.delete("/tournaments/{tournament_id}")
-    async def delete_tournament(tournament_id: str, user: dict = Depends(require_admin)):
+    async def delete_tournament(
+        tournament_id: str,
+        force: bool = False,
+        user: dict = Depends(require_admin),
+    ):
+        """Delete a tournament and all its cascading data.
+
+        SAFETY: to protect historical integrity, tournaments that contain
+        at least one submitted pick are NEVER deleted unless the caller
+        explicitly passes ``force=true``. This makes deletion a two-step
+        opt-in: safe by default, admins can still nuke if needed.
+        """
         await _require_tournament_admin(tournament_id, user)
+        picks_count = await db.sal_picks.count_documents({"tournament_id": tournament_id})
+        if picks_count > 0 and not force:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Il torneo contiene {picks_count} giocate storiche. "
+                    "Eliminarlo cancellerebbe lo storico. Riprova con force=true "
+                    "solo se sei davvero sicuro."
+                ),
+            )
         await db.sal_tournaments.delete_one({"id": tournament_id})
         await db.sal_participants.delete_many({"tournament_id": tournament_id})
         await db.sal_matchdays.delete_many({"tournament_id": tournament_id})
         await db.sal_picks.delete_many({"tournament_id": tournament_id})
+        await db.sal_invites.delete_many({"tournament_id": tournament_id})
+        return {"ok": True, "deleted_picks": picks_count}
+
+    @router.get("/tournaments/archive/list")
+    async def list_archived_tournaments(user: dict = Depends(current_user)):
+        """List all finished tournaments (permanent history, visible to all)."""
+        cursor = db.sal_tournaments.find(
+            {"status": "finished"}, {"_id": 0}
+        ).sort("finished_at", -1)
+        out = []
+        async for t in cursor:
+            # Enrich with winner nickname
+            winner_nick = None
+            if t.get("winner_user_id"):
+                p = await db.sal_participants.find_one({
+                    "tournament_id": t["id"], "user_id": t["winner_user_id"]
+                }, {"_id": 0})
+                winner_nick = p.get("nickname") if p else None
+            total = await db.sal_participants.count_documents({"tournament_id": t["id"]})
+            settled_mds = await db.sal_matchdays.count_documents({
+                "tournament_id": t["id"], "status": "settled"
+            })
+            out.append({
+                "id": t["id"], "name": t["name"], "season": t.get("season"),
+                "start_matchday": t.get("start_matchday"),
+                "created_at": t.get("created_at"),
+                "finished_at": t.get("finished_at"),
+                "winner_user_id": t.get("winner_user_id"),
+                "winner_nickname": winner_nick,
+                "participants_total": total,
+                "settled_matchdays": settled_mds,
+            })
+        return out
+
+    @router.get("/tournaments/{tournament_id}/history")
+    async def tournament_history(tournament_id: str, user: dict = Depends(current_user)):
+        """Full public history of a tournament: all matchdays + all picks by everyone.
+
+        For an OPEN tournament, only ``locked`` and ``settled`` matchdays
+        expose picks (to avoid revealing others' picks before the deadline).
+        For a FINISHED tournament, every matchday's picks are public.
+        """
+        t = await _get_tournament(tournament_id)
+        is_finished = t.get("status") == "finished"
+        matchdays = [m async for m in db.sal_matchdays.find(
+            {"tournament_id": tournament_id}, {"_id": 0}
+        ).sort("matchday_number", 1)]
+        participants = {p["user_id"]: p async for p in db.sal_participants.find(
+            {"tournament_id": tournament_id}, {"_id": 0}
+        )}
+        result_mds = []
+        for md in matchdays:
+            picks_visible = is_finished or md.get("status") in ("locked", "settled")
+            entry = {
+                "id": md["id"],
+                "matchday_number": md["matchday_number"],
+                "status": md.get("status", "open"),
+                "starts_at": md.get("starts_at"),
+                "settled_at": md.get("settled_at"),
+                "fixtures": md.get("fixtures", []),
+                "scorers": md.get("scorers", []),
+                "picks_visible": picks_visible,
+                "picks": [],
+            }
+            if picks_visible:
+                cursor = db.sal_picks.find(
+                    {"tournament_id": tournament_id, "matchday_id": md["id"]},
+                    {"_id": 0},
+                )
+                async for p in cursor:
+                    uid = p["user_id"]
+                    part = participants.get(uid, {})
+                    entry["picks"].append({
+                        "user_id": uid,
+                        "nickname": part.get("nickname", "?"),
+                        "picks": p.get("picks", []),
+                        "outcome": p.get("outcome"),
+                    })
+            result_mds.append(entry)
+        return {
+            "tournament": {
+                "id": t["id"], "name": t["name"], "status": t.get("status"),
+                "season": t.get("season"),
+                "winner_user_id": t.get("winner_user_id"),
+                "winner_nickname": (participants.get(t.get("winner_user_id") or "") or {}).get("nickname"),
+                "finished_at": t.get("finished_at"),
+                "previous_tournament_id": t.get("previous_tournament_id"),
+                "next_tournament_id": t.get("next_tournament_id"),
+            },
+            "matchdays": result_mds,
+        }
+
+    @router.post("/tournaments/{tournament_id}/matchdays/{matchday_id}/lock")
+    async def lock_matchday(tournament_id: str, matchday_id: str,
+                            user: dict = Depends(require_admin)):
+        """Admin locks a matchday: no more picks accepted, picks become public."""
+        await _require_tournament_admin(tournament_id, user)
+        md = await db.sal_matchdays.find_one({"id": matchday_id, "tournament_id": tournament_id})
+        if not md:
+            raise HTTPException(status_code=404, detail="Giornata non trovata")
+        if md.get("status") == "settled":
+            raise HTTPException(status_code=400, detail="La giornata è già chiusa")
+        if md.get("status") == "locked":
+            return {"ok": True, "already_locked": True}
+        await db.sal_matchdays.update_one(
+            {"id": matchday_id},
+            {"$set": {"status": "locked", "starts_at": _now()}},
+        )
+        return {"ok": True, "locked_at": _now()}
+
+    @router.post("/tournaments/{tournament_id}/matchdays/{matchday_id}/unlock")
+    async def unlock_matchday(tournament_id: str, matchday_id: str,
+                              user: dict = Depends(require_admin)):
+        """Admin re-opens a mistakenly locked matchday. Not allowed if settled."""
+        await _require_tournament_admin(tournament_id, user)
+        md = await db.sal_matchdays.find_one({"id": matchday_id, "tournament_id": tournament_id})
+        if not md:
+            raise HTTPException(status_code=404, detail="Giornata non trovata")
+        if md.get("status") == "settled":
+            raise HTTPException(status_code=400, detail="Impossibile riaprire una giornata già risolta")
+        await db.sal_matchdays.update_one(
+            {"id": matchday_id},
+            {"$set": {"status": "open"}, "$unset": {"starts_at": ""}},
+        )
         return {"ok": True}
 
     # --- Matchdays ------------------------------------------------------
@@ -1311,12 +1522,14 @@ def build_router(
         alive = [p async for p in db.sal_participants.find(
             {"tournament_id": tournament_id, "eliminated_at_matchday": None}, {"_id": 0}
         )]
-        if len(alive) == 1:
-            await db.sal_tournaments.update_one(
-                {"id": tournament_id},
-                {"$set": {"status": "finished", "winner_user_id": alive[0]["user_id"]}},
-            )
-        return {"ok": True, "settled": True, "alive_count": len(alive)}
+        next_tid: Optional[str] = None
+        if len(alive) <= 1:
+            # Reload tournament (previous state might be stale) then close+advance.
+            fresh = await db.sal_tournaments.find_one({"id": tournament_id}, {"_id": 0})
+            if fresh and fresh.get("status") != "finished":
+                next_tid = await _close_tournament_and_advance(fresh, md["matchday_number"])
+        return {"ok": True, "settled": True, "alive_count": len(alive),
+                "next_tournament_id": next_tid}
 
     return router
 

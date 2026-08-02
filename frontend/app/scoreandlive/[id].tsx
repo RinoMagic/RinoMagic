@@ -151,6 +151,16 @@ export default function TournamentPage() {
             </View>
           ))}
         </View>
+
+        <Pressable
+          style={[styles.historyBtn, { borderColor: COLOR + '55' }]}
+          onPress={() => router.push(`/scoreandlive/${id}/history`)}
+          testID="sal-history"
+        >
+          <Ionicons name="albums" size={16} color={COLOR} />
+          <Text style={[styles.historyText, { color: COLOR }]}>Vedi storico giocate</Text>
+          <Ionicons name="chevron-forward" size={16} color={COLOR} />
+        </Pressable>
       </ScrollView>
     </View>
   );
@@ -202,6 +212,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5, marginTop: 1, textTransform: 'uppercase',
   },
   inviteMeta: { fontSize: 12, fontWeight: '600' },
+  historyBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: 12, borderRadius: theme.radius.pill,
+    borderWidth: 1, backgroundColor: theme.colors.surfaceSecondary,
+    marginTop: theme.spacing.sm,
+  },
+  historyText: { fontWeight: '800', fontSize: 14 },
   toggle: {
     flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
     padding: theme.spacing.sm, borderRadius: theme.radius.sm, borderWidth: 1,
