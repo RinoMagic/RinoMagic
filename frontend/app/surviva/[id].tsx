@@ -61,6 +61,11 @@ type SvInvite = {
   used_by_user_id: string | null; used_by_nickname: string | null;
   revoked_at: string | null;
 };
+type BonusCfg = {
+  id: string; season: string; matchday: number; bonus_type: string;
+  big_match: { home_team: string; away_team: string } | null;
+  status: 'open' | 'locked' | 'settled';
+};
 
 export default function SurvivaTournament() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -78,6 +83,7 @@ export default function SurvivaTournament() {
   const [lb, setLb] = useState<LeaderboardRow[]>([]);
   const [summary, setSummary] = useState<{ locked: boolean; fixtures: SummaryFixture[] } | null>(null);
   const [invites, setInvites] = useState<SvInvite[]>([]);
+  const [bonusCfg, setBonusCfg] = useState<BonusCfg | null>(null);
   const [busyInvite, setBusyInvite] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -118,6 +124,18 @@ export default function SurvivaTournament() {
       if (detail.is_admin) {
         try {
           setInvites(await api<SvInvite[]>(`/sv/tournaments/${id}/invites`));
+        } catch { /* ignore */ }
+        try {
+          // Load the exact_score bonus config for the tournament's current
+          // matchday (auto-created as a draft when the tournament was
+          // created). If not found, offer a shortcut to configure one.
+          const configs = await api<BonusCfg[]>(`/bonus/configs`);
+          const cfg = configs.find(c =>
+            c.season === detail.season
+            && c.matchday === detail.current_matchday
+            && c.bonus_type === 'exact_score',
+          );
+          setBonusCfg(cfg || null);
         } catch { /* ignore */ }
       }
     } catch (e: any) {
@@ -359,6 +377,10 @@ export default function SurvivaTournament() {
             busy={busyInvite}
             onGenerate={genInvite}
             onRevoke={revokeInvite}
+            bonusCfg={bonusCfg}
+            onConfigureBonus={() => router.push(
+              `/admin/bonus?season=${encodeURIComponent(t.season)}&matchday=${t.current_matchday}&bonus_type=exact_score`,
+            )}
           />
         )}
       </ScrollView>
@@ -599,14 +621,18 @@ function PlayTab({
 
 function AdminTab({
   t, invites, busy, onGenerate, onRevoke,
+  bonusCfg, onConfigureBonus,
 }: {
   t: Tournament;
   invites: SvInvite[];
   busy: boolean;
   onGenerate: () => void;
   onRevoke: (inv: SvInvite) => void;
+  bonusCfg: BonusCfg | null;
+  onConfigureBonus: () => void;
 }) {
   const available = invites.filter((i) => !i.revoked_at && !i.used_by_user_id).length;
+  const bigMatch = bonusCfg?.big_match;
   return (
     <>
       <View style={styles.notice}>
@@ -615,6 +641,62 @@ function AdminTab({
           Ogni codice invito è univoco e utilizzabile da un solo giocatore.
           Attualmente {available} disponibile{available === 1 ? '' : 'i'}.
         </Text>
+      </View>
+
+      {/* Bonus config card (Survival = exact_score = Big Match) */}
+      <View style={styles.adminCard}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Ionicons name="gift" size={18} color={COLOR} />
+          <Text style={[styles.adminCardTitle, { flex: 1 }]}>
+            Bonus Giornata {t.current_matchday}
+          </Text>
+          <View style={[
+            styles.bonusChip,
+            !bonusCfg && { backgroundColor: theme.colors.muted + '25' },
+            bonusCfg && !bigMatch && { backgroundColor: '#FEF3C7' },
+            bonusCfg && bigMatch && bonusCfg.status === 'open' && { backgroundColor: '#DCFCE7' },
+            bonusCfg && bonusCfg.status === 'locked' && { backgroundColor: '#E0E7FF' },
+            bonusCfg && bonusCfg.status === 'settled' && { backgroundColor: '#E5E7EB' },
+          ]}>
+            <Text style={styles.bonusChipText}>
+              {!bonusCfg
+                ? 'Non attivo'
+                : !bigMatch
+                  ? 'Draft: manca Big Match'
+                  : bonusCfg.status === 'open'
+                    ? 'Attivo'
+                    : bonusCfg.status === 'locked'
+                      ? 'Bloccato'
+                      : 'Liquidato'}
+            </Text>
+          </View>
+        </View>
+        {bigMatch ? (
+          <Text style={styles.bonusInfo}>
+            <Text style={{ fontWeight: '700' }}>
+              {bigMatch.home_team} vs {bigMatch.away_team}
+            </Text>
+            {' '}— i giocatori pronosticano il risultato esatto.
+          </Text>
+        ) : (
+          <Text style={styles.bonusInfo}>
+            {bonusCfg
+              ? 'È stato creato uno slot bonus per questa giornata ma manca la Big Match. Configurala per attivarlo per i giocatori.'
+              : 'Nessun bonus attivo per questa giornata.'}
+          </Text>
+        )}
+        {bonusCfg?.status !== 'settled' && (
+          <Pressable
+            style={[styles.genBtn, { alignSelf: 'flex-start', marginTop: 4 }]}
+            onPress={onConfigureBonus}
+            testID="sv-configure-bonus"
+          >
+            <Ionicons name="settings" size={14} color="#fff" />
+            <Text style={styles.genBtnText}>
+              {bigMatch ? 'Modifica Big Match' : 'Configura Big Match'}
+            </Text>
+          </Pressable>
+        )}
       </View>
 
       <View style={styles.adminCard}>
@@ -945,6 +1027,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: theme.colors.border,
   },
   adminCardTitle: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15 },
+  bonusChip: {
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: theme.radius.pill,
+  },
+  bonusChipText: { fontSize: 11, fontWeight: '800', color: '#111827' },
+  bonusInfo: { color: theme.colors.muted, fontSize: 13, marginTop: 4 },
   genBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 12, paddingVertical: 6,

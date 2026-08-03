@@ -683,6 +683,15 @@ def build_router(
             "eliminated_at_matchday": None,
             "joined_at": _now(),
         })
+        # Auto-create the first_scorer bonus draft for this matchday
+        try:
+            from bonus import ensure_bonus_draft
+            await ensure_bonus_draft(
+                db, season=data.season, matchday=int(data.start_matchday),
+                bonus_type="first_scorer", created_by=user["id"],
+            )
+        except Exception:
+            logger.exception("Failed to ensure bonus draft for SAL %s", doc["id"])
         return await _tournament_dict(doc, user)
 
     @router.get("/tournaments")

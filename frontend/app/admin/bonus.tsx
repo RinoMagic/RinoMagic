@@ -17,7 +17,7 @@ import {
   ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, session, User } from '@/src/api';
 import { theme } from '@/src/theme';
@@ -62,13 +62,23 @@ const COLORS: Record<BonusType, { primary: string; dot1: string; dot2: string; l
 
 export default function AdminBonus() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    season?: string; matchday?: string; bonus_type?: string;
+  }>();
   const [me, setMe] = useState<User | null>(null);
-  const [season, setSeason] = useState('2026-27');
-  const [matchday, setMatchday] = useState('1');
+  const [season, setSeason] = useState(params.season || '2026-27');
+  const [matchday, setMatchday] = useState(params.matchday || '1');
   const [configs, setConfigs] = useState<Config[]>([]);
   const [fixtures, setFixtures] = useState<Available['fixtures']>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Re-apply query params if the page is navigated to fresh
+  useEffect(() => {
+    if (params.season && params.season !== season) setSeason(params.season);
+    if (params.matchday && params.matchday !== matchday) setMatchday(params.matchday);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.season, params.matchday]);
 
   const load = useCallback(async () => {
     try {

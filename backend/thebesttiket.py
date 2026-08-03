@@ -1221,6 +1221,16 @@ def build_router(
             "display_name": display_name(user),
             "joined_at": now,
         })
+        # Auto-create the exact_score bonus draft for this room's matchday
+        try:
+            from bonus import ensure_bonus_draft
+            await ensure_bonus_draft(
+                db, season="2026-27",
+                matchday=int(data.matchday),
+                bonus_type="exact_score", created_by=user["id"],
+            )
+        except Exception:
+            logger.exception("Failed to ensure bonus draft for room %s", room_id)
         return await _room_dict(doc, user)
 
     @router.get("/rooms")

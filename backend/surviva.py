@@ -32,6 +32,8 @@ from typing import List, Optional, Dict, Any, Callable, Tuple
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+from bonus import ensure_bonus_draft
+
 logger = logging.getLogger("surviva")
 
 DEFAULT_LIVES = 3
@@ -426,6 +428,21 @@ def build_router(
             "Surviva tournament %s created — %d matchdays populated (start=%s)",
             tid, created, start_matchday,
         )
+        # Auto-create a draft bonus config for the Survival bonus type
+        # (exact_score). Admin must complete the Big Match later, but the
+        # slot is now visible to players from day one.
+        try:
+            draft = await ensure_bonus_draft(
+                db, season=season, matchday=int(start_matchday),
+                bonus_type="exact_score", created_by=admin_user_id,
+            )
+            if draft:
+                logger.info(
+                    "Surviva %s → bonus draft ensured (md=%s, id=%s)",
+                    tid, draft.get("matchday"), draft.get("id"),
+                )
+        except Exception:
+            logger.exception("Failed to ensure bonus draft for surviva %s", tid)
         return doc
 
     @router.post("/tournaments")

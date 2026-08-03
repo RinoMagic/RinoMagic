@@ -812,4 +812,104 @@ async def ensure_indexes(db) -> None:
     await db.bonus_credits.create_index([("user_id", 1), ("game", 1), ("pending", 1)])
 
 
-__all__ = ["build_router", "ensure_indexes"]
+__all__ = ["build_router", "ensure_indexes", "ensure_bonus_draft"]
+
+
+# =========================================================================
+# Public helper — used by surviva.py, scoreandlive.py, fantagiornata.py,
+# thebesttiket.py to auto-create a bonus draft the first time a
+# tournament / room / league is created for a matchday.
+# =========================================================================
+async def ensure_bonus_draft(
+    db,
+    *,
+    season: str,
+    matchday: int,
+    bonus_type: str,
+    created_by: Optional[str] = None,
+    max_advance: int = 38,
+) -> Optional[dict]:
+    """Guarantee that a bonus_config exists for the earliest matchday
+    ``≥ matchday`` (up to matchday 38) that is NOT already settled.
+
+    Rationale: when the admin creates a new Survival/Score/Fanta/Tiket
+    tournament that starts at matchday N, they want an active bonus to
+    appear for that same matchday. But if matchday N's bonus for that
+    type is already ``settled`` (results locked in), we advance to N+1,
+    N+2, … until we find a usable slot.
+
+    Behaviour:
+      • If a config for the target (season, matchday, bonus_type) already
+        exists (draft OR ready), return it unchanged.
+      • Otherwise create a *draft* config:
+          - ``exact_score`` → big_match=None (admin must complete later)
+          - ``first_scorer`` → immediately usable (no big match needed)
+      • Never overwrites an existing config.
+
+    Returns the config document (or ``None`` if no valid matchday was
+    found up to matchday 38, which is an edge case).
+    """
+    if bonus_type not in {"exact_score", "first_scorer"}:
+        raise ValueError(f"invalid bonus_type: {bonus_type}")
+    md = int(matchday)
+    while md <= max_advance:
+        existing = await db.bonus_configs.find_one(
+            {"season": season, "matchday": md, "bonus_type": bonus_type},
+            {"_id": 0},
+        )
+        if existing:
+            if existing.get("settled_at"):
+                md += 1
+                continue
+            return existing  # already exists (draft or complete)
+        # Verify the calendar has fixtures for this matchday
+        has_fixtures = await db.sal_calendar.count_documents({
+            "season": season, "matchday": md,
+        })
+        if not has_fixtures:
+            md += 1
+            continue
+        # Create draft
+        lock_iso = None
+        if bonus_type == "first_scorer":
+            # earliest kickoff of the matchday (may be None if calendar
+            # lacks kickoff dates — we still create the config)
+            earliest = await db.sal_calendar.find_one(
+                {"season": season, "matchday": md,
+                 "kickoff_iso": {"$ne": None}},
+                {"_id": 0, "kickoff_iso": 1},
+                sort=[("kickoff_iso", 1)],
+            )
+            if earliest:
+                lock_iso = earliest.get("kickoff_iso")
+        lock_at = None
+        if lock_iso:
+            try:
+                lock_at = datetime.fromisoformat(lock_iso.replace("Z", "+00:00"))
+                if lock_at.tzinfo is None:
+                    lock_at = lock_at.replace(tzinfo=timezone.utc)
+            except Exception:
+                lock_at = None
+        cfg = {
+            "id": str(uuid.uuid4()),
+            "season": season,
+            "matchday": md,
+            "bonus_type": bonus_type,
+            "big_match": None,
+            "lock_at": lock_at,
+            "result": None,
+            "created_at": _now(),
+            "created_by": created_by,
+            "settled_at": None,
+        }
+        try:
+            await db.bonus_configs.insert_one(cfg)
+        except Exception:
+            # race condition: another creator inserted concurrently
+            existing = await db.bonus_configs.find_one(
+                {"season": season, "matchday": md, "bonus_type": bonus_type},
+                {"_id": 0},
+            )
+            return existing
+        return cfg
+    return None
