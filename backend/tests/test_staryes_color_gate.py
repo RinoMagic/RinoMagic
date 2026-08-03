@@ -108,3 +108,16 @@ class TestNonStaryesRejection:
         ok, reason, _ = _is_staryes_by_color(b"not-a-real-image")
         assert not ok
         assert "leggibile" in reason.lower() or "sfondo" in reason.lower()
+
+
+# ---------------------------- REGRESSION: real Goldbet slip captured in-app
+class TestRealGoldbetRejection:
+    """Regression: a real Goldbet screenshot uploaded by the user must
+    be rejected. Goldbet has a dark-blue header + footer (like staryes)
+    but uses yellow branding buttons + a white body — two clear tells."""
+
+    def test_real_goldbet_slip_rejected(self):
+        raw = (FIX / "goldbet_real_slip.png").read_bytes()
+        ok, reason, metrics = _is_staryes_by_color(raw)
+        assert not ok, f"Goldbet slip should NOT pass: {metrics}"
+        assert "giallo" in reason.lower() or "bianc" in reason.lower(), reason

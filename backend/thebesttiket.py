@@ -694,7 +694,7 @@ def _staryes_color_signature(image_bytes: bytes) -> Dict[str, float]:
     if n == 0:
         return {}
 
-    navy_core = navy_dark = white_text = cyan_prenota = green_win = 0
+    navy_core = navy_dark = white_text = cyan_prenota = green_win = yellow_gb = 0
     for r, g, b in px:
         # Primary staryes navy #102040 (with generous tolerance)
         if 0 <= r <= 40 and 20 <= g <= 55 and 55 <= b <= 90 and b > r + 20:
@@ -711,6 +711,10 @@ def _staryes_color_signature(image_bytes: bytes) -> Dict[str, float]:
         # Staryes cyan (~ #1090D0)
         if 0 <= r <= 60 and 100 <= g <= 180 and 170 <= b <= 240 and b > g + 20:
             cyan_prenota += 1
+        # Bright yellow — Goldbet / Sisal / Snai / Bet365 branding.
+        # Staryes never uses yellow. RGB ~ #FFC700 with tolerance.
+        if r >= 200 and g >= 160 and b <= 100 and g > b + 60 and abs(r - g) < 80:
+            yellow_gb += 1
 
     def pct(v: int) -> float:
         return round(100 * v / n, 2)
@@ -722,6 +726,7 @@ def _staryes_color_signature(image_bytes: bytes) -> Dict[str, float]:
         "white_text_pct": pct(white_text),
         "cyan_prenota_pct": pct(cyan_prenota),
         "green_win_pct": pct(green_win),
+        "yellow_pct": pct(yellow_gb),
     }
 
 
@@ -740,6 +745,20 @@ def _is_staryes_by_color(image_bytes: bytes) -> Tuple[bool, str, Dict[str, float
     sig = _staryes_color_signature(image_bytes)
     if not sig:
         return False, "immagine non leggibile", {}
+    # HARD REJECT: bright yellow → other bookmaker (Goldbet, Sisal, Snai,
+    # Bet365 all use yellow accents). Staryes NEVER uses yellow.
+    if sig["yellow_pct"] > 0.5:
+        return False, (
+            f"rilevato giallo brillante ({sig['yellow_pct']:.1f}%) — "
+            "Star Yes non usa mai il giallo"
+        ), sig
+    # HARD REJECT: too much white → light background, not staryes
+    # (staryes has full dark bg, real fixtures ≤ 22%). Goldbet body is white.
+    if sig["white_text_pct"] > 30:
+        return False, (
+            f"sfondo troppo chiaro ({sig['white_text_pct']:.0f}% pixel "
+            "bianchi) — Star Yes ha sfondo pieno blu scuro"
+        ), sig
     if sig["dark_blue_total_pct"] < 25:
         return False, (
             "sfondo non compatibile con Star Yes "
