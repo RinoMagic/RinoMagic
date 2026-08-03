@@ -347,6 +347,53 @@ def test_pick_rejected_for_non_member_subscription(admin_tok):
     assert r.status_code == 403
 
 
+def test_two_fanta_leagues_give_two_bonus_picks_and_rewards(admin_tok):
+    """Fanta: user in 2 leagues → 2 independent picks + +3 on winning league only."""
+    season = f"bn-{uuid.uuid4().hex[:4]}"
+    _seed_calendar(admin_tok, season)
+    tok, uid = _player()
+
+    # Create 2 Fanta leagues + join both
+    l1 = requests.post(f"{API}/fg/leagues", headers=_h(admin_tok), timeout=15,
+                       json={"name": f"BNFG1_{uuid.uuid4().hex[:4]}"}).json()
+    l2 = requests.post(f"{API}/fg/leagues", headers=_h(admin_tok), timeout=15,
+                       json={"name": f"BNFG2_{uuid.uuid4().hex[:4]}"}).json()
+    for lg in (l1, l2):
+        requests.post(f"{API}/fg/leagues/{lg['id']}/join",
+                      headers=_h(tok), timeout=15,
+                      json={"invite_code": lg["invite_code"]}).raise_for_status()
+
+    # Subscriptions endpoint returns both
+    subs = requests.get(f"{API}/bonus/subscriptions?game=fanta",
+                        headers=_h(tok), timeout=15).json()
+    assert {s["id"] for s in subs} == {l1["id"], l2["id"]}
+
+    # Create first_scorer bonus
+    cfg = _create_bonus_scorer(admin_tok, season)
+
+    # l1 pick is correct, l2 pick is wrong
+    requests.post(f"{API}/bonus/picks/scorer", headers=_h(tok), timeout=15,
+                  json={"game": "fanta", "season": season,
+                        "subscription_id": l1["id"], "player_name": "Rafael Leao"}).raise_for_status()
+    requests.post(f"{API}/bonus/picks/scorer", headers=_h(tok), timeout=15,
+                  json={"game": "fanta", "season": season,
+                        "subscription_id": l2["id"], "player_name": "Wrong Player"}).raise_for_status()
+
+    r = requests.post(f"{API}/bonus/configs/{cfg['id']}/settle-scorer",
+                      headers=_h(admin_tok), timeout=15,
+                      json={"player_name": "Rafael Leão"}).json()
+    assert r["winners"] == 1
+
+    # Check history: 2 picks, 1 correct with league_id=l1, 1 wrong
+    hist = requests.get(f"{API}/bonus/history?game=fanta&season={season}",
+                       headers=_h(tok), timeout=15).json()
+    assert len(hist) == 2
+    correct = [h for h in hist if h["is_correct"]]
+    assert len(correct) == 1
+    assert correct[0]["reward_details"]["subscription_id"] == l1["id"]
+    assert correct[0]["reward_details"]["points"] == 3
+
+
 def test_first_scorer_normalization_case_and_accents(admin_tok):
     season = f"bn-{uuid.uuid4().hex[:4]}"
     _seed_calendar(admin_tok, season)

@@ -59,11 +59,11 @@ type HistoryRow = {
   reward_details: any; submitted_at: string;
 };
 
-const META: Record<Game, { name: string; color: string; parent: string; reward: string; icon: keyof typeof import('@expo/vector-icons').Ionicons.glyphMap; subLabel: string }> = {
-  tiket:    { name: 'Bonus Tiket',    color: '#FFB300', parent: 'TheBestTiket',  reward: 'Giocata extra', icon: 'trophy',   subLabel: 'Stanza' },
-  score:    { name: 'Bonus Score',    color: '#3B82F6', parent: 'ScoreAndLive',  reward: '+1 Vita',       icon: 'pulse',    subLabel: 'Torneo' },
-  fanta:    { name: 'Bonus Fanta',    color: '#A855F7', parent: 'FantaGiornata', reward: '+3 Punti',      icon: 'football', subLabel: 'Lega' },
-  survival: { name: 'Bonus Survival', color: '#EF4444', parent: 'Survival 2.0',  reward: '+1 Vita',       icon: 'heart',    subLabel: 'Torneo' },
+const META: Record<Game, { name: string; color: string; parent: string; reward: string; icon: keyof typeof import('@expo/vector-icons').Ionicons.glyphMap; subLabel: string; subPlural: string }> = {
+  tiket:    { name: 'Bonus Tiket',    color: '#FFB300', parent: 'TheBestTiket',  reward: 'Giocata extra', icon: 'trophy',   subLabel: 'Stanza', subPlural: 'stanze' },
+  score:    { name: 'Bonus Score',    color: '#3B82F6', parent: 'ScoreAndLive',  reward: '+1 Vita',       icon: 'pulse',    subLabel: 'Torneo', subPlural: 'tornei' },
+  fanta:    { name: 'Bonus Fanta',    color: '#A855F7', parent: 'FantaGiornata', reward: '+3 Punti',      icon: 'football', subLabel: 'Lega',   subPlural: 'leghe' },
+  survival: { name: 'Bonus Survival', color: '#EF4444', parent: 'Survival 2.0',  reward: '+1 Vita',       icon: 'heart',    subLabel: 'Torneo', subPlural: 'tornei' },
 };
 
 const SEASON = '2026-27';
@@ -138,7 +138,7 @@ export default function BonusGame() {
           <View style={[styles.notice, { borderColor: theme.colors.error }]}>
             <Ionicons name="lock-closed" size={18} color={theme.colors.error} />
             <Text style={styles.noticeText}>
-              Non sei iscritto a nessun{game === 'fanta' ? 'a lega' : ' torneo/stanza'} di {meta.parent}. Iscriviti per giocare al bonus.
+              Non sei iscritto a nessun{game === 'fanta' ? 'a lega' : (game === 'tiket' ? 'a stanza' : ' torneo')} di {meta.parent}. Iscriviti per giocare al bonus.
             </Text>
           </View>
         )}
@@ -160,8 +160,7 @@ export default function BonusGame() {
               <View style={styles.multiHint}>
                 <Ionicons name="ribbon" size={16} color={meta.color} />
                 <Text style={styles.multiHintText}>
-                  Hai {data.subscriptions.length} {meta.subLabel.toLowerCase()}
-                  {data.subscriptions.length === 1 ? '' : (game === 'fanta' ? '' : 'i')}: gioca il bonus per ognuno.
+                  Hai {data.subscriptions.length} {meta.subPlural}: gioca il bonus per ognun{game === 'fanta' ? 'a' : 'o'}.
                 </Text>
               </View>
             )}
