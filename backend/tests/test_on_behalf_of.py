@@ -24,10 +24,20 @@ ADMIN_EMAIL = "verone.salvatore@libero.it"
 ADMIN_PW = "SchedinaBar2026!"
 TIMEOUT = 30
 
-# Tiny 1x1 PNG. OCR returns 200 with events=[] on this input.
-TINY_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-)
+# Real Star Yes bet-slip fixture (webp). Base64-encoded lazily below to
+# avoid a huge module-level literal. The color anti-cheat gate (added
+# after the original test suite) rejects any image that doesn't match
+# the staryes.it palette (dark navy + white text), so a synthetic 1×1
+# PNG can no longer be used here.
+def _staryes_fixture_b64() -> str:
+    import base64
+    from pathlib import Path
+    fx = Path(__file__).parent / "fixtures" / "staryes_sample.webp"
+    return base64.b64encode(fx.read_bytes()).decode("ascii")
+
+
+# Backwards-compat alias for the constant used throughout this file.
+TINY_PNG_B64 = _staryes_fixture_b64()
 
 
 # ---------------- helpers ----------------
