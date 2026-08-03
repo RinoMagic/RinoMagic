@@ -935,6 +935,7 @@ class SchedinaEventIn(BaseModel):
 class SchedinaConfirm(BaseModel):
     events: Optional[List[SchedinaEventIn]] = None
     on_behalf_of: Optional[str] = None
+    membership_id: Optional[str] = None
 
 
 class FixtureIn(BaseModel):
@@ -952,6 +953,7 @@ class FixturesIn(BaseModel):
 class ScreenshotIn(BaseModel):
     image_base64: str
     on_behalf_of: Optional[str] = None
+    membership_id: Optional[str] = None
 
 
 # =========================================================================
@@ -962,8 +964,24 @@ async def ensure_indexes(db) -> None:
     """Create the collection indexes needed by TheBestTiket routes."""
     await db.rooms.create_index("id", unique=True)
     await db.rooms.create_index("invite_code", unique=True)
-    await db.memberships.create_index([("room_id", 1), ("user_id", 1)], unique=True)
-    await db.schedine.create_index([("room_id", 1), ("user_id", 1)], unique=True)
+    # Multi-entry: a user can hold N memberships in the same room (one per
+    # invite they claim), each with its own schedina slot. So the old
+    # unique index on (room_id, user_id) is DROPPED and replaced with a
+    # non-unique lookup index. Uniqueness is now per-membership-id.
+    try:
+        await db.memberships.drop_index("room_id_1_user_id_1")
+    except Exception:
+        pass
+    await db.memberships.create_index([("room_id", 1), ("user_id", 1)])
+    await db.memberships.create_index("id", unique=True, sparse=True)
+    await db.memberships.create_index("invite_id", unique=True, sparse=True)
+    # Schedina: 1 per membership (not 1 per user-per-room anymore).
+    try:
+        await db.schedine.drop_index("room_id_1_user_id_1")
+    except Exception:
+        pass
+    await db.schedine.create_index([("room_id", 1), ("user_id", 1)])
+    await db.schedine.create_index("membership_id", unique=True, sparse=True)
     await db.fixtures.create_index(
         [("room_id", 1), ("home_team", 1), ("away_team", 1)], unique=True,
     )
@@ -977,7 +995,14 @@ async def backfill_legacy(db) -> None:
     * Every existing room/invite belongs to TheBestTiket (default game)
     * For rooms with a legacy ``invite_code`` but no invite doc, create one
       so the invite link still works after the "one-shot invite" migration.
+    * Legacy admin auto-enrollment memberships stored ``invite_id: null``
+      / ``invite_code: null``; those must be $unset so the unique+sparse
+      index on ``invite_id`` (which does NOT skip explicit nulls) does not
+      collide when a new admin room is created.
     """
+    await db.memberships.update_many(
+        {"invite_id": None}, {"$unset": {"invite_id": "", "invite_code": ""}},
+    )
     await db.rooms.update_many(
         {"game": {"$exists": False}}, {"$set": {"game": DEFAULT_GAME}},
     )
@@ -1121,6 +1146,44 @@ def build_router(
             )
         return target
 
+    async def _resolve_membership(
+        room_id: str, owner: dict, membership_id: Optional[str],
+    ) -> dict:
+        """Pick the membership (slot) targeted by a schedina operation.
+
+        Rules:
+          • If ``membership_id`` is provided → must belong to ``owner`` and
+            to ``room_id``, otherwise 404/403.
+          • If not provided → if the owner has exactly ONE membership in
+            the room, use it (backwards compat with single-slot rooms).
+          • Otherwise (0 or ≥2 memberships) → 400 with a clear message.
+        """
+        if membership_id:
+            m = await db.memberships.find_one(
+                {"id": membership_id, "room_id": room_id, "user_id": owner["id"]},
+                {"_id": 0},
+            )
+            if not m:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Slot iscrizione non trovato per questo giocatore",
+                )
+            return m
+        rows = [m async for m in db.memberships.find(
+            {"room_id": room_id, "user_id": owner["id"]}, {"_id": 0},
+        )]
+        if len(rows) == 1:
+            return rows[0]
+        if len(rows) == 0:
+            raise HTTPException(status_code=400, detail="Il giocatore non è iscritto alla stanza")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Il giocatore ha {len(rows)} iscrizioni in questa stanza. "
+                "Specifica 'membership_id' per indicare a quale schedina si riferisce."
+            ),
+        )
+
     def _match_prediction_to_fixture(event: dict, fixtures: List[dict]) -> Optional[dict]:
         for f in fixtures:
             if _team_match(event["home_team"], f["home_team"]) and _team_match(event["away_team"], f["away_team"]):
@@ -1215,9 +1278,17 @@ def build_router(
             "created_by": user["id"],
             "revoked_at": None,
         })
+        # Admin auto-enrollment (no invite consumed). We OMIT ``invite_id``
+        # and ``invite_code`` entirely (instead of setting them to ``None``)
+        # so the unique+sparse indexes on those fields skip this document.
+        # Storing ``invite_id: null`` on multiple admin auto-enrollments
+        # would collide on the unique index (sparse skips MISSING keys, not
+        # explicit ``null`` values).
         await db.memberships.insert_one({
+            "id": str(uuid.uuid4()),
             "room_id": room_id,
             "user_id": user["id"],
+            "slot": 1,
             "display_name": display_name(user),
             "joined_at": now,
         })
@@ -1308,16 +1379,23 @@ def build_router(
                 {"$set": {"used_by_user_id": None, "used_at": None}},
             )
             raise HTTPException(status_code=400, detail="Stanza già chiusa")
-        existing = await db.memberships.find_one(
-            {"room_id": room["id"], "user_id": user["id"]},
-        )
-        if not existing:
-            await db.memberships.insert_one({
-                "room_id": room["id"],
-                "user_id": user["id"],
-                "display_name": display_name(user),
-                "joined_at": now,
-            })
+        # Multi-entry: every successful invite claim creates a NEW membership
+        # (slot). Users can therefore participate multiple times in the same
+        # room by holding multiple invites and thus upload multiple schedine
+        # — each tied to its own membership slot.
+        existing_count = await db.memberships.count_documents({
+            "room_id": room["id"], "user_id": user["id"],
+        })
+        await db.memberships.insert_one({
+            "id": str(uuid.uuid4()),
+            "room_id": room["id"],
+            "user_id": user["id"],
+            "invite_id": claimed["id"],
+            "invite_code": claimed["code"],
+            "slot": existing_count + 1,
+            "display_name": display_name(user),
+            "joined_at": now,
+        })
         return await _room_dict(room, user)
 
     @router.get("/rooms/{room_id}")
@@ -1327,6 +1405,42 @@ def build_router(
         if not room:
             raise HTTPException(status_code=404, detail="Stanza non trovata")
         return await _room_dict(room, user)
+
+    @router.get("/rooms/{room_id}/my-memberships")
+    async def my_memberships(room_id: str, user: dict = Depends(current_user)):
+        """Return the caller's memberships (slots) in the given room.
+
+        With multi-entry a single user may hold N memberships in the same
+        room, each identified by its own ``id`` (which is what the schedina
+        endpoints require as ``membership_id``).
+        """
+        rows = [m async for m in db.memberships.find(
+            {"room_id": room_id, "user_id": user["id"]}, {"_id": 0},
+        ).sort("joined_at", 1)]
+        # Renumber slots deterministically 1..N by joined_at
+        out = []
+        for idx, m in enumerate(rows, start=1):
+            s = await db.schedine.find_one(
+                {"membership_id": m.get("id")}, {"_id": 0, "status": 1, "events": 1},
+            )
+            # Legacy fallback: memberships created before multi-entry may
+            # not have an ``id`` — try to link the (soon-unique) schedina
+            # by (room_id, user_id) instead.
+            if not s and not m.get("id"):
+                s = await db.schedine.find_one(
+                    {"room_id": room_id, "user_id": user["id"]}, {"_id": 0, "status": 1, "events": 1},
+                )
+            out.append({
+                "id": m.get("id"),
+                "invite_id": m.get("invite_id"),
+                "invite_code": m.get("invite_code"),
+                "slot": idx,
+                "joined_at": m.get("joined_at"),
+                "has_schedina": s is not None,
+                "schedina_status": s.get("status") if s else None,
+                "schedina_events_count": len(s.get("events") or []) if s else 0,
+            })
+        return out
 
     @router.patch("/rooms/{room_id}")
     async def update_room(room_id: str, data: RoomUpdate, user: dict = Depends(require_admin)):
@@ -1477,10 +1591,12 @@ def build_router(
         await _ensure_submissions_open(room)
 
         owner = await _resolve_target_user(room_id, user, data.on_behalf_of)
+        membership = await _resolve_membership(room_id, owner, data.membership_id)
         logger.info(
-            "OCR upload room=%s actor=%s owner=%s (%s)",
+            "OCR upload room=%s actor=%s owner=%s membership=%s (%s)",
             room_id, user.get("username") or user.get("email"),
             owner.get("username") or owner.get("email"),
+            membership.get("id"),
             "SELF" if owner["id"] == user["id"] else "ON BEHALF OF",
         )
 
@@ -1519,8 +1635,9 @@ def build_router(
             parsed = parsed[: room["max_events"]]
 
         await db.schedine.update_one(
-            {"room_id": room_id, "user_id": owner["id"]},
+            {"membership_id": membership["id"]},
             {"$set": {
+                "membership_id": membership["id"],
                 "room_id": room_id,
                 "user_id": owner["id"],
                 "nickname": display_name(owner),
@@ -1535,6 +1652,7 @@ def build_router(
         )
         return {
             "events": parsed,
+            "membership_id": membership["id"],
             "raw_text": result["raw_text"],
             "max_events": room["max_events"],
             "owner": {"id": owner["id"], "nickname": display_name(owner)},
@@ -1561,9 +1679,12 @@ def build_router(
         owner = await _resolve_target_user(
             room_id, user, data.on_behalf_of if data else None,
         )
+        membership = await _resolve_membership(
+            room_id, owner, data.membership_id if data else None,
+        )
 
         draft = await db.schedine.find_one(
-            {"room_id": room_id, "user_id": owner["id"]}, {"_id": 0},
+            {"membership_id": membership["id"]}, {"_id": 0},
         )
         if not draft or not draft.get("events"):
             raise HTTPException(
@@ -1632,8 +1753,9 @@ def build_router(
                 )
 
         await db.schedine.update_one(
-            {"room_id": room_id, "user_id": owner["id"]},
+            {"membership_id": membership["id"]},
             {"$set": {
+                "membership_id": membership["id"],
                 "room_id": room_id,
                 "user_id": owner["id"],
                 "nickname": display_name(owner),
@@ -1648,6 +1770,7 @@ def build_router(
         return {
             "ok": True,
             "events": ocr_events,
+            "membership_id": membership["id"],
             "owner": {"id": owner["id"], "nickname": display_name(owner)},
         }
 
@@ -1656,16 +1779,28 @@ def build_router(
         room_id: str,
         user: dict = Depends(current_user),
         on_behalf_of: Optional[str] = None,
+        membership_id: Optional[str] = None,
     ):
         """Return the caller's schedina in the given room. Admins of the room
-        may fetch another player's schedina via ``?on_behalf_of=<user_id>``."""
+        may fetch another player's schedina via ``?on_behalf_of=<user_id>``.
+
+        For multi-slot users, pass ``?membership_id=<id>`` to select the
+        specific slot; if omitted and the user has only 1 slot, that one is
+        used automatically.
+        """
         await _ensure_member(room_id, user)
         owner = await _resolve_target_user(room_id, user, on_behalf_of)
+        try:
+            membership = await _resolve_membership(room_id, owner, membership_id)
+        except HTTPException:
+            # Owner is not a member (or has 0 memberships) — return empty
+            # instead of 400 so the UI can render "no schedina yet".
+            return {"empty": True}
         s = await db.schedine.find_one(
-            {"room_id": room_id, "user_id": owner["id"]},
+            {"membership_id": membership["id"]},
             {"_id": 0, "screenshot_base64": 0, "raw_text": 0},
         )
-        return s or {"empty": True}
+        return s or {"empty": True, "membership_id": membership["id"]}
 
     @router.get("/rooms/{room_id}/schedina-review/{user_id}")
     async def schedina_review(
