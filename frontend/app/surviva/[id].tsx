@@ -18,6 +18,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -836,6 +837,9 @@ function SummaryTab({
   hasPicked: boolean;
   joined: boolean;
 }) {
+  const { width } = useWindowDimensions();
+  // Compact layout on phones (≤ 480 px viewport)
+  const compact = width < 480;
   if (!md) return <Text style={styles.muted}>Nessuna giornata in corso.</Text>;
   if (!summary) return <ActivityIndicator color={COLOR} />;
   return (
@@ -886,7 +890,7 @@ function SummaryTab({
               </Text>
             </View>
             {/* Three aligned columns: home / draw / away */}
-            <View style={styles.summaryGrid}>
+            <View style={[styles.summaryGrid, compact && styles.summaryGridCompact]}>
               {(['1', 'X', '2'] as const).map((s) => {
                 const count = fx.counts[s];
                 const pct = total > 0 ? Math.round((count / total) * 100) : 0;
@@ -897,19 +901,24 @@ function SummaryTab({
                     key={s}
                     style={[
                       styles.summaryCol,
+                      compact && styles.summaryColCompact,
                       isWinner && styles.summaryColLead,
                     ]}
                   >
-                    <View style={styles.summarySignPill}>
-                      <Text style={styles.summarySignPillText}>{s}</Text>
+                    <View style={[styles.summarySignPill, compact && styles.summarySignPillCompact]}>
+                      <Text style={[styles.summarySignPillText, compact && { fontSize: 12 }]}>{s}</Text>
                     </View>
                     <Text
-                      style={styles.summaryColTeam}
+                      style={[styles.summaryColTeam, compact && styles.summaryColTeamCompact]}
                       numberOfLines={2}
+                      adjustsFontSizeToFit={compact}
+                      minimumFontScale={0.75}
                     >
                       {labelFor(s)}
                     </Text>
-                    <Text style={styles.summaryColCount}>{count}</Text>
+                    <Text style={[styles.summaryColCount, compact && styles.summaryColCountCompact]}>
+                      {count}
+                    </Text>
                     <View style={styles.summaryBarTrack}>
                       <View
                         style={[
@@ -1191,6 +1200,7 @@ const styles = StyleSheet.create({
   summaryGrid: {
     flexDirection: 'row', gap: theme.spacing.sm, alignItems: 'stretch',
   },
+  summaryGridCompact: { gap: 4 },
   summaryCol: {
     flex: 1, alignItems: 'center', gap: 4,
     padding: theme.spacing.sm,
@@ -1198,6 +1208,9 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.md,
     borderWidth: 1, borderColor: theme.colors.border,
     minHeight: 130, justifyContent: 'flex-start',
+  },
+  summaryColCompact: {
+    padding: 6, minHeight: 108, gap: 3,
   },
   summaryColLead: {
     borderColor: COLOR, backgroundColor: COLOR + '10',
@@ -1207,6 +1220,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLOR + '22',
     alignItems: 'center', justifyContent: 'center',
   },
+  summarySignPillCompact: { width: 22, height: 22, borderRadius: 11 },
   summarySignPillText: { color: COLOR, fontWeight: '900', fontSize: 14 },
   summaryColTeam: {
     color: theme.colors.onSurface,
@@ -1214,10 +1228,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     minHeight: 30,
   },
+  summaryColTeamCompact: {
+    fontSize: 11, minHeight: 26, lineHeight: 13,
+  },
   summaryColCount: {
     color: theme.colors.onSurface, fontWeight: '900',
     fontSize: 22, lineHeight: 24,
   },
+  summaryColCountCompact: { fontSize: 18, lineHeight: 20 },
   summaryBarTrack: {
     width: '100%', height: 4, borderRadius: 2,
     backgroundColor: theme.colors.border,
