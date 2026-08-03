@@ -1,12 +1,17 @@
 /*
- * Surviva 2.0 — tournament detail page.
+ * Surviva 2.0 v2 — tournament detail page.
  *
- * Shows the current matchday with a 1/X/2 grid for every fixture. The
- * player picks exactly ONE fixture per matchday. Signs already used
- * successfully (blocked_signs) are greyed out and unclickable.
+ * NEW RULES (v2):
+ *   • The player selects **3 picks** per matchday, each on a different fixture.
+ *   • A CORRECT pick with sign "1" or "2" locks the winning team → cannot be
+ *     re-used in later matchdays.
+ *   • A CORRECT pick with sign "X" (draw) does NOT lock any team (exception).
+ *   • Concession: a fixture where BOTH teams are already locked is playable
+ *     with any sign.
+ *   • Lives: -1 for every wrong pick (max -3 in a matchday).
  *
  * Tabs:
- *   • Giornata — the pick UI (this page's main content)
+ *   • Giornata — the 3-picks selection UI (this page's main content)
  *   • Classifica — participants leaderboard (lives + status)
  *   • Riassunto — aggregated picks (private pre-kickoff, detailed after)
  */
@@ -22,12 +27,14 @@ import { theme } from '@/src/theme';
 import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#EF4444';
+const REQUIRED_PICKS = 3;
 
 type Fixture = { home_team: string; away_team: string; kickoff_iso?: string | null; postponed_before?: boolean };
 type Matchday = {
   id: string; matchday: number; status: string;
   kickoff_first: string | null; fixtures: Fixture[];
   locked: boolean; settled: boolean; my_picks_count: number;
+  picks_required?: number;
 };
 type Tournament = {
   id: string; name: string; season: string; status: string;
@@ -37,11 +44,12 @@ type Tournament = {
   players_total: number; players_alive: number;
   invite_code: string;
 };
-type BlockedSign = { team: string; outcome: 'W' | 'D' | 'L'; matchday: number };
-type MyPick = { home_team: string; away_team: string; pick: '1' | 'X' | '2'; correct?: boolean | null };
+type MyPick = { home_team: string; away_team: string; pick: '1' | 'X' | '2'; correct?: boolean | null; concession?: boolean };
 type LeaderboardRow = {
   user_id: string; nickname: string; lives_left: number;
-  blocked_signs_count: number; eliminated: boolean; rank: number;
+  locked_teams_count?: number;
+  blocked_signs_count?: number; // legacy — kept for read compat
+  eliminated: boolean; rank: number;
 };
 type SummaryFixture = {
   home_team: string; away_team: string;
@@ -60,15 +68,19 @@ export default function SurvivaTournament() {
   const [tab, setTab] = useState<'play' | 'leaderboard' | 'summary' | 'admin'>('play');
   const [t, setT] = useState<Tournament | null>(null);
   const [md, setMd] = useState<Matchday | null>(null);
-  const [myPick, setMyPick] = useState<MyPick | null>(null);
-  const [blocked, setBlocked] = useState<BlockedSign[]>([]);
+  // Server-confirmed picks for the current matchday (0..3)
+  const [myPicks, setMyPicks] = useState<MyPick[]>([]);
+  // Local pending selection the player is building — becomes myPicks after
+  // "Conferma" is tapped. Empty on load if the matchday is unsubmitted.
+  const [pending, setPending] = useState<MyPick[]>([]);
+  const [lockedTeams, setLockedTeams] = useState<string[]>([]);
   const [livesLeft, setLivesLeft] = useState<number>(0);
   const [lb, setLb] = useState<LeaderboardRow[]>([]);
   const [summary, setSummary] = useState<{ locked: boolean; fixtures: SummaryFixture[] } | null>(null);
   const [invites, setInvites] = useState<SvInvite[]>([]);
   const [busyInvite, setBusyInvite] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -76,25 +88,32 @@ export default function SurvivaTournament() {
       const detail = await api<Tournament>(`/sv/tournaments/${id}`);
       setT(detail);
       // Load in parallel to keep the UI snappy
-      const [cur, blk, board] = await Promise.all([
+      const [cur, lt, board] = await Promise.all([
         api<Matchday>(`/sv/tournaments/${id}/matchdays/current`).catch(() => null),
         detail.joined
-          ? api<{ blocked_signs: BlockedSign[]; lives_left: number }>(`/sv/tournaments/${id}/blocked-signs`)
-              .catch(() => ({ blocked_signs: [], lives_left: 0 }))
-          : Promise.resolve({ blocked_signs: [], lives_left: 0 }),
+          ? api<{ locked_teams: string[]; lives_left: number }>(`/sv/tournaments/${id}/locked-teams`)
+              .catch(() => ({ locked_teams: [], lives_left: 0 }))
+          : Promise.resolve({ locked_teams: [], lives_left: 0 }),
         api<LeaderboardRow[]>(`/sv/tournaments/${id}/leaderboard`),
       ]);
       setMd(cur);
-      setBlocked(blk.blocked_signs);
-      setLivesLeft(blk.lives_left);
+      setLockedTeams(lt.locked_teams || []);
+      setLivesLeft(lt.lives_left);
       setLb(board);
       if (cur && detail.joined) {
-        const p = await api<MyPick | { empty: true }>(
-          `/sv/tournaments/${id}/matchdays/${cur.id}/my-pick`,
-        ).catch(() => null);
-        setMyPick(p && !('empty' in p) ? (p as MyPick) : null);
+        const r = await api<{ picks: MyPick[]; required: number }>(
+          `/sv/tournaments/${id}/matchdays/${cur.id}/my-picks`,
+        ).catch(() => ({ picks: [] as MyPick[], required: REQUIRED_PICKS }));
+        const submitted = r.picks || [];
+        setMyPicks(submitted);
+        // Preload pending with the server-confirmed picks so users can edit
+        // them before locking the matchday.
+        setPending(submitted.map(p => ({
+          home_team: p.home_team, away_team: p.away_team, pick: p.pick,
+        })));
       } else {
-        setMyPick(null);
+        setMyPicks([]);
+        setPending([]);
       }
       if (detail.is_admin) {
         try {
@@ -148,35 +167,79 @@ export default function SurvivaTournament() {
     } catch (e: any) { alert(e.message); }
   };
 
-  // Given a pick sign for a fixture, return whether it is blocked and which
-  // (team, outcome) triggered the block.
-  const blockedByPick = (sign: '1' | 'X' | '2', fx: Fixture): BlockedSign | null => {
-    const homeOutcome = sign === '1' ? 'W' : sign === 'X' ? 'D' : 'L';
-    const awayOutcome = sign === '1' ? 'L' : sign === 'X' ? 'D' : 'W';
-    for (const b of blocked) {
-      if (b.team === fx.home_team && b.outcome === homeOutcome) return b;
-      if (b.team === fx.away_team && b.outcome === awayOutcome) return b;
-    }
+  // Concession helper: a fixture with both teams already locked is
+  // exempt from the team-lock check.
+  const isConcession = (fx: Fixture): boolean =>
+    lockedTeams.includes(fx.home_team) && lockedTeams.includes(fx.away_team);
+
+  // Return the offending team if the sign would re-use a locked team,
+  // ELSE null. Under concession, always returns null.
+  const pickBlockedTeam = (sign: '1' | 'X' | '2', fx: Fixture): string | null => {
+    if (isConcession(fx)) return null;
+    if (sign === '1' && lockedTeams.includes(fx.home_team)) return fx.home_team;
+    if (sign === '2' && lockedTeams.includes(fx.away_team)) return fx.away_team;
     return null;
   };
 
-  const submitPick = async (fx: Fixture, sign: '1' | 'X' | '2') => {
-    if (!md || !t) return;
-    if (md.locked) return;
+  // How many pending picks the player has selected on THIS specific fixture
+  // (0 or 1 — a fixture can only be used once).
+  const pendingOnFixture = (fx: Fixture): MyPick | null =>
+    pending.find(p => p.home_team === fx.home_team && p.away_team === fx.away_team) || null;
+
+  // Toggle a pick locally. Rules:
+  //   • Only 3 fixtures max in the pending list.
+  //   • Tapping the SAME sign on the SAME fixture → remove.
+  //   • Tapping a DIFFERENT sign on the SAME fixture → replace.
+  //   • Tapping a NEW fixture when we already have 3 picks → alert.
+  const togglePick = (fx: Fixture, sign: '1' | 'X' | '2') => {
+    if (!md || md.locked) return;
     if (fx.postponed_before) return;
-    if (blockedByPick(sign, fx)) return;
-    const key = `${fx.home_team}|${fx.away_team}|${sign}`;
-    setSubmitting(key);
+    if (pickBlockedTeam(sign, fx)) {
+      const team = pickBlockedTeam(sign, fx)!;
+      alert(`${team} è già stata usata correttamente. Scegli un'altra squadra o cambia segno.`);
+      return;
+    }
+    const existing = pending.find(p => p.home_team === fx.home_team && p.away_team === fx.away_team);
+    if (existing && existing.pick === sign) {
+      // Deselect
+      setPending(pending.filter(p => p !== existing));
+      return;
+    }
+    if (existing) {
+      // Replace sign for same fixture
+      setPending(pending.map(p => p === existing ? { ...existing, pick: sign } : p));
+      return;
+    }
+    if (pending.length >= REQUIRED_PICKS) {
+      alert(`Hai già selezionato ${REQUIRED_PICKS} pronostici. Deseleziona uno per cambiare.`);
+      return;
+    }
+    setPending([...pending, {
+      home_team: fx.home_team, away_team: fx.away_team, pick: sign,
+    }]);
+  };
+
+  const submitAllPicks = async () => {
+    if (!md || !t) return;
+    if (pending.length !== REQUIRED_PICKS) {
+      alert(`Devi selezionare esattamente ${REQUIRED_PICKS} pronostici.`);
+      return;
+    }
+    setSubmitting(true);
     try {
-      await api(`/sv/tournaments/${id}/matchdays/${md.id}/pick`, {
+      await api(`/sv/tournaments/${id}/matchdays/${md.id}/picks`, {
         method: 'POST',
-        body: { home_team: fx.home_team, away_team: fx.away_team, pick: sign },
+        body: { picks: pending },
       });
-      setMyPick({ home_team: fx.home_team, away_team: fx.away_team, pick: sign });
+      // Refresh from server to reflect the confirmed picks
+      const r = await api<{ picks: MyPick[]; required: number }>(
+        `/sv/tournaments/${id}/matchdays/${md.id}/my-picks`,
+      );
+      setMyPicks(r.picks || []);
     } catch (e: any) {
       alert(e.message);
     } finally {
-      setSubmitting(null);
+      setSubmitting(false);
     }
   };
 
@@ -269,10 +332,15 @@ export default function SurvivaTournament() {
       <ScrollView contentContainerStyle={styles.body}>
         {tab === 'play' && (
           <PlayTab
-            t={t} md={md} myPick={myPick} blocked={blocked}
-            livesLeft={livesLeft} canPlay={!!canPlay}
-            blockedByPick={blockedByPick} outcomeLabel={outcomeLabel}
-            onPick={submitPick} submitting={submitting}
+            t={t} md={md}
+            pending={pending} myPicks={myPicks}
+            lockedTeams={lockedTeams} livesLeft={livesLeft}
+            canPlay={!!canPlay}
+            pickBlockedTeam={pickBlockedTeam}
+            isConcession={isConcession}
+            onTogglePick={togglePick}
+            onSubmitAll={submitAllPicks}
+            submitting={submitting}
             onRemoveFixture={removeFixture}
             onTogglePostponed={togglePostponed}
           />
@@ -281,7 +349,7 @@ export default function SurvivaTournament() {
         {tab === 'summary' && (
           <SummaryTab
             md={md} summary={summary}
-            hasPicked={!!myPick} joined={!!t.joined}
+            hasPicked={myPicks.length > 0} joined={!!t.joined}
           />
         )}
         {tab === 'admin' && t.is_admin && (
@@ -299,16 +367,18 @@ export default function SurvivaTournament() {
 }
 
 function PlayTab({
-  t, md, myPick, blocked, livesLeft, canPlay,
-  blockedByPick, outcomeLabel, onPick, submitting,
+  t, md, pending, myPicks, lockedTeams, livesLeft, canPlay,
+  pickBlockedTeam, isConcession, onTogglePick, onSubmitAll, submitting,
   onRemoveFixture, onTogglePostponed,
 }: {
-  t: Tournament; md: Matchday | null; myPick: MyPick | null;
-  blocked: BlockedSign[]; livesLeft: number; canPlay: boolean;
-  blockedByPick: (s: '1' | 'X' | '2', fx: Fixture) => BlockedSign | null;
-  outcomeLabel: (o: 'W' | 'D' | 'L') => string;
-  onPick: (fx: Fixture, s: '1' | 'X' | '2') => void;
-  submitting: string | null;
+  t: Tournament; md: Matchday | null;
+  pending: MyPick[]; myPicks: MyPick[];
+  lockedTeams: string[]; livesLeft: number; canPlay: boolean;
+  pickBlockedTeam: (s: '1' | 'X' | '2', fx: Fixture) => string | null;
+  isConcession: (fx: Fixture) => boolean;
+  onTogglePick: (fx: Fixture, s: '1' | 'X' | '2') => void;
+  onSubmitAll: () => void;
+  submitting: boolean;
   onRemoveFixture: (fx: Fixture, idx: number) => void;
   onTogglePostponed: (fx: Fixture, idx: number, next: boolean) => void;
 }) {
@@ -335,6 +405,18 @@ function PlayTab({
       </View>
     );
   }
+
+  // Has the player already submitted picks equal to the pending selection?
+  const submittedMatches = myPicks.length === REQUIRED_PICKS
+    && myPicks.every(mp => pending.some(
+      p => p.home_team === mp.home_team
+        && p.away_team === mp.away_team
+        && p.pick === mp.pick,
+    ));
+  const submitEnabled = !md.locked && canPlay
+    && pending.length === REQUIRED_PICKS
+    && !submittedMatches;
+
   return (
     <>
       <View style={styles.notice}>
@@ -344,9 +426,35 @@ function PlayTab({
             ? 'Giornata bloccata: le partite sono iniziate.'
             : t.is_admin && !t.joined
               ? 'Vista admin: puoi gestire le partite di questa giornata (rinvii).'
-              : `Scegli UNA partita e il segno 1/X/2. ${myPick ? 'Puoi cambiare il tuo pronostico prima del calcio d\u2019inizio.' : ''}`}
+              : `Scegli ${REQUIRED_PICKS} partite diverse e per ognuna il segno 1 / X / 2. Puoi cambiare i pronostici finché la giornata non si blocca.`}
         </Text>
       </View>
+
+      {/* Progress + Submit CTA */}
+      {t.joined && !md.locked && (
+        <View style={styles.progressBar}>
+          <Text style={styles.progressText}>
+            Pronostici selezionati: <Text style={{ fontWeight: '800', color: COLOR }}>{pending.length}</Text> / {REQUIRED_PICKS}
+          </Text>
+          <Pressable
+            onPress={onSubmitAll}
+            disabled={!submitEnabled || submitting}
+            style={[
+              styles.submitBtn,
+              (!submitEnabled || submitting) && { opacity: 0.4 },
+            ]}
+            testID="sv-submit-picks"
+          >
+            {submitting ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.submitBtnText}>
+                {myPicks.length > 0 ? 'Aggiorna pronostici' : 'Conferma pronostici'}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      )}
 
       {t.is_admin && !md.locked && (
         <View style={styles.adminHint}>
@@ -357,15 +465,17 @@ function PlayTab({
         </View>
       )}
 
-      {blocked.length > 0 && (
+      {lockedTeams.length > 0 && (
         <View style={styles.blockedList}>
-          <Text style={styles.blockedTitle}>Segni bloccati ({blocked.length})</Text>
+          <Text style={styles.blockedTitle}>Squadre bloccate ({lockedTeams.length})</Text>
+          <Text style={styles.blockedSubtitle}>
+            Hai già usato queste squadre correttamente — non puoi rigiocarle (a meno di concessione).
+          </Text>
           <View style={styles.blockedRow}>
-            {blocked.map((b, i) => (
+            {lockedTeams.map((team, i) => (
               <View key={i} style={styles.blockedChip}>
-                <Text style={styles.blockedText}>
-                  {b.team} → {outcomeLabel(b.outcome)}
-                </Text>
+                <Ionicons name="lock-closed" size={12} color={theme.colors.muted} />
+                <Text style={styles.blockedText}>{team}</Text>
               </View>
             ))}
           </View>
@@ -377,8 +487,12 @@ function PlayTab({
       )}
 
       {md.fixtures.map((fx, i) => {
-        const isSelected = myPick && myPick.home_team === fx.home_team && myPick.away_team === fx.away_team;
+        const pendingPick = pending.find(
+          p => p.home_team === fx.home_team && p.away_team === fx.away_team,
+        );
+        const isSelected = !!pendingPick;
         const postponed = !!fx.postponed_before;
+        const concession = isConcession(fx);
         return (
           <View
             key={`${fx.home_team}-${fx.away_team}-${i}`}
@@ -389,13 +503,23 @@ function PlayTab({
             ]}
           >
             <View style={styles.fxTeams}>
-              <Text style={[styles.fxTeam, postponed && { color: theme.colors.muted, textDecorationLine: 'line-through' }]}>
-                {fx.home_team}
-              </Text>
+              <View style={styles.fxTeamCol}>
+                <Text style={[styles.fxTeam, postponed && { color: theme.colors.muted, textDecorationLine: 'line-through' }]}>
+                  {fx.home_team}
+                </Text>
+                {lockedTeams.includes(fx.home_team) && !concession && (
+                  <Ionicons name="lock-closed" size={12} color={theme.colors.muted} />
+                )}
+              </View>
               <Text style={styles.fxVs}>vs</Text>
-              <Text style={[styles.fxTeam, postponed && { color: theme.colors.muted, textDecorationLine: 'line-through' }]}>
-                {fx.away_team}
-              </Text>
+              <View style={styles.fxTeamCol}>
+                <Text style={[styles.fxTeam, postponed && { color: theme.colors.muted, textDecorationLine: 'line-through' }]}>
+                  {fx.away_team}
+                </Text>
+                {lockedTeams.includes(fx.away_team) && !concession && (
+                  <Ionicons name="lock-closed" size={12} color={theme.colors.muted} />
+                )}
+              </View>
               {postponed && (
                 <View style={styles.postponedBadge}>
                   <Text style={styles.postponedBadgeText}>Rinviata</Text>
@@ -413,6 +537,15 @@ function PlayTab({
               )}
             </View>
 
+            {concession && (
+              <View style={styles.concessionBadge}>
+                <Ionicons name="star" size={12} color="#B45309" />
+                <Text style={styles.concessionText}>
+                  Concessione: entrambe le squadre sono bloccate, puoi giocare comunque.
+                </Text>
+              </View>
+            )}
+
             {postponed && t.is_admin && !md.locked && (
               <Pressable
                 onPress={() => onTogglePostponed(fx, i, false)}
@@ -427,38 +560,31 @@ function PlayTab({
             {!postponed && (
               <View style={styles.signRow}>
                 {(['1', 'X', '2'] as const).map((sign) => {
-                  const blockedBy = blockedByPick(sign, fx);
-                  const selected = myPick && myPick.home_team === fx.home_team
-                    && myPick.away_team === fx.away_team && myPick.pick === sign;
-                  const disabled = !canPlay || !!blockedBy;
-                  const key = `${fx.home_team}|${fx.away_team}|${sign}`;
-                  const isSubmitting = submitting === key;
+                  const blockedTeam = pickBlockedTeam(sign, fx);
+                  const selected = pendingPick && pendingPick.pick === sign;
+                  const disabled = !canPlay || !!blockedTeam;
                   return (
                     <Pressable
                       key={sign}
-                      disabled={disabled || isSubmitting}
-                      onPress={() => onPick(fx, sign)}
+                      disabled={disabled || submitting}
+                      onPress={() => onTogglePick(fx, sign)}
                       style={[
                         styles.signBtn,
                         selected && { backgroundColor: COLOR, borderColor: COLOR },
-                        !selected && blockedBy && styles.signBtnBlocked,
-                        !selected && !blockedBy && disabled && { opacity: 0.4 },
+                        !selected && blockedTeam && styles.signBtnBlocked,
+                        !selected && !blockedTeam && disabled && { opacity: 0.4 },
                       ]}
                       testID={`sv-pick-${fx.home_team}-${sign}`}
                     >
-                      {isSubmitting ? (
-                        <ActivityIndicator color={selected ? '#fff' : COLOR} size="small" />
-                      ) : (
-                        <Text
-                          style={[
-                            styles.signText,
-                            selected && { color: '#fff' },
-                            !selected && blockedBy && { color: theme.colors.muted, textDecorationLine: 'line-through' },
-                          ]}
-                        >
-                          {sign}
-                        </Text>
-                      )}
+                      <Text
+                        style={[
+                          styles.signText,
+                          selected && { color: '#fff' },
+                          !selected && blockedTeam && { color: theme.colors.muted, textDecorationLine: 'line-through' },
+                        ]}
+                      >
+                        {sign}
+                      </Text>
                     </Pressable>
                   );
                 })}
@@ -604,9 +730,9 @@ function LeaderboardTab({ rows }: { rows: LeaderboardRow[] }) {
             {r.eliminated && (
               <Text style={styles.lbEliminated}>Eliminato</Text>
             )}
-            {!r.eliminated && r.blocked_signs_count > 0 && (
+            {!r.eliminated && (r.locked_teams_count ?? 0) > 0 && (
               <Text style={styles.lbBlockedInfo}>
-                {r.blocked_signs_count} segni bloccati
+                {r.locked_teams_count} squadr{r.locked_teams_count === 1 ? 'a' : 'e'} bloccat{r.locked_teams_count === 1 ? 'a' : 'e'}
               </Text>
             )}
           </View>
@@ -728,14 +854,47 @@ const styles = StyleSheet.create({
     color: theme.colors.muted, fontSize: 11, fontWeight: '800',
     textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6,
   },
+  blockedSubtitle: {
+    color: theme.colors.muted, fontSize: 11, marginBottom: 6,
+    fontStyle: 'italic',
+  },
   blockedRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   blockedChip: {
     backgroundColor: theme.colors.error + '15',
     borderWidth: 1, borderColor: theme.colors.error + '55',
     borderRadius: theme.radius.pill,
     paddingHorizontal: 8, paddingVertical: 3,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
   },
   blockedText: { color: theme.colors.error, fontSize: 11, fontWeight: '700' },
+
+  // 3-picks submission progress + CTA
+  progressBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.md, borderWidth: 1,
+    borderColor: theme.colors.border,
+    paddingHorizontal: theme.spacing.md, paddingVertical: theme.spacing.sm,
+    gap: theme.spacing.sm,
+  },
+  progressText: { color: theme.colors.text, fontSize: 13, flex: 1 },
+  submitBtn: {
+    backgroundColor: COLOR, borderRadius: theme.radius.md,
+    paddingHorizontal: theme.spacing.md, paddingVertical: 10,
+    minWidth: 130, alignItems: 'center', justifyContent: 'center',
+  },
+  submitBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  fxTeamCol: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4,
+  },
+  concessionBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#FEF3C7', borderRadius: theme.radius.sm,
+    paddingHorizontal: 8, paddingVertical: 4,
+  },
+  concessionText: {
+    color: '#92400E', fontSize: 11, fontWeight: '700', flex: 1,
+  },
 
   fxCard: {
     backgroundColor: theme.colors.surfaceSecondary,

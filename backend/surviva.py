@@ -37,43 +37,66 @@ logger = logging.getLogger("surviva")
 DEFAULT_LIVES = 3
 
 # =========================================================================
-# Blocked-sign engine
+# Team-lock engine (Surviva 2.0 — new rules)
 # =========================================================================
-# The domain outcome of a fixture pick is derived from the perspective of
-# each team:
-#   pick "1" (home wins):  home → win,  away → lose
-#   pick "X" (draw):       home → draw, away → draw
-#   pick "2" (away wins):  home → lose, away → win
-# The three outcomes are represented as short strings for stable storage:
-#   "W" = vittoria    "D" = pareggio    "L" = sconfitta
+# Rules (agreed with product):
+#   • Each matchday the player submits **3 picks** on **3 different matches**.
+#   • A CORRECT pick with sign "1"  → the *home* team gets locked.
+#   • A CORRECT pick with sign "2"  → the *away* team gets locked.
+#   • A CORRECT pick with sign "X"  → NO team gets locked (exception).
+#   • A WRONG pick   → the team is NOT locked (only lives are consumed).
+#   • Concession    → a fixture where BOTH teams are already locked is
+#                     playable with any sign; the outcome of that pick does
+#                     NOT introduce new locks.
+# Lives: -1 for every wrong pick (so up to -3 in a single matchday).
+
+REQUIRED_PICKS_PER_MATCHDAY = 3
+
+# Legacy per-outcome map kept for retro-compat helpers (used by the
+# short-lived summary endpoints).
 _OUTCOME_HOME = {"1": "W", "X": "D", "2": "L"}
 _OUTCOME_AWAY = {"1": "L", "X": "D", "2": "W"}
 
 
 def _team_outcomes_for_pick(pick: str) -> Tuple[str, str]:
-    """Return (home_outcome, away_outcome) for a 1/X/2 pick."""
+    """Legacy helper — returns (home_outcome, away_outcome) for a 1/X/2 pick."""
     return _OUTCOME_HOME[pick], _OUTCOME_AWAY[pick]
 
 
-def _pick_is_blocked(
-    pick: str,
-    home_team: str,
-    away_team: str,
-    blocked_signs: List[dict],
-) -> Optional[dict]:
-    """Return the offending blocked-sign entry if *pick* uses a blocked
-    (team, outcome) pair, otherwise ``None``.
+def _team_locked_by_correct_pick(pick: str, home_team: str, away_team: str) -> Optional[str]:
+    """When a pick is correct, return the *team* that must be locked.
 
-    ``blocked_signs`` is the ``participant.blocked_signs`` list, where each
-    entry is ``{"team": str, "outcome": "W"|"D"|"L", "matchday": int}``.
+    Returns ``None`` for pick "X" (draws never lock any team — exception
+    granted per product rules).
     """
-    h_out, a_out = _team_outcomes_for_pick(pick)
-    for entry in blocked_signs:
-        if entry.get("team") == home_team and entry.get("outcome") == h_out:
-            return entry
-        if entry.get("team") == away_team and entry.get("outcome") == a_out:
-            return entry
+    if pick == "1":
+        return home_team
+    if pick == "2":
+        return away_team
+    return None  # "X" → no lock
+
+
+def _pick_uses_locked_team(
+    pick: str, home_team: str, away_team: str, locked_teams: set,
+) -> Optional[str]:
+    """Return the offending team name if the pick would re-use a locked
+    team, otherwise ``None``.
+
+    Rules:
+      • pick "1" → home_team must be free
+      • pick "2" → away_team must be free
+      • pick "X" → always free (draws don't consume teams)
+    """
+    if pick == "1" and home_team in locked_teams:
+        return home_team
+    if pick == "2" and away_team in locked_teams:
+        return away_team
     return None
+
+
+def _fixture_fully_locked(home_team: str, away_team: str, locked_teams: set) -> bool:
+    """Concession trigger: both teams of the fixture are already locked."""
+    return home_team in locked_teams and away_team in locked_teams
 
 
 def _pick_correct(pick: str, home_score: int, away_score: int) -> bool:
@@ -110,8 +133,30 @@ class JoinIn(BaseModel):
         return v.strip().upper()
 
 
+class PickItem(BaseModel):
+    """A single pick inside a 3-picks matchday submission."""
+    home_team: str
+    away_team: str
+    pick: str = Field(pattern=r"^[1X2]$")
+
+
+class PicksSubmit(BaseModel):
+    """Surviva 2.0 (v2 rules): submit **3** picks for a matchday.
+
+    Rules enforced by the endpoint:
+      • exactly 3 picks
+      • each pick on a DIFFERENT fixture of the matchday
+      • pick "1" / "2" cannot target an already-locked team, UNLESS the
+        fixture has BOTH teams locked (concession)
+      • correct picks with sign "1"/"2" add the winning team to the
+        player's locked_teams set; correct picks with sign "X" do NOT lock
+    """
+    picks: List[PickItem] = Field(min_length=REQUIRED_PICKS_PER_MATCHDAY,
+                                  max_length=REQUIRED_PICKS_PER_MATCHDAY)
+
+
+# Legacy single-pick model kept for retro-compat helpers (unused as of v2).
 class PickSubmit(BaseModel):
-    """A single-pick submission for a matchday (Surviva 2.0 = 1 pick/matchday)."""
     home_team: str
     away_team: str
     pick: str = Field(pattern=r"^[1X2]$")
@@ -154,8 +199,26 @@ async def ensure_indexes(db) -> None:
         await db.sv_matchdays.create_index(
             [("tournament_id", 1), ("matchday", 1)], unique=True,
         )
+        # Drop v1 unique index (t, md, user) if present — v2 allows 3 picks
+        # per (t, md, user), one per fixture.
+        try:
+            existing = await db.sv_picks.index_information()
+            for name, spec in existing.items():
+                if name == "_id_":
+                    continue
+                keys = tuple(k for k, _ in spec.get("key", []))
+                if keys == (
+                    "tournament_id", "matchday_id", "user_id",
+                ) and spec.get("unique"):
+                    await db.sv_picks.drop_index(name)
+        except Exception:
+            logger.exception("Failed to inspect/drop legacy sv_picks index")
+        # Surviva 2.0 v2: a player submits UP TO REQUIRED_PICKS_PER_MATCHDAY
+        # picks per matchday, each on a distinct fixture. Uniqueness is
+        # therefore per fixture-key inside the matchday.
         await db.sv_picks.create_index(
-            [("tournament_id", 1), ("matchday_id", 1), ("user_id", 1)],
+            [("tournament_id", 1), ("matchday_id", 1), ("user_id", 1),
+             ("fixture_key", 1)],
             unique=True,
         )
         await db.sv_picks.create_index([("tournament_id", 1), ("user_id", 1)])
@@ -262,10 +325,14 @@ def build_router(
             created += 1
         return created
 
-    def _blocked_dict(p: Optional[dict]) -> List[dict]:
+    def _locked_teams(p: Optional[dict]) -> List[str]:
         if not p:
             return []
-        return p.get("blocked_signs") or []
+        return list(p.get("locked_teams") or [])
+
+    def _blocked_dict(p: Optional[dict]) -> List[dict]:
+        """Legacy alias: returns [] under v2 rules."""
+        return []
 
     async def _tournament_dict(t: dict, viewer: Optional[dict] = None) -> dict:
         players = await db.sv_participants.count_documents({"tournament_id": t["id"]})
@@ -378,7 +445,8 @@ def build_router(
             "user_id": user["id"],
             "nickname": display_name(user),
             "lives_left": data.initial_lives,
-            "blocked_signs": [],
+            "locked_teams": [],
+            "blocked_signs": [],  # legacy field (v1), always empty in v2
             "eliminated_at": None,
             "joined_at": _now(),
         })
@@ -541,7 +609,8 @@ def build_router(
             "user_id": user["id"],
             "nickname": display_name(user),
             "lives_left": t.get("initial_lives", DEFAULT_LIVES),
-            "blocked_signs": [],
+            "locked_teams": [],
+            "blocked_signs": [],  # legacy (v1)
             "eliminated_at": None,
             "joined_at": _now(),
         })
@@ -558,7 +627,8 @@ def build_router(
                 "nickname": p["nickname"],
                 "lives_left": p.get("lives_left", 0),
                 "eliminated_at": p.get("eliminated_at"),
-                "blocked_signs": p.get("blocked_signs", []),
+                "locked_teams": list(p.get("locked_teams") or []),
+                "blocked_signs": [],  # legacy compat
             })
         # Sort: alive first (by lives desc), then eliminated by date desc
         rows.sort(key=lambda r: (
@@ -605,6 +675,7 @@ def build_router(
             "locked": locked,
             "settled": md.get("status") == "settled",
             "my_picks_count": my_picks_count,
+            "picks_required": REQUIRED_PICKS_PER_MATCHDAY,
         }
 
     @router.get("/tournaments/{tid}/matchdays")
@@ -627,8 +698,19 @@ def build_router(
             raise HTTPException(status_code=404, detail="Nessuna giornata in corso")
         return await _matchday_dict(md, user["id"])
 
+    @router.get("/tournaments/{tid}/matchdays/{md_id}/my-picks")
+    async def my_picks(tid: str, md_id: str, user: dict = Depends(current_user)):
+        """Return all picks (0..3) the caller has submitted for a matchday."""
+        await _require_participant(tid, user["id"])
+        picks = [pk async for pk in db.sv_picks.find(
+            {"tournament_id": tid, "matchday_id": md_id, "user_id": user["id"]},
+            {"_id": 0},
+        )]
+        return {"picks": picks, "required": REQUIRED_PICKS_PER_MATCHDAY}
+
     @router.get("/tournaments/{tid}/matchdays/{md_id}/my-pick")
     async def my_pick(tid: str, md_id: str, user: dict = Depends(current_user)):
+        """Legacy single-pick endpoint. Kept for compat: returns the first pick."""
         await _require_participant(tid, user["id"])
         p = await db.sv_picks.find_one(
             {"tournament_id": tid, "matchday_id": md_id, "user_id": user["id"]},
@@ -636,20 +718,30 @@ def build_router(
         )
         return p or {"empty": True}
 
+    @router.get("/tournaments/{tid}/locked-teams")
+    async def my_locked_teams(tid: str, user: dict = Depends(current_user)):
+        """Return the caller's locked teams for the tournament + their lives."""
+        p = await _require_participant(tid, user["id"])
+        return {
+            "locked_teams": _locked_teams(p),
+            "lives_left": p.get("lives_left", 0),
+        }
+
     @router.get("/tournaments/{tid}/blocked-signs")
     async def my_blocked_signs(tid: str, user: dict = Depends(current_user)):
+        """Legacy endpoint (v1). In v2 rules this always returns an empty list."""
         p = await _require_participant(tid, user["id"])
-        return {"blocked_signs": _blocked_dict(p), "lives_left": p.get("lives_left", 0)}
+        return {"blocked_signs": [], "lives_left": p.get("lives_left", 0)}
 
-    @router.post("/tournaments/{tid}/matchdays/{md_id}/pick")
-    async def submit_pick(
-        tid: str, md_id: str, data: PickSubmit, user: dict = Depends(current_user),
+    @router.post("/tournaments/{tid}/matchdays/{md_id}/picks")
+    async def submit_picks(
+        tid: str, md_id: str, data: PicksSubmit, user: dict = Depends(current_user),
     ):
-        """Submit (or update) the caller's single pick for a matchday.
+        """Submit the caller's **3 picks** for a matchday (Surviva 2.0 v2).
 
-        Surviva 2.0 rule: **one** pick per matchday per player. Calling this
-        endpoint again before the matchday is locked replaces the previous
-        pick.
+        The 3 picks REPLACE any existing picks for the matchday (idempotent
+        upsert). Full validation happens up-front — the write only occurs
+        if ALL 3 picks are legal.
         """
         p = await _require_participant(tid, user["id"])
         if p.get("eliminated_at"):
@@ -663,48 +755,84 @@ def build_router(
         fixtures_by_key = {
             (f["home_team"], f["away_team"]): f for f in md.get("fixtures", [])
         }
-        key = (data.home_team, data.away_team)
-        if key not in fixtures_by_key:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Partita non in calendario: {data.home_team} vs {data.away_team}",
-            )
-        if fixtures_by_key[key].get("postponed_before"):
-            raise HTTPException(
-                status_code=400,
-                detail="Partita rinviata: scegli un'altra partita di questa giornata.",
-            )
-        blocked = _blocked_dict(p)
-        blocked_by = _pick_is_blocked(data.pick, data.home_team, data.away_team, blocked)
-        if blocked_by:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Segno bloccato: hai già indovinato {blocked_by['team']} → "
-                    f"{blocked_by['outcome']} (giornata {blocked_by.get('matchday')})"
-                ),
-            )
+        locked_teams: set = set(p.get("locked_teams") or [])
 
+        seen_keys: set = set()
+        for i, pk in enumerate(data.picks, start=1):
+            key = (pk.home_team, pk.away_team)
+            if key not in fixtures_by_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Pronostico {i}: partita non in calendario "
+                           f"({pk.home_team} vs {pk.away_team})",
+                )
+            if fixtures_by_key[key].get("postponed_before"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Pronostico {i}: partita rinviata, scegli un'altra partita.",
+                )
+            if key in seen_keys:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Pronostico {i}: hai già scelto questo match, "
+                           "i 3 pronostici devono essere su match diversi.",
+                )
+            seen_keys.add(key)
+
+            # Team-lock check with concession
+            if not _fixture_fully_locked(pk.home_team, pk.away_team, locked_teams):
+                offender = _pick_uses_locked_team(
+                    pk.pick, pk.home_team, pk.away_team, locked_teams,
+                )
+                if offender:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Pronostico {i}: {offender} è già stata usata "
+                            "correttamente in una giornata precedente. "
+                            "Scegli un'altra squadra o cambia segno."
+                        ),
+                    )
+
+        # All 3 picks are legal — replace existing picks atomically.
         now = _now()
-        # Enforce ONE pick per user per matchday: upsert on (t, md, user).
-        await db.sv_picks.update_one(
+        await db.sv_picks.delete_many(
             {"tournament_id": tid, "matchday_id": md_id, "user_id": user["id"]},
-            {"$set": {
+        )
+        docs = []
+        for pk in data.picks:
+            fkey = f"{pk.home_team}||{pk.away_team}"
+            concession = _fixture_fully_locked(pk.home_team, pk.away_team, locked_teams)
+            docs.append({
                 "tournament_id": tid,
                 "matchday_id": md_id,
                 "matchday": md["matchday"],
                 "user_id": user["id"],
                 "nickname": p["nickname"],
-                "home_team": data.home_team,
-                "away_team": data.away_team,
-                "pick": data.pick,
+                "home_team": pk.home_team,
+                "away_team": pk.away_team,
+                "fixture_key": fkey,
+                "pick": pk.pick,
+                "concession": concession,
                 "correct": None,
                 "lost_life": None,
                 "created_at": now,
-            }},
-            upsert=True,
+            })
+        if docs:
+            await db.sv_picks.insert_many(docs)
+        return {"ok": True, "picks": len(docs)}
+
+    # ---- Legacy 1-pick endpoint (deprecated by v2 rules) -----------------
+    @router.post("/tournaments/{tid}/matchdays/{md_id}/pick")
+    async def submit_pick(  # noqa: ARG001
+        tid: str, md_id: str, data: PickSubmit, user: dict = Depends(current_user),
+    ):
+        """Deprecated: Surviva 2.0 v2 requires 3 picks. Use ``/picks``."""
+        raise HTTPException(
+            status_code=410,
+            detail="Endpoint deprecato: Surviva 2.0 richiede 3 pronostici. "
+                   "Usa POST /matchdays/{md_id}/picks",
         )
-        return {"ok": True}
 
     # ------------------------------------------------------------------
     # Settlement + auto-progression
@@ -758,19 +886,21 @@ def build_router(
             )
             stats["settled"] += 1
             uid = pk["user_id"]
-            state = pending_participant_updates.setdefault(uid, {"life_delta": 0, "new_blocks": []})
+            state = pending_participant_updates.setdefault(
+                uid, {"life_delta": 0, "new_locks": []},
+            )
             if correct:
                 stats["correct"] += 1
-                # Add blocked signs for both teams (based on the pick semantics)
-                h_out, a_out = _team_outcomes_for_pick(pk["pick"])
-                state["new_blocks"].append({
-                    "team": pk["home_team"], "outcome": h_out,
-                    "matchday": md["matchday"],
-                })
-                state["new_blocks"].append({
-                    "team": pk["away_team"], "outcome": a_out,
-                    "matchday": md["matchday"],
-                })
+                # A correct pick on a "concession" fixture (both teams
+                # already locked) does NOT introduce new locks — otherwise
+                # we would over-punish. Team locks apply only when the
+                # player was actually forced to choose a fresh team.
+                if not pk.get("concession"):
+                    team_to_lock = _team_locked_by_correct_pick(
+                        pk["pick"], pk["home_team"], pk["away_team"],
+                    )
+                    if team_to_lock:
+                        state["new_locks"].append(team_to_lock)
             else:
                 stats["wrong"] += 1
                 state["life_delta"] -= 1
@@ -781,13 +911,11 @@ def build_router(
             if not p:
                 continue
             new_lives = max(0, int(p.get("lives_left", 0)) + state["life_delta"])
-            existing = p.get("blocked_signs") or []
-            existing_keys = {(b.get("team"), b.get("outcome")) for b in existing}
-            for b in state["new_blocks"]:
-                if (b["team"], b["outcome"]) not in existing_keys:
-                    existing.append(b)
-                    existing_keys.add((b["team"], b["outcome"]))
-            update_set: dict = {"lives_left": new_lives, "blocked_signs": existing}
+            existing = list(p.get("locked_teams") or [])
+            for t_name in state["new_locks"]:
+                if t_name and t_name not in existing:
+                    existing.append(t_name)
+            update_set: dict = {"lives_left": new_lives, "locked_teams": existing}
             if new_lives <= 0 and not p.get("eliminated_at"):
                 update_set["eliminated_at"] = _now()
                 eliminated_now.append(uid)
@@ -977,15 +1105,17 @@ def build_router(
                 "user_id": p["user_id"],
                 "nickname": p["nickname"],
                 "lives_left": p.get("lives_left", 0),
-                "blocked_signs_count": len(p.get("blocked_signs") or []),
+                "locked_teams_count": len(p.get("locked_teams") or []),
+                "blocked_signs_count": 0,  # legacy field (always 0 in v2)
                 "eliminated": p.get("eliminated_at") is not None,
                 "eliminated_at": p.get("eliminated_at"),
             })
-        # Sort: alive first (by lives desc, blocks desc), then eliminated
+        # Sort: alive first (by lives desc, most locked teams desc = most
+        # experienced player), then eliminated last.
         rows.sort(key=lambda r: (
             r["eliminated"],
             -r["lives_left"],
-            -r["blocked_signs_count"],
+            -r["locked_teams_count"],
             r["nickname"].lower(),
         ))
         for i, r in enumerate(rows):

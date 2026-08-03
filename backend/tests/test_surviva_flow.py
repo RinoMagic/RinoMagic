@@ -1,18 +1,19 @@
 """End-to-end integration tests for Surviva 2.0.
 
-Cover the full lifecycle:
-- Tournament creation (auto-populates matchdays from calendar)
-- Join via invite code
-- Submit a single pick per matchday
-- Blocked-sign rule prevents re-using a guessed (team, outcome)
-- Settlement decrements lives on wrong picks, blocks signs on correct ones
-- Elimination at 0 lives
-- Auto-progression to the next matchday
-- Riassunto Giornata privacy: aggregates only until kickoff
-- History archive lists only finished tournaments
+⚠️ v1 LEGACY — these tests exercise the old 1-pick-per-matchday API. They
+are skipped under v2 rules (3 picks per matchday, team-lock instead of
+blocked-signs). A dedicated v2 integration suite lives in
+``test_surviva_v2.py``.
 """
 import os
 import uuid
+
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="v1 API (1 pick/matchday, blocked_signs) — replaced by Surviva 2.0 v2 "
+           "which requires 3 picks/matchday. See test_surviva_v2.py."
+)
 import time
 import requests
 import pytest
