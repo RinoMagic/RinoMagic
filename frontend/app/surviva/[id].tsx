@@ -32,6 +32,7 @@ type Matchday = {
 type Tournament = {
   id: string; name: string; season: string; status: string;
   initial_lives: number; current_matchday: number;
+  start_matchday: number;
   is_admin: boolean; joined: boolean;
   players_total: number; players_alive: number;
   invite_code: string;
@@ -47,11 +48,16 @@ type SummaryFixture = {
   counts: { '1': number; X: number; '2': number };
   picks: { nickname: string; pick: string }[] | null;
 };
+type SvInvite = {
+  id: string; code: string;
+  used_by_user_id: string | null; used_by_nickname: string | null;
+  revoked_at: string | null;
+};
 
 export default function SurvivaTournament() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const [tab, setTab] = useState<'play' | 'leaderboard' | 'summary'>('play');
+  const [tab, setTab] = useState<'play' | 'leaderboard' | 'summary' | 'admin'>('play');
   const [t, setT] = useState<Tournament | null>(null);
   const [md, setMd] = useState<Matchday | null>(null);
   const [myPick, setMyPick] = useState<MyPick | null>(null);
@@ -59,6 +65,8 @@ export default function SurvivaTournament() {
   const [livesLeft, setLivesLeft] = useState<number>(0);
   const [lb, setLb] = useState<LeaderboardRow[]>([]);
   const [summary, setSummary] = useState<{ locked: boolean; fixtures: SummaryFixture[] } | null>(null);
+  const [invites, setInvites] = useState<SvInvite[]>([]);
+  const [busyInvite, setBusyInvite] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState<string | null>(null);
 
@@ -88,6 +96,11 @@ export default function SurvivaTournament() {
       } else {
         setMyPick(null);
       }
+      if (detail.is_admin) {
+        try {
+          setInvites(await api<SvInvite[]>(`/sv/tournaments/${id}/invites`));
+        } catch { /* ignore */ }
+      }
     } catch (e: any) {
       alert(e.message);
     } finally {
@@ -95,6 +108,35 @@ export default function SurvivaTournament() {
     }
   };
   useFocusEffect(useCallback(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]));
+
+  const genInvite = async () => {
+    setBusyInvite(true);
+    try {
+      await api<SvInvite>(`/sv/tournaments/${id}/invites`, { method: 'POST' });
+      const list = await api<SvInvite[]>(`/sv/tournaments/${id}/invites`);
+      setInvites(list);
+    } catch (e: any) {
+      alert(e.message || 'Errore');
+    } finally {
+      setBusyInvite(false);
+    }
+  };
+
+  const revokeInvite = async (inv: SvInvite) => {
+    const ok = await confirmDialog(
+      'Revoca invito',
+      `Sicuro di revocare il codice ${inv.code}? Non potrà più essere utilizzato.`,
+      { destructive: true, confirmLabel: 'Revoca' },
+    );
+    if (!ok) return;
+    try {
+      await api(`/sv/tournaments/${id}/invites/${inv.id}`, { method: 'DELETE' });
+      const list = await api<SvInvite[]>(`/sv/tournaments/${id}/invites`);
+      setInvites(list);
+    } catch (e: any) {
+      alert(e.message || 'Errore');
+    }
+  };
 
   const loadSummary = async () => {
     if (!md) return;
@@ -200,7 +242,10 @@ export default function SurvivaTournament() {
           </View>
         </View>
         <View style={styles.tabs}>
-          {(['play', 'leaderboard', 'summary'] as const).map((k) => (
+          {((t.is_admin
+            ? ['play', 'leaderboard', 'summary', 'admin']
+            : ['play', 'leaderboard', 'summary']) as ('play' | 'leaderboard' | 'summary' | 'admin')[]
+          ).map((k) => (
             <Pressable
               key={k}
               onPress={() => {
@@ -211,7 +256,10 @@ export default function SurvivaTournament() {
               testID={`sv-tab-${k}`}
             >
               <Text style={[styles.tabText, tab === k && { color: COLOR }]}>
-                {k === 'play' ? 'Giornata' : k === 'leaderboard' ? 'Classifica' : 'Riassunto'}
+                {k === 'play' ? 'Giornata'
+                  : k === 'leaderboard' ? 'Classifica'
+                  : k === 'summary' ? 'Riassunto'
+                  : 'Admin'}
               </Text>
             </Pressable>
           ))}
@@ -234,6 +282,15 @@ export default function SurvivaTournament() {
           <SummaryTab
             md={md} summary={summary}
             hasPicked={!!myPick} joined={!!t.joined}
+          />
+        )}
+        {tab === 'admin' && t.is_admin && (
+          <AdminTab
+            t={t}
+            invites={invites}
+            busy={busyInvite}
+            onGenerate={genInvite}
+            onRevoke={revokeInvite}
           />
         )}
       </ScrollView>
@@ -410,6 +467,127 @@ function PlayTab({
           </View>
         );
       })}
+    </>
+  );
+}
+
+function AdminTab({
+  t, invites, busy, onGenerate, onRevoke,
+}: {
+  t: Tournament;
+  invites: SvInvite[];
+  busy: boolean;
+  onGenerate: () => void;
+  onRevoke: (inv: SvInvite) => void;
+}) {
+  const available = invites.filter((i) => !i.revoked_at && !i.used_by_user_id).length;
+  return (
+    <>
+      <View style={styles.notice}>
+        <Ionicons name="shield-checkmark" size={18} color={COLOR} />
+        <Text style={styles.noticeText}>
+          Ogni codice invito è univoco e utilizzabile da un solo giocatore.
+          Attualmente {available} disponibile{available === 1 ? '' : 'i'}.
+        </Text>
+      </View>
+
+      <View style={styles.adminCard}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={[styles.adminCardTitle, { flex: 1 }]}>
+            Codici invito ({invites.length})
+          </Text>
+          <Pressable
+            style={[styles.genBtn, { opacity: busy ? 0.5 : 1 }]}
+            onPress={onGenerate}
+            disabled={busy}
+            testID="sv-gen-invite"
+          >
+            {busy ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <>
+                <Ionicons name="add" size={16} color="#fff" />
+                <Text style={styles.genBtnText}>Genera</Text>
+              </>
+            )}
+          </Pressable>
+        </View>
+        {invites.length === 0 && (
+          <Text style={styles.muted}>
+            Nessun codice ancora generato. Premi &quot;Genera&quot; per crearne uno.
+          </Text>
+        )}
+        {invites.map((inv) => {
+          const st = inv.revoked_at
+            ? 'revoked'
+            : inv.used_by_user_id
+              ? 'used'
+              : 'available';
+          return (
+            <View key={inv.id} style={styles.inviteRow}>
+              <View style={{ flex: 1 }}>
+                <Text
+                  style={[
+                    styles.inviteCode,
+                    st !== 'available' && { textDecorationLine: 'line-through', color: theme.colors.muted },
+                  ]}
+                >
+                  {inv.code}
+                </Text>
+                <Text style={styles.gameTag}>Survival 2.0</Text>
+              </View>
+              <Text
+                style={[
+                  styles.inviteMeta,
+                  st === 'available' && { color: COLOR },
+                  st === 'used' && { color: theme.colors.accent },
+                  st === 'revoked' && { color: theme.colors.muted },
+                ]}
+              >
+                {st === 'revoked'
+                  ? '❌ revocato'
+                  : st === 'used'
+                    ? `✅ ${inv.used_by_nickname || 'usato'}`
+                    : '⏳ disponibile'}
+              </Text>
+              {st === 'available' && (
+                <Pressable
+                  onPress={() => onRevoke(inv)}
+                  hitSlop={8}
+                  style={styles.trashBtn}
+                  testID={`sv-revoke-${inv.code}`}
+                >
+                  <Ionicons name="close" size={16} color={theme.colors.error} />
+                </Pressable>
+              )}
+            </View>
+          );
+        })}
+      </View>
+
+      <View style={styles.adminCard}>
+        <Text style={styles.adminCardTitle}>Info torneo</Text>
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Stagione</Text>
+          <Text style={styles.infoValue}>{t.season}</Text>
+        </View>
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Giornata di partenza</Text>
+          <Text style={styles.infoValue}>{t.start_matchday}</Text>
+        </View>
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Giornata corrente</Text>
+          <Text style={styles.infoValue}>{t.current_matchday}</Text>
+        </View>
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Vite iniziali</Text>
+          <Text style={styles.infoValue}>{t.initial_lives}</Text>
+        </View>
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Giocatori</Text>
+          <Text style={styles.infoValue}>{t.players_alive}/{t.players_total} vivi</Text>
+        </View>
+      </View>
     </>
   );
 }
@@ -601,6 +779,39 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: COLOR + '33',
   },
   adminHintText: { color: COLOR, fontSize: 11, fontWeight: '600', flex: 1 },
+
+  adminCard: {
+    padding: theme.spacing.md, borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceSecondary, gap: theme.spacing.sm,
+    borderWidth: 1, borderColor: theme.colors.border,
+  },
+  adminCardTitle: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15 },
+  genBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 12, paddingVertical: 6,
+    borderRadius: theme.radius.pill, backgroundColor: COLOR,
+  },
+  genBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  inviteRow: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    padding: theme.spacing.sm, borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surface,
+  },
+  inviteCode: {
+    color: theme.colors.onSurface, fontSize: 15, fontWeight: '800',
+    letterSpacing: 2, fontFamily: 'monospace' as any,
+  },
+  gameTag: {
+    color: theme.colors.muted, fontSize: 10, fontWeight: '700',
+    letterSpacing: 0.5, marginTop: 1, textTransform: 'uppercase',
+  },
+  inviteMeta: { fontSize: 12, fontWeight: '600' },
+  infoRow: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  infoLabel: { color: theme.colors.muted, fontSize: 13 },
+  infoValue: { color: theme.colors.onSurface, fontSize: 13, fontWeight: '700' },
   fxTeams: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   fxTeam: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15, flex: 1 },
   fxVs: { color: theme.colors.muted, fontSize: 11 },

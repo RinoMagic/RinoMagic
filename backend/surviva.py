@@ -414,6 +414,83 @@ def build_router(
         t = await _get_tournament(tid)
         return await _tournament_dict(t, user)
 
+    # ------------------------------------------------------------------
+    # Single-use invites (admin only) — mirrors ScoreAndLive
+    # ------------------------------------------------------------------
+
+    async def _invite_dict(inv: dict) -> dict:
+        used_nickname = None
+        if inv.get("used_by_user_id"):
+            u = await db.users.find_one({"id": inv["used_by_user_id"]}, {"_id": 0})
+            if u:
+                used_nickname = display_name(u)
+        return {
+            "id": inv["id"],
+            "code": inv["code"],
+            "tournament_id": inv["tournament_id"],
+            "created_at": inv.get("created_at"),
+            "created_by": inv.get("created_by"),
+            "used_by_user_id": inv.get("used_by_user_id"),
+            "used_by_nickname": used_nickname,
+            "used_at": inv.get("used_at"),
+            "revoked_at": inv.get("revoked_at"),
+        }
+
+    @router.get("/tournaments/{tid}/invites")
+    async def list_invites(tid: str, user: dict = Depends(current_user)):
+        await _require_tournament_admin(tid, user)
+        invites = [
+            inv async for inv in db.sv_invites.find(
+                {"tournament_id": tid}, {"_id": 0},
+            ).sort("created_at", -1)
+        ]
+        return [await _invite_dict(i) for i in invites]
+
+    @router.post("/tournaments/{tid}/invites")
+    async def create_invite(tid: str, user: dict = Depends(current_user)):
+        """Generate a new single-use invite code for this tournament.
+
+        Each code is unique (across all tournaments) and can be redeemed by
+        exactly one player. Admins can create as many codes as needed.
+        """
+        await _require_tournament_admin(tid, user)
+        code = await _gen_unique_code()
+        now = _now()
+        doc = {
+            "id": str(uuid.uuid4()),
+            "tournament_id": tid,
+            "code": code,
+            "used_by_user_id": None,
+            "used_at": None,
+            "created_at": now,
+            "created_by": user["id"],
+            "revoked_at": None,
+        }
+        await db.sv_invites.insert_one(doc)
+        return await _invite_dict(doc)
+
+    @router.delete("/tournaments/{tid}/invites/{invite_id}")
+    async def revoke_invite(tid: str, invite_id: str, user: dict = Depends(current_user)):
+        """Revoke an unused invite. Already-used invites cannot be revoked."""
+        await _require_tournament_admin(tid, user)
+        inv = await db.sv_invites.find_one(
+            {"id": invite_id, "tournament_id": tid}, {"_id": 0},
+        )
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invito non trovato")
+        if inv.get("used_by_user_id"):
+            raise HTTPException(
+                status_code=400,
+                detail="Impossibile revocare: invito già utilizzato",
+            )
+        if inv.get("revoked_at"):
+            return await _invite_dict(inv)
+        await db.sv_invites.update_one(
+            {"id": invite_id}, {"$set": {"revoked_at": _now()}},
+        )
+        inv["revoked_at"] = _now()
+        return await _invite_dict(inv)
+
     @router.delete("/tournaments/{tid}")
     async def delete_tournament(tid: str, user: dict = Depends(require_admin)):
         t = await _get_tournament(tid)
