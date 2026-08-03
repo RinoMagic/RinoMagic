@@ -137,6 +137,19 @@ _fg_router = _build_fg_router(
 )
 api.include_router(_fg_router)
 
+# --- Surviva 2.0 (1X2 elimination tournament) ----------------------------
+from surviva import (  # noqa: E402
+    build_router as _build_sv_router,
+    ensure_indexes as _sv_ensure_indexes,
+)
+_sv_router = _build_sv_router(
+    db=db,
+    current_user=current_user,
+    require_admin=require_admin,
+    display_name=display_name,
+)
+api.include_router(_sv_router)
+
 
 # =========================================================================
 # Startup / shutdown
@@ -165,6 +178,7 @@ async def startup():
     await _sal_ensure_indexes(db)
     await _facts_ensure_indexes(db)
     await _fg_ensure_indexes(db)
+    await _sv_ensure_indexes(db)
 
     await seed_admin_if_missing(db)
     logger.info("RinoMagic API started")

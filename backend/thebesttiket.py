@@ -80,6 +80,14 @@ GAMES: Dict[str, Dict[str, Any]] = {
         "icon": "football",
         "enabled": False,  # Coming soon (archived project, will be integrated later)
     },
+    "surviva": {
+        "id": "surviva",
+        "name": "Surviva 2.0",
+        "tagline": "3 vite, 1 pronostico a giornata: sopravvivi!",
+        "color": "#EF4444",
+        "icon": "heart",
+        "enabled": True,
+    },
 }
 DEFAULT_GAME = "thebesttiket"
 
@@ -1017,12 +1025,33 @@ def build_router(
             my_room_ids = [m["room_id"] async for m in db.memberships.find(
                 {"user_id": user["id"]}, {"room_id": 1, "_id": 0})]
 
+        # Surviva 2.0 lives in its own collection: count my active tournaments.
+        if user["role"] == "admin":
+            surviva_count = await db.sv_tournaments.count_documents({})
+        else:
+            surviva_count = await db.sv_participants.count_documents(
+                {"user_id": user["id"]},
+            )
+        # ScoreAndLive lives in its own collection too — count where I am a
+        # participant (or all tournaments for admins).
+        if user["role"] == "admin":
+            sal_count = await db.sal_tournaments.count_documents({})
+        else:
+            sal_count = await db.sal_participants.count_documents(
+                {"user_id": user["id"]},
+            )
+
         games: List[dict] = []
         for gid, meta in GAMES.items():
-            q: dict = {"game": gid}
-            if my_room_ids is not None:
-                q["id"] = {"$in": my_room_ids}
-            my_rooms_count = await db.rooms.count_documents(q)
+            if gid == "surviva":
+                my_rooms_count = surviva_count
+            elif gid == "scoreandlive":
+                my_rooms_count = sal_count
+            else:
+                q: dict = {"game": gid}
+                if my_room_ids is not None:
+                    q["id"] = {"$in": my_room_ids}
+                my_rooms_count = await db.rooms.count_documents(q)
             games.append({**meta, "my_rooms_count": my_rooms_count})
         return games
 
