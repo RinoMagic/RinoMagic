@@ -159,6 +159,37 @@ export default function Hub() {
           </Pressable>
         ))}
 
+        {/* 5th slot: Bonus games (multi-color rainbow border) */}
+        <Pressable
+          testID="game-card-bonus"
+          onPress={() => router.push('/bonus')}
+          style={({ pressed }) => [
+            styles.card,
+            styles.bonusCard,
+            pressed && { transform: [{ scale: 0.98 }] },
+          ]}
+        >
+          <View style={styles.bonusIconBox}>
+            <Ionicons name="gift" size={30} color="#fff" />
+          </View>
+          <View style={{ flex: 1, gap: 4 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={styles.cardName}>Giochi Bonus</Text>
+              <View style={styles.pillHot}>
+                <Text style={styles.pillHotText}>NUOVO</Text>
+              </View>
+            </View>
+            <Text style={styles.cardTag}>4 bonus a giornata: vinci vite, punti extra e giocate</Text>
+            <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
+              <View style={[styles.bonusDot, { backgroundColor: '#FFB300' }]} />
+              <View style={[styles.bonusDot, { backgroundColor: '#3B82F6' }]} />
+              <View style={[styles.bonusDot, { backgroundColor: '#A855F7' }]} />
+              <View style={[styles.bonusDot, { backgroundColor: '#EF4444' }]} />
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={22} color={theme.colors.onSurface} />
+        </Pressable>
+
         <View style={styles.footNote}>
           <Ionicons name="information-circle-outline" size={16} color={theme.colors.muted} />
           <Text style={styles.footNoteText}>
@@ -201,6 +232,28 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.muted + '33',
   },
   pillSoonText: { color: theme.colors.muted, fontSize: 9, fontWeight: '800', letterSpacing: 0.8 },
+
+  bonusCard: {
+    borderColor: '#F59E0B',
+    backgroundColor: '#F59E0B12',
+  },
+  bonusIconBox: {
+    width: 56, height: 56, borderRadius: theme.radius.md,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#F59E0B',
+  },
+  bonusDot: {
+    width: 10, height: 10, borderRadius: 5,
+  },
+  pillHot: {
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: theme.radius.pill,
+    backgroundColor: '#F59E0B',
+  },
+  pillHotText: {
+    color: theme.colors.onBrand, fontSize: 9, fontWeight: '800',
+    letterSpacing: 0.8,
+  },
 
   footNote: {
     flexDirection: 'row', alignItems: 'center', gap: 8,

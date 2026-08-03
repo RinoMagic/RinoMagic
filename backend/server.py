@@ -151,6 +151,20 @@ _sv_router = _build_sv_router(
 api.include_router(_sv_router)
 
 
+# --- Bonus games (5th slot) ----------------------------------------------
+from bonus import (  # noqa: E402
+    build_router as _build_bonus_router,
+    ensure_indexes as _bonus_ensure_indexes,
+)
+_bonus_router = _build_bonus_router(
+    db=db,
+    current_user=current_user,
+    require_admin=require_admin,
+    display_name=display_name,
+)
+api.include_router(_bonus_router)
+
+
 # =========================================================================
 # Startup / shutdown
 # =========================================================================
@@ -179,6 +193,7 @@ async def startup():
     await _facts_ensure_indexes(db)
     await _fg_ensure_indexes(db)
     await _sv_ensure_indexes(db)
+    await _bonus_ensure_indexes(db)
 
     await seed_admin_if_missing(db)
     logger.info("RinoMagic API started")
