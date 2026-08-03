@@ -409,3 +409,154 @@ def test_first_scorer_normalization_case_and_accents(admin_tok):
                       headers=_h(admin_tok), timeout=15,
                       json={"player_name": "Lautaro Martínez"}).json()
     assert r["winners"] == 1
+
+
+
+# =========================================================================
+# Elimination rule — no bonus for players with 0 lives (still-alive only)
+# =========================================================================
+
+def _force_eliminate_survival(tournament_id: str, user_id: str) -> None:
+    """Test helper: bypass the settle flow and mark a Survival participation
+    as eliminated (lives=0) via direct Mongo write."""
+    import os
+    from pymongo import MongoClient
+    mongo = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+    db = mongo[os.environ.get("DB_NAME", "schedinabar")]
+    db.sv_participants.update_one(
+        {"tournament_id": tournament_id, "user_id": user_id},
+        {"$set": {"lives_left": 0,
+                  "eliminated_at": datetime.now(timezone.utc)}},
+    )
+    mongo.close()
+
+
+def _force_eliminate_score(tournament_id: str, user_id: str) -> None:
+    import os
+    from pymongo import MongoClient
+    mongo = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+    db = mongo[os.environ.get("DB_NAME", "schedinabar")]
+    db.sal_participants.update_one(
+        {"tournament_id": tournament_id, "user_id": user_id},
+        {"$set": {"lives_remaining": 0, "eliminated_at_matchday": 1}},
+    )
+    mongo.close()
+
+
+def test_survival_eliminated_player_loses_bonus_slot(admin_tok):
+    """A Survival participant with 0 lives / eliminated MUST NOT see the bonus
+    slot on that tournament, but keeps it on a second tournament where they
+    are still alive."""
+    season = f"bn-{uuid.uuid4().hex[:4]}"
+    _seed_calendar(admin_tok, season)
+    tok, uid = _player()
+
+    alive = _create_survival(admin_tok, season, "SV-alive")
+    _sv_join(tok, alive["invite_code"])
+    dead = _create_survival(admin_tok, season, "SV-dead")
+    _sv_join(tok, dead["invite_code"])
+
+    # Both subs visible while both alive
+    subs = requests.get(f"{API}/bonus/subscriptions?game=survival",
+                        headers=_h(tok), timeout=15).json()
+    assert {s["id"] for s in subs} == {alive["id"], dead["id"]}
+
+    # Eliminate one tournament
+    _force_eliminate_survival(dead["id"], uid)
+
+    # Only the alive one remains
+    subs = requests.get(f"{API}/bonus/subscriptions?game=survival",
+                        headers=_h(tok), timeout=15).json()
+    assert {s["id"] for s in subs} == {alive["id"]}
+
+    e = requests.get(f"{API}/bonus/eligibility", headers=_h(tok), timeout=15).json()
+    assert e["survival"] == {"eligible": True, "subscriptions": 1}
+
+
+def test_survival_eliminated_player_cannot_submit_pick(admin_tok):
+    """Even by knowing the tournament id, an eliminated player must be
+    rejected with 403 when trying to POST a pick."""
+    season = f"bn-{uuid.uuid4().hex[:4]}"
+    _seed_calendar(admin_tok, season)
+    tok, uid = _player()
+
+    t = _create_survival(admin_tok, season, "SV-elim-pick")
+    _sv_join(tok, t["invite_code"])
+    _create_bonus_exact(admin_tok, season)
+
+    _force_eliminate_survival(t["id"], uid)
+
+    r = requests.post(f"{API}/bonus/picks/exact", headers=_h(tok), timeout=15,
+                      json={"game": "survival", "season": season,
+                            "subscription_id": t["id"],
+                            "home_score": 1, "away_score": 1})
+    assert r.status_code == 403
+    assert "iscritto" in r.json().get("detail", "").lower() \
+        or "non" in r.json().get("detail", "").lower()
+
+
+def test_survival_available_hides_eliminated_but_shows_alive(admin_tok):
+    """/bonus/available response must expose only alive subscriptions."""
+    season = f"bn-{uuid.uuid4().hex[:4]}"
+    _seed_calendar(admin_tok, season)
+    tok, uid = _player()
+
+    a = _create_survival(admin_tok, season)
+    _sv_join(tok, a["invite_code"])
+    b = _create_survival(admin_tok, season)
+    _sv_join(tok, b["invite_code"])
+    _create_bonus_exact(admin_tok, season)
+
+    av = requests.get(
+        f"{API}/bonus/available?game=survival&season={season}",
+        headers=_h(tok), timeout=15,
+    ).json()
+    assert len(av["subscriptions"]) == 2
+
+    _force_eliminate_survival(a["id"], uid)
+
+    av = requests.get(
+        f"{API}/bonus/available?game=survival&season={season}",
+        headers=_h(tok), timeout=15,
+    ).json()
+    assert [s["id"] for s in av["subscriptions"]] == [b["id"]]
+
+
+def test_score_eliminated_player_loses_bonus_slot(admin_tok):
+    """Same elimination rule applies to Score (lives_remaining == 0)."""
+    season = f"bn-{uuid.uuid4().hex[:4]}"
+    _seed_calendar(admin_tok, season)
+    tok, uid = _player()
+
+    alive = _create_sal(admin_tok, season)
+    _sal_join(tok, alive["id"], alive["invite_code"])
+    dead = _create_sal(admin_tok, season)
+    _sal_join(tok, dead["id"], dead["invite_code"])
+
+    subs = requests.get(f"{API}/bonus/subscriptions?game=score",
+                        headers=_h(tok), timeout=15).json()
+    assert {s["id"] for s in subs} == {alive["id"], dead["id"]}
+
+    _force_eliminate_score(dead["id"], uid)
+
+    subs = requests.get(f"{API}/bonus/subscriptions?game=score",
+                        headers=_h(tok), timeout=15).json()
+    assert {s["id"] for s in subs} == {alive["id"]}
+
+
+def test_score_eliminated_player_cannot_submit_scorer_pick(admin_tok):
+    season = f"bn-{uuid.uuid4().hex[:4]}"
+    _seed_calendar(admin_tok, season)
+    tok, uid = _player()
+
+    t = _create_sal(admin_tok, season)
+    _sal_join(tok, t["id"], t["invite_code"])
+    _create_bonus_scorer(admin_tok, season)
+
+    _force_eliminate_score(t["id"], uid)
+
+    r = requests.post(f"{API}/bonus/picks/scorer", headers=_h(tok), timeout=15,
+                      json={"game": "score", "season": season,
+                            "subscription_id": t["id"],
+                            "player_name": "Someone"})
+    assert r.status_code == 403

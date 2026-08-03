@@ -156,9 +156,20 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
                     "color": r.get("color"),
                 })
         elif game == "score":
-            tour_ids = [p["tournament_id"] async for p in db.sal_participants.find(
-                {"user_id": uid}, {"tournament_id": 1, "_id": 0},
-            )]
+            # Only ALIVE participations (lives > 0 and not eliminated) grant a
+            # bonus slot. Eliminated players lose access to future bonuses on
+            # that tournament, but keep the slot on any other tournament where
+            # they are still in the game.
+            tour_ids = [
+                p["tournament_id"] async for p in db.sal_participants.find(
+                    {
+                        "user_id": uid,
+                        "eliminated_at_matchday": None,
+                        "lives_remaining": {"$gt": 0},
+                    },
+                    {"tournament_id": 1, "_id": 0},
+                )
+            ]
             if not tour_ids:
                 return []
             tours = [t async for t in db.sal_tournaments.find(
@@ -184,9 +195,20 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
                     "kind": "fg_league", "game": "fanta",
                 })
         elif game == "survival":
-            tour_ids = [p["tournament_id"] async for p in db.sv_participants.find(
-                {"user_id": uid}, {"tournament_id": 1, "_id": 0},
-            )]
+            # Only ALIVE participations grant a bonus slot. If a player has
+            # been eliminated (0 vite / eliminated_at set), they lose the
+            # bonus right on that tournament but keep it on any other
+            # tournament where they still have vite.
+            tour_ids = [
+                p["tournament_id"] async for p in db.sv_participants.find(
+                    {
+                        "user_id": uid,
+                        "eliminated_at": None,
+                        "lives_left": {"$gt": 0},
+                    },
+                    {"tournament_id": 1, "_id": 0},
+                )
+            ]
             if not tour_ids:
                 return []
             tours = [t async for t in db.sv_tournaments.find(

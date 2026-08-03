@@ -138,7 +138,11 @@ export default function BonusGame() {
           <View style={[styles.notice, { borderColor: theme.colors.error }]}>
             <Ionicons name="lock-closed" size={18} color={theme.colors.error} />
             <Text style={styles.noticeText}>
-              Non sei iscritto a nessun{game === 'fanta' ? 'a lega' : (game === 'tiket' ? 'a stanza' : ' torneo')} di {meta.parent}. Iscriviti per giocare al bonus.
+              {game === 'fanta'
+                ? `Non sei iscritto a nessuna lega di ${meta.parent}. Iscriviti per giocare al bonus.`
+                : game === 'tiket'
+                  ? `Non sei iscritto a nessuna stanza di ${meta.parent}. Iscriviti per giocare al bonus.`
+                  : `Non hai tornei attivi di ${meta.parent}. Il bonus è disponibile solo se sei ancora in gara (vite > 0) in almeno un torneo. Se sei stato eliminato, riproverai al prossimo torneo.`}
             </Text>
           </View>
         )}
