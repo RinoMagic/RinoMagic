@@ -858,32 +858,93 @@ function SummaryTab({
       )}
       {summary.fixtures.map((fx, i) => {
         const total = fx.counts['1'] + fx.counts['X'] + fx.counts['2'];
+        const maxCount = Math.max(fx.counts['1'], fx.counts['X'], fx.counts['2'], 1);
+        // Group individual picks by sign for the locked (post-kickoff) view
+        const picksBySign: Record<'1' | 'X' | '2', string[]> = { '1': [], 'X': [], '2': [] };
+        if (summary.locked && fx.picks) {
+          fx.picks.forEach(p => {
+            const s = (p.pick as '1' | 'X' | '2');
+            if (picksBySign[s]) picksBySign[s].push(p.nickname);
+          });
+        }
+        const labelFor = (s: '1' | 'X' | '2'): string =>
+          s === '1' ? fx.home_team : s === '2' ? fx.away_team : 'Pareggio';
+        const winner = ['1', 'X', '2'].reduce<'1' | 'X' | '2'>(
+          (best, cur) => fx.counts[cur as '1' | 'X' | '2']
+            > fx.counts[best] ? (cur as '1' | 'X' | '2') : best,
+          '1',
+        );
         return (
           <View key={i} style={styles.fxCard}>
-            <View style={styles.fxTeams}>
-              <Text style={styles.fxTeam}>{fx.home_team}</Text>
-              <Text style={styles.fxVs}>vs</Text>
-              <Text style={styles.fxTeam}>{fx.away_team}</Text>
+            {/* Match header — small, unobtrusive */}
+            <View style={styles.smHeader}>
+              <Text style={styles.smHeaderText}>
+                {fx.home_team} — {fx.away_team}
+              </Text>
+              <Text style={styles.smHeaderTotal}>
+                {total} pronostic{total === 1 ? 'o' : 'i'}
+              </Text>
             </View>
-            <View style={styles.summaryRow}>
-              {(['1', 'X', '2'] as const).map((s) => (
-                <View key={s} style={styles.summaryCell}>
-                  <Text style={styles.summarySign}>{s}</Text>
-                  <Text style={styles.summaryCount}>{fx.counts[s]}</Text>
-                  <Text style={styles.summaryPct}>
-                    {total > 0 ? `${Math.round((fx.counts[s] / total) * 100)}%` : '—'}
-                  </Text>
-                </View>
-              ))}
-            </View>
-            {summary.locked && fx.picks && fx.picks.length > 0 && (
-              <View style={styles.picksList}>
-                {fx.picks.map((p, k) => (
-                  <View key={k} style={styles.pickChip}>
-                    <Text style={styles.pickChipSign}>{p.pick}</Text>
-                    <Text style={styles.pickChipName}>{p.nickname}</Text>
+            {/* Three aligned columns: home / draw / away */}
+            <View style={styles.summaryGrid}>
+              {(['1', 'X', '2'] as const).map((s) => {
+                const count = fx.counts[s];
+                const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+                const barPct = maxCount > 0 ? (count / maxCount) * 100 : 0;
+                const isWinner = total > 0 && count > 0 && s === winner;
+                return (
+                  <View
+                    key={s}
+                    style={[
+                      styles.summaryCol,
+                      isWinner && styles.summaryColLead,
+                    ]}
+                  >
+                    <View style={styles.summarySignPill}>
+                      <Text style={styles.summarySignPillText}>{s}</Text>
+                    </View>
+                    <Text
+                      style={styles.summaryColTeam}
+                      numberOfLines={2}
+                    >
+                      {labelFor(s)}
+                    </Text>
+                    <Text style={styles.summaryColCount}>{count}</Text>
+                    <View style={styles.summaryBarTrack}>
+                      <View
+                        style={[
+                          styles.summaryBarFill,
+                          { width: `${barPct}%` },
+                          isWinner && { backgroundColor: COLOR },
+                        ]}
+                      />
+                    </View>
+                    <Text style={styles.summaryColPct}>{total > 0 ? `${pct}%` : '—'}</Text>
                   </View>
-                ))}
+                );
+              })}
+            </View>
+            {/* After kickoff: show who picked what, grouped by sign */}
+            {summary.locked && total > 0 && (
+              <View style={styles.picksGrouped}>
+                {(['1', 'X', '2'] as const).map((s) => {
+                  const list = picksBySign[s];
+                  if (list.length === 0) return null;
+                  return (
+                    <View key={s} style={styles.picksGroupRow}>
+                      <Text style={styles.picksGroupLabel}>
+                        {labelFor(s)}:
+                      </Text>
+                      <View style={styles.picksGroupNames}>
+                        {list.map((n, k) => (
+                          <View key={k} style={styles.pickChip}>
+                            <Text style={styles.pickChipName}>{n}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
             )}
           </View>
@@ -1112,6 +1173,75 @@ const styles = StyleSheet.create({
     fontSize: 22, marginTop: 2,
   },
   summaryPct: { color: theme.colors.muted, fontSize: 11, marginTop: 2 },
+
+  // Improved summary layout — 3 columns with team name UNDER each sign so
+  // there's no ambiguity between "1/X/2" and which team it represents.
+  smHeader: {
+    flexDirection: 'row', alignItems: 'baseline',
+    justifyContent: 'space-between', gap: theme.spacing.sm,
+    marginBottom: 4,
+  },
+  smHeaderText: {
+    color: theme.colors.muted, fontSize: 11, fontWeight: '700',
+    textTransform: 'uppercase', letterSpacing: 0.5, flex: 1,
+  },
+  smHeaderTotal: {
+    color: theme.colors.muted, fontSize: 11, fontStyle: 'italic',
+  },
+  summaryGrid: {
+    flexDirection: 'row', gap: theme.spacing.sm, alignItems: 'stretch',
+  },
+  summaryCol: {
+    flex: 1, alignItems: 'center', gap: 4,
+    padding: theme.spacing.sm,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    borderWidth: 1, borderColor: theme.colors.border,
+    minHeight: 130, justifyContent: 'flex-start',
+  },
+  summaryColLead: {
+    borderColor: COLOR, backgroundColor: COLOR + '10',
+  },
+  summarySignPill: {
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: COLOR + '22',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  summarySignPillText: { color: COLOR, fontWeight: '900', fontSize: 14 },
+  summaryColTeam: {
+    color: theme.colors.onSurface,
+    fontSize: 12, fontWeight: '700',
+    textAlign: 'center',
+    minHeight: 30,
+  },
+  summaryColCount: {
+    color: theme.colors.onSurface, fontWeight: '900',
+    fontSize: 22, lineHeight: 24,
+  },
+  summaryBarTrack: {
+    width: '100%', height: 4, borderRadius: 2,
+    backgroundColor: theme.colors.border,
+    overflow: 'hidden',
+  },
+  summaryBarFill: {
+    height: '100%', backgroundColor: theme.colors.muted,
+  },
+  summaryColPct: { color: theme.colors.muted, fontSize: 11 },
+
+  // Post-kickoff detailed picks, grouped by sign
+  picksGrouped: {
+    marginTop: 6, gap: 6,
+    paddingTop: 6,
+    borderTopWidth: 1, borderTopColor: theme.colors.border,
+  },
+  picksGroupRow: {
+    flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6,
+  },
+  picksGroupLabel: {
+    color: theme.colors.muted, fontSize: 11, fontWeight: '800',
+    minWidth: 80,
+  },
+  picksGroupNames: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, flex: 1 },
   picksList: {
     flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6,
   },
