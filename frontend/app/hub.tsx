@@ -66,6 +66,7 @@ export default function Hub() {
       // Show the "Coming Soon" page anyway so users see what's in the pipeline
       if (g.id === 'scoreandlive') router.push('/scoreandlive');
       else if (g.id === 'fantagiornata') router.push('/fantagiornata');
+      else if (g.id === 'surviva') router.push('/surviva');
       return;
     }
     if (g.id === 'thebesttiket') {
@@ -75,6 +76,8 @@ export default function Hub() {
       router.push('/scoreandlive');
     } else if (g.id === 'fantagiornata') {
       router.push('/fantagiornata');
+    } else if (g.id === 'surviva') {
+      router.push('/surviva');
     }
   };
 
