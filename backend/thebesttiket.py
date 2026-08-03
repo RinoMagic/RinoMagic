@@ -32,7 +32,7 @@ import string
 import random
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pytesseract
 from PIL import Image, ImageFilter, ImageOps
@@ -659,6 +659,104 @@ def _detect_non_staryes_hint(raw_text: str) -> Optional[str]:
         if token in low:
             return token.upper()
     return None
+
+
+# --------------------------------------------------------------------------
+# COLOR-SIGNATURE detector — the definitive anti-cheat gate
+# --------------------------------------------------------------------------
+# Star Yes has a very stable visual identity: dark navy background
+# (#102040), white text, cyan quotes, green winnings amount, black "GIOCA"
+# button. No other Italian bookmaker uses this palette. This lets us
+# reject foreign slips *deterministically* — no LLM cost, no OCR misreads.
+def _staryes_color_signature(image_bytes: bytes) -> Dict[str, float]:
+    """Analyse the pixel palette of a bet-slip screenshot and return the
+    ratio of pixels matching each staryes signature colour range.
+
+    Metrics returned (all in %):
+      • ``navy_core_pct``   — pixels close to the primary staryes bg #102040
+      • ``navy_dark_pct``   — pixels in the darker card/shadow variants
+      • ``dark_blue_total_pct`` — sum of the two above (background dominance)
+      • ``white_text_pct``  — near-white pixels (team names / odds)
+      • ``cyan_prenota_pct``— cyan pixels (~ #1090D0, quote / Prenota btn)
+      • ``green_win_pct``   — green pixels (winning amount)
+
+    Returns empty dict on decode error.
+    """
+    try:
+        from PIL import Image  # type: ignore
+        from io import BytesIO
+        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+        img.thumbnail((160, 320))  # downsample for speed (~50 k pixels max)
+        px = list(img.getdata())
+    except Exception:
+        return {}
+    n = len(px)
+    if n == 0:
+        return {}
+
+    navy_core = navy_dark = white_text = cyan_prenota = green_win = 0
+    for r, g, b in px:
+        # Primary staryes navy #102040 (with generous tolerance)
+        if 0 <= r <= 40 and 20 <= g <= 55 and 55 <= b <= 90 and b > r + 20:
+            navy_core += 1
+        # Darker card / shadow variants (#101830, #101020)
+        elif 0 <= r <= 40 and 0 <= g <= 45 and 20 <= b <= 60 and b >= g:
+            navy_dark += 1
+        # Near-white text
+        if r >= 220 and g >= 220 and b >= 220:
+            white_text += 1
+        # Staryes green (winnings amount, ~ #10c060)
+        if 5 <= r <= 90 and 130 <= g <= 230 and 60 <= b <= 150 and g > r + 60:
+            green_win += 1
+        # Staryes cyan (~ #1090D0)
+        if 0 <= r <= 60 and 100 <= g <= 180 and 170 <= b <= 240 and b > g + 20:
+            cyan_prenota += 1
+
+    def pct(v: int) -> float:
+        return round(100 * v / n, 2)
+
+    return {
+        "navy_core_pct": pct(navy_core),
+        "navy_dark_pct": pct(navy_dark),
+        "dark_blue_total_pct": pct(navy_core + navy_dark),
+        "white_text_pct": pct(white_text),
+        "cyan_prenota_pct": pct(cyan_prenota),
+        "green_win_pct": pct(green_win),
+    }
+
+
+def _is_staryes_by_color(image_bytes: bytes) -> Tuple[bool, str, Dict[str, float]]:
+    """Deterministic anti-cheat: verify a bet slip is from staryes.it by
+    checking its colour signature. Returns ``(is_staryes, reason, metrics)``.
+
+    Thresholds calibrated on 12 real staryes fixtures (see
+    tests/fixtures/staryes_*) and validated against synthetic samples of
+    Goldbet / Sisal / Snai / Bet365 / PlanetWin.
+
+      • dark blue background must dominate → dark_blue_total_pct ≥ 25%
+      • staryes signature navy must be present → navy_core_pct ≥ 8%
+      • some white text must be visible → white_text_pct ≥ 2%
+    """
+    sig = _staryes_color_signature(image_bytes)
+    if not sig:
+        return False, "immagine non leggibile", {}
+    if sig["dark_blue_total_pct"] < 25:
+        return False, (
+            "sfondo non compatibile con Star Yes "
+            f"(blu scuro rilevato: {sig['dark_blue_total_pct']:.0f}%, atteso ≥ 25%)"
+        ), sig
+    if sig["navy_core_pct"] < 8:
+        return False, (
+            "tonalità di blu non corrispondente al blu Star Yes "
+            f"(rilevato: {sig['navy_core_pct']:.0f}%, atteso ≥ 8%)"
+        ), sig
+    if sig["white_text_pct"] < 2:
+        return False, (
+            "testo bianco insufficiente "
+            f"(rilevato: {sig['white_text_pct']:.0f}%, atteso ≥ 2%)"
+        ), sig
+    return True, "ok", sig
+
 
 
 async def ocr_screenshot(image_bytes: bytes, use_vision: bool = True) -> Dict[str, Any]:
@@ -1368,9 +1466,30 @@ def build_router(
         result = await ocr_screenshot(raw)
         parsed = result["events"]
 
-        # (Bookmaker gate removed on user request — accept slips from any
-        # bookmaker. The user validates the picks manually in the confirm
-        # step, so a bookie-mismatch check would just add friction.)
+        # ---- ANTI-CHEAT (color-signature) ------------------------------
+        # Only Star Yes bet slips are accepted. Detection is done purely
+        # on the pixel palette (dark navy #102040 dominance + specific
+        # cyan / green accents) so it's deterministic and immune to OCR
+        # misreads. See _is_staryes_by_color for thresholds.
+        is_sy, sy_reason, sy_metrics = _is_staryes_by_color(raw)
+        if not is_sy:
+            logger.warning(
+                "Rejected non-staryes slip by COLOR (room=%s, actor=%s, "
+                "reason=%s, metrics=%s)",
+                room_id,
+                user.get("username") or user.get("email"),
+                sy_reason,
+                sy_metrics,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Schedina rifiutata: non riconosciuta come Star Yes "
+                    f"({sy_reason}). TheBestTiket accetta SOLO schedine "
+                    "dal sito ufficiale staryes.it — controlla di aver "
+                    "caricato lo screenshot dell'app/sito Star Yes."
+                ),
+            )
 
         if len(parsed) > room["max_events"]:
             parsed = parsed[: room["max_events"]]
