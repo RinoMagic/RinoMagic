@@ -1368,26 +1368,9 @@ def build_router(
         result = await ocr_screenshot(raw)
         parsed = result["events"]
 
-        # ---- ANTI-CHEAT: reject non-staryes slips -----------------------
-        # TheBestTiket accepts ONLY bet slips from staryes.it. Slips from
-        # other bookmakers can have different odds, cash-out policies and
-        # market variants that break the fairness of the game.
-        detected_bookie = (result.get("bookmaker") or "").strip()
-        if detected_bookie and not _is_staryes_bookmaker(detected_bookie):
-            logger.warning(
-                "Rejected non-staryes slip (room=%s, actor=%s, bookmaker=%s)",
-                room_id,
-                user.get("username") or user.get("email"),
-                detected_bookie,
-            )
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Schedina rifiutata: proviene da «{detected_bookie.upper()}». "
-                    "TheBestTiket accetta SOLO schedine di staryes.it. "
-                    "Carica una schedina dal sito ufficiale staryes.it."
-                ),
-            )
+        # (Bookmaker gate removed on user request — accept slips from any
+        # bookmaker. The user validates the picks manually in the confirm
+        # step, so a bookie-mismatch check would just add friction.)
 
         if len(parsed) > room["max_events"]:
             parsed = parsed[: room["max_events"]]
