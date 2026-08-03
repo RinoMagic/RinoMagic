@@ -57,6 +57,7 @@ export default function SurvivaHome() {
   const [newName, setNewName] = useState('');
   const [newLives, setNewLives] = useState('3');
   const [newSeason, setNewSeason] = useState('2026-27');
+  const [newStartMd, setNewStartMd] = useState('1');
   const [creating, setCreating] = useState(false);
 
   const load = async () => {
@@ -96,19 +97,29 @@ export default function SurvivaHome() {
   const doCreate = async () => {
     const name = newName.trim();
     const lives = parseInt(newLives || '3', 10);
+    const startMd = parseInt(newStartMd || '1', 10);
     if (!name) return alert('Inserisci un nome per il torneo');
     if (isNaN(lives) || lives < 1 || lives > 10) {
       return alert('Le vite iniziali devono essere tra 1 e 10');
+    }
+    if (isNaN(startMd) || startMd < 1 || startMd > 38) {
+      return alert('La giornata di partenza deve essere tra 1 e 38');
     }
     setCreating(true);
     try {
       await api('/sv/tournaments', {
         method: 'POST',
-        body: { name, initial_lives: lives, season: newSeason.trim() || '2026-27' },
+        body: {
+          name,
+          initial_lives: lives,
+          season: newSeason.trim() || '2026-27',
+          start_matchday: startMd,
+        },
       });
       setCreateOpen(false);
       setNewName('');
       setNewLives('3');
+      setNewStartMd('1');
       await load();
     } catch (e: any) {
       alert(e.message);
@@ -297,6 +308,21 @@ export default function SurvivaHome() {
                 onChangeText={setNewSeason}
               />
             </View>
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Giornata di partenza (1-38)</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="1"
+                placeholderTextColor={theme.colors.muted}
+                value={newStartMd}
+                onChangeText={setNewStartMd}
+                keyboardType="number-pad"
+                testID="sv-start-md"
+              />
+              <Text style={styles.fieldHint}>
+                Le giornate precedenti verranno ignorate. Utile per iniziare un torneo a stagione già in corso.
+              </Text>
+            </View>
             <View style={{ flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.sm }}>
               <Pressable
                 style={[styles.cta, { backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border, flex: 1 }]}
@@ -401,5 +427,9 @@ const styles = StyleSheet.create({
   fieldLabel: {
     color: COLOR, fontSize: 12, fontWeight: '700',
     letterSpacing: 0.4, textTransform: 'uppercase', marginLeft: 2,
+  },
+  fieldHint: {
+    color: theme.colors.muted, fontSize: 11, marginTop: 2,
+    fontStyle: 'italic', lineHeight: 15,
   },
 });

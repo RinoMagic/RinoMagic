@@ -19,10 +19,11 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#EF4444';
 
-type Fixture = { home_team: string; away_team: string; kickoff_iso?: string | null };
+type Fixture = { home_team: string; away_team: string; kickoff_iso?: string | null; postponed_before?: boolean };
 type Matchday = {
   id: string; matchday: number; status: string;
   kickoff_first: string | null; fixtures: Fixture[];
@@ -120,6 +121,7 @@ export default function SurvivaTournament() {
   const submitPick = async (fx: Fixture, sign: '1' | 'X' | '2') => {
     if (!md || !t) return;
     if (md.locked) return;
+    if (fx.postponed_before) return;
     if (blockedByPick(sign, fx)) return;
     const key = `${fx.home_team}|${fx.away_team}|${sign}`;
     setSubmitting(key);
@@ -133,6 +135,38 @@ export default function SurvivaTournament() {
       alert(e.message);
     } finally {
       setSubmitting(null);
+    }
+  };
+
+  const removeFixture = async (fx: Fixture, idx: number) => {
+    if (!md || !t?.is_admin) return;
+    const ok = await confirmDialog(
+      'Rinvia partita',
+      `Vuoi rimuovere ${fx.home_team} - ${fx.away_team} da questa giornata? La scelta sarà eliminata per chi l'aveva già selezionata.`,
+      { destructive: true, confirmLabel: 'Rimuovi' },
+    );
+    if (!ok) return;
+    try {
+      await api(`/sv/tournaments/${id}/matchdays/${md.id}/fixtures/${idx}`, {
+        method: 'DELETE',
+      });
+      // Reload
+      await load();
+    } catch (e: any) {
+      alert(e.message || 'Errore');
+    }
+  };
+
+  const togglePostponed = async (fx: Fixture, idx: number, next: boolean) => {
+    if (!md || !t?.is_admin) return;
+    try {
+      await api(`/sv/tournaments/${id}/matchdays/${md.id}/fixtures/${idx}`, {
+        method: 'PATCH',
+        body: { postponed_before: next },
+      });
+      await load();
+    } catch (e: any) {
+      alert(e.message || 'Errore');
     }
   };
 
@@ -191,6 +225,8 @@ export default function SurvivaTournament() {
             livesLeft={livesLeft} canPlay={!!canPlay}
             blockedByPick={blockedByPick} outcomeLabel={outcomeLabel}
             onPick={submitPick} submitting={submitting}
+            onRemoveFixture={removeFixture}
+            onTogglePostponed={togglePostponed}
           />
         )}
         {tab === 'leaderboard' && <LeaderboardTab rows={lb} />}
@@ -208,6 +244,7 @@ export default function SurvivaTournament() {
 function PlayTab({
   t, md, myPick, blocked, livesLeft, canPlay,
   blockedByPick, outcomeLabel, onPick, submitting,
+  onRemoveFixture, onTogglePostponed,
 }: {
   t: Tournament; md: Matchday | null; myPick: MyPick | null;
   blocked: BlockedSign[]; livesLeft: number; canPlay: boolean;
@@ -215,11 +252,13 @@ function PlayTab({
   outcomeLabel: (o: 'W' | 'D' | 'L') => string;
   onPick: (fx: Fixture, s: '1' | 'X' | '2') => void;
   submitting: string | null;
+  onRemoveFixture: (fx: Fixture, idx: number) => void;
+  onTogglePostponed: (fx: Fixture, idx: number, next: boolean) => void;
 }) {
   if (!md) {
     return <Text style={styles.muted}>Nessuna giornata in corso.</Text>;
   }
-  if (!t.joined) {
+  if (!t.joined && !t.is_admin) {
     return (
       <View style={styles.notice}>
         <Ionicons name="lock-closed" size={22} color={theme.colors.muted} />
@@ -229,7 +268,7 @@ function PlayTab({
       </View>
     );
   }
-  if (livesLeft <= 0) {
+  if (t.joined && livesLeft <= 0) {
     return (
       <View style={[styles.notice, { borderColor: theme.colors.error + '55' }]}>
         <Ionicons name="skull" size={24} color={theme.colors.error} />
@@ -246,9 +285,20 @@ function PlayTab({
         <Text style={styles.noticeText}>
           {md.locked
             ? 'Giornata bloccata: le partite sono iniziate.'
-            : `Scegli UNA partita e il segno 1/X/2. ${myPick ? 'Puoi cambiare il tuo pronostico prima del calcio d\u2019inizio.' : ''}`}
+            : t.is_admin && !t.joined
+              ? 'Vista admin: puoi gestire le partite di questa giornata (rinvii).'
+              : `Scegli UNA partita e il segno 1/X/2. ${myPick ? 'Puoi cambiare il tuo pronostico prima del calcio d\u2019inizio.' : ''}`}
         </Text>
       </View>
+
+      {t.is_admin && !md.locked && (
+        <View style={styles.adminHint}>
+          <Ionicons name="construct" size={14} color={COLOR} />
+          <Text style={styles.adminHintText}>
+            Modalità admin: tocca il cestino per rimuovere una partita rinviata.
+          </Text>
+        </View>
+      )}
 
       {blocked.length > 0 && (
         <View style={styles.blockedList}>
@@ -271,57 +321,92 @@ function PlayTab({
 
       {md.fixtures.map((fx, i) => {
         const isSelected = myPick && myPick.home_team === fx.home_team && myPick.away_team === fx.away_team;
+        const postponed = !!fx.postponed_before;
         return (
           <View
             key={`${fx.home_team}-${fx.away_team}-${i}`}
             style={[
               styles.fxCard,
               isSelected && { borderColor: COLOR, borderWidth: 2 },
+              postponed && styles.fxCardPostponed,
             ]}
           >
             <View style={styles.fxTeams}>
-              <Text style={styles.fxTeam}>{fx.home_team}</Text>
+              <Text style={[styles.fxTeam, postponed && { color: theme.colors.muted, textDecorationLine: 'line-through' }]}>
+                {fx.home_team}
+              </Text>
               <Text style={styles.fxVs}>vs</Text>
-              <Text style={styles.fxTeam}>{fx.away_team}</Text>
+              <Text style={[styles.fxTeam, postponed && { color: theme.colors.muted, textDecorationLine: 'line-through' }]}>
+                {fx.away_team}
+              </Text>
+              {postponed && (
+                <View style={styles.postponedBadge}>
+                  <Text style={styles.postponedBadgeText}>Rinviata</Text>
+                </View>
+              )}
+              {t.is_admin && !md.locked && (
+                <Pressable
+                  onPress={() => onRemoveFixture(fx, i)}
+                  hitSlop={8}
+                  style={styles.trashBtn}
+                  testID={`sv-remove-fx-${i}`}
+                >
+                  <Ionicons name="trash" size={16} color={theme.colors.error} />
+                </Pressable>
+              )}
             </View>
-            <View style={styles.signRow}>
-              {(['1', 'X', '2'] as const).map((sign) => {
-                const blockedBy = blockedByPick(sign, fx);
-                const selected = myPick && myPick.home_team === fx.home_team
-                  && myPick.away_team === fx.away_team && myPick.pick === sign;
-                const disabled = !canPlay || !!blockedBy;
-                const key = `${fx.home_team}|${fx.away_team}|${sign}`;
-                const isSubmitting = submitting === key;
-                return (
-                  <Pressable
-                    key={sign}
-                    disabled={disabled || isSubmitting}
-                    onPress={() => onPick(fx, sign)}
-                    style={[
-                      styles.signBtn,
-                      selected && { backgroundColor: COLOR, borderColor: COLOR },
-                      !selected && blockedBy && styles.signBtnBlocked,
-                      !selected && !blockedBy && disabled && { opacity: 0.4 },
-                    ]}
-                    testID={`sv-pick-${fx.home_team}-${sign}`}
-                  >
-                    {isSubmitting ? (
-                      <ActivityIndicator color={selected ? '#fff' : COLOR} size="small" />
-                    ) : (
-                      <Text
-                        style={[
-                          styles.signText,
-                          selected && { color: '#fff' },
-                          !selected && blockedBy && { color: theme.colors.muted, textDecorationLine: 'line-through' },
-                        ]}
-                      >
-                        {sign}
-                      </Text>
-                    )}
-                  </Pressable>
-                );
-              })}
-            </View>
+
+            {postponed && t.is_admin && !md.locked && (
+              <Pressable
+                onPress={() => onTogglePostponed(fx, i, false)}
+                style={styles.restoreBtn}
+                testID={`sv-restore-fx-${i}`}
+              >
+                <Ionicons name="refresh" size={14} color={COLOR} />
+                <Text style={styles.restoreBtnText}>Ripristina partita</Text>
+              </Pressable>
+            )}
+
+            {!postponed && (
+              <View style={styles.signRow}>
+                {(['1', 'X', '2'] as const).map((sign) => {
+                  const blockedBy = blockedByPick(sign, fx);
+                  const selected = myPick && myPick.home_team === fx.home_team
+                    && myPick.away_team === fx.away_team && myPick.pick === sign;
+                  const disabled = !canPlay || !!blockedBy;
+                  const key = `${fx.home_team}|${fx.away_team}|${sign}`;
+                  const isSubmitting = submitting === key;
+                  return (
+                    <Pressable
+                      key={sign}
+                      disabled={disabled || isSubmitting}
+                      onPress={() => onPick(fx, sign)}
+                      style={[
+                        styles.signBtn,
+                        selected && { backgroundColor: COLOR, borderColor: COLOR },
+                        !selected && blockedBy && styles.signBtnBlocked,
+                        !selected && !blockedBy && disabled && { opacity: 0.4 },
+                      ]}
+                      testID={`sv-pick-${fx.home_team}-${sign}`}
+                    >
+                      {isSubmitting ? (
+                        <ActivityIndicator color={selected ? '#fff' : COLOR} size="small" />
+                      ) : (
+                        <Text
+                          style={[
+                            styles.signText,
+                            selected && { color: '#fff' },
+                            !selected && blockedBy && { color: theme.colors.muted, textDecorationLine: 'line-through' },
+                          ]}
+                        >
+                          {sign}
+                        </Text>
+                      )}
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
           </View>
         );
       })}
@@ -480,6 +565,42 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
     padding: theme.spacing.md, gap: theme.spacing.sm,
   },
+  fxCardPostponed: {
+    opacity: 0.65,
+    borderStyle: 'dashed',
+  },
+  postponedBadge: {
+    backgroundColor: theme.colors.warning + '25',
+    borderColor: theme.colors.warning + '55',
+    borderWidth: 1,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 8, paddingVertical: 2,
+  },
+  postponedBadgeText: {
+    color: theme.colors.warning, fontSize: 11, fontWeight: '800',
+    textTransform: 'uppercase', letterSpacing: 0.4,
+  },
+  trashBtn: {
+    padding: 6, borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.error + '15',
+  },
+  restoreBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: theme.radius.pill,
+    backgroundColor: COLOR + '18',
+    borderWidth: 1, borderColor: COLOR + '55',
+  },
+  restoreBtnText: { color: COLOR, fontSize: 12, fontWeight: '700' },
+  adminHint: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: theme.spacing.sm,
+    backgroundColor: COLOR + '12',
+    borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: COLOR + '33',
+  },
+  adminHintText: { color: COLOR, fontSize: 11, fontWeight: '600', flex: 1 },
   fxTeams: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   fxTeam: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15, flex: 1 },
   fxVs: { color: theme.colors.muted, fontSize: 11 },

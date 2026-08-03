@@ -21,6 +21,7 @@ Cross-game features (also consumed by ScoreAndLive):
 """
 from __future__ import annotations
 
+import re
 import uuid
 import string
 import random
@@ -94,6 +95,10 @@ class TournamentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=60)
     season: str = Field(default="2026-27", max_length=10)
     initial_lives: int = Field(default=DEFAULT_LIVES, ge=1, le=10)
+    # Matchday from which the tournament starts. All previous matchdays
+    # are ignored (useful when a season is already in progress or when a
+    # new Round starts after a previous tournament has ended).
+    start_matchday: int = Field(default=1, ge=1, le=38)
 
 
 class JoinIn(BaseModel):
@@ -120,6 +125,17 @@ class MatchdaySettle(BaseModel):
     admin re-settles the matchday with the updated results.
     """
     results: List[dict] = Field(default_factory=list)
+
+
+class FixturePatch(BaseModel):
+    """Body for editing a single fixture inside an existing matchday.
+
+    Used by admins to handle scheduled postponements (``postponed_before=True``)
+    or minor calendar fixes (rename teams).
+    """
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
+    postponed_before: Optional[bool] = None
 
 
 # =========================================================================
@@ -192,23 +208,43 @@ def build_router(
         )
         return [f async for f in cursor]
 
-    async def _auto_populate_matchdays(tid: str, season: str) -> int:
+    async def _auto_populate_matchdays(
+        tid: str, season: str, start_matchday: int = 1,
+    ) -> int:
         """Create ``sv_matchdays`` docs for every matchday available in the
         season calendar. Idempotent — existing matchdays are skipped.
+
+        ``start_matchday`` limits creation to matchdays >= ``start_matchday``,
+        which is essential for tournament rollover (Round 2 starts right after
+        the matchday that closed Round 1).
+
         Returns the number of matchdays created.
         """
         # Distinct matchdays available for this season
         mds = await db.sal_calendar.distinct("matchday", {"season": season})
         created = 0
         for md in sorted(int(x) for x in mds):
+            if md < int(start_matchday):
+                continue
             existing = await db.sv_matchdays.find_one(
                 {"tournament_id": tid, "matchday": md}, {"id": 1, "_id": 0},
             )
             if existing:
                 continue
             fixtures = await _fixtures_for_matchday(season, md)
-            first_kick = None
+            # Add per-fixture postponement flag (``postponed_before``) so
+            # admins can hide/remove specific matches (e.g. scheduled
+            # postponements) without breaking picks referencing the fixture.
+            fixtures_norm: List[dict] = []
             for f in fixtures:
+                fixtures_norm.append({
+                    "home_team": f.get("home_team"),
+                    "away_team": f.get("away_team"),
+                    "kickoff_iso": f.get("kickoff_iso"),
+                    "postponed_before": False,
+                })
+            first_kick = None
+            for f in fixtures_norm:
                 k = f.get("kickoff_iso")
                 if k and (first_kick is None or k < first_kick):
                     first_kick = k
@@ -219,7 +255,7 @@ def build_router(
                 "season": season,
                 "status": "open",  # open → locked (after first kickoff) → settled
                 "kickoff_first": first_kick,
-                "fixtures": fixtures,
+                "fixtures": fixtures_norm,
                 "created_at": _now(),
                 "settled_at": None,
             })
@@ -249,6 +285,7 @@ def build_router(
             "status": t.get("status", "open"),
             "admin_user_id": t.get("admin_user_id"),
             "initial_lives": t.get("initial_lives", DEFAULT_LIVES),
+            "start_matchday": int(t.get("start_matchday") or 1),
             "current_matchday": t.get("current_matchday", 1),
             "invite_code": t.get("invite_code"),
             "created_at": t.get("created_at"),
@@ -257,38 +294,52 @@ def build_router(
             "players_alive": alive,
             "is_admin": is_admin,
             "joined": joined,
+            "previous_tournament_id": t.get("previous_tournament_id"),
+            "next_tournament_id": t.get("next_tournament_id"),
         }
 
     # ------------------------------------------------------------------
     # Tournaments — CRUD + join
     # ------------------------------------------------------------------
 
-    @router.post("/tournaments")
-    async def create_tournament(
-        data: TournamentCreate, user: dict = Depends(require_admin),
-    ):
-        # Generate unique invite code
-        for _ in range(20):
+    async def _gen_unique_code() -> str:
+        for _ in range(50):
             code = _gen_code()
             if not await db.sv_tournaments.find_one({"invite_code": code}) \
                     and not await db.sv_invites.find_one({"code": code}):
-                break
-        else:
-            raise HTTPException(status_code=500, detail="Impossibile generare un codice univoco")
+                return code
+        raise HTTPException(status_code=500, detail="Impossibile generare un codice univoco")
 
+    async def _spawn_tournament(
+        *,
+        admin_user_id: str,
+        name: str,
+        season: str,
+        initial_lives: int,
+        start_matchday: int,
+        previous_tournament_id: Optional[str] = None,
+    ) -> dict:
+        """Create a fresh tournament doc + unique invite + auto-populate the
+        matchdays from ``start_matchday`` onwards. Shared between the manual
+        ``POST /tournaments`` and the auto-rollover triggered on settlement.
+        """
+        code = await _gen_unique_code()
         tid = str(uuid.uuid4())
         now = _now()
         doc = {
             "id": tid,
-            "name": data.name,
-            "season": data.season,
+            "name": name,
+            "season": season,
             "status": "open",
-            "admin_user_id": user["id"],
-            "initial_lives": data.initial_lives,
-            "current_matchday": 1,
+            "admin_user_id": admin_user_id,
+            "initial_lives": initial_lives,
+            "start_matchday": int(start_matchday),
+            "current_matchday": int(start_matchday),
             "invite_code": code,
             "created_at": now,
             "finished_at": None,
+            "previous_tournament_id": previous_tournament_id,
+            "next_tournament_id": None,
         }
         await db.sv_tournaments.insert_one(doc)
         # Initial single-use invite
@@ -299,22 +350,38 @@ def build_router(
             "used_by_user_id": None,
             "used_at": None,
             "created_at": now,
-            "created_by": user["id"],
+            "created_by": admin_user_id,
             "revoked_at": None,
         })
+        # Auto-populate matchdays from calendar (>= start_matchday)
+        created = await _auto_populate_matchdays(tid, season, start_matchday)
+        logger.info(
+            "Surviva tournament %s created — %d matchdays populated (start=%s)",
+            tid, created, start_matchday,
+        )
+        return doc
+
+    @router.post("/tournaments")
+    async def create_tournament(
+        data: TournamentCreate, user: dict = Depends(require_admin),
+    ):
+        doc = await _spawn_tournament(
+            admin_user_id=user["id"],
+            name=data.name,
+            season=data.season,
+            initial_lives=data.initial_lives,
+            start_matchday=data.start_matchday,
+        )
         # Auto-join the creating admin as participant
         await db.sv_participants.insert_one({
-            "tournament_id": tid,
+            "tournament_id": doc["id"],
             "user_id": user["id"],
             "nickname": display_name(user),
             "lives_left": data.initial_lives,
             "blocked_signs": [],
             "eliminated_at": None,
-            "joined_at": now,
+            "joined_at": _now(),
         })
-        # Auto-populate matchdays from calendar
-        created = await _auto_populate_matchdays(tid, data.season)
-        logger.info("Surviva tournament %s created — %d matchdays populated", tid, created)
         return await _tournament_dict(doc, user)
 
     @router.get("/tournaments")
@@ -378,9 +445,10 @@ def build_router(
         if existing:
             return await _tournament_dict(t, user)
 
-        # Refuse joining if the tournament is past the first matchday to
-        # prevent late-joiners from having an unfair advantage.
-        if int(t.get("current_matchday") or 1) > 1:
+        # Refuse joining if the tournament has advanced past its first
+        # matchday to prevent late-joiners from having an unfair advantage.
+        start_md = int(t.get("start_matchday") or 1)
+        if int(t.get("current_matchday") or start_md) > start_md:
             raise HTTPException(
                 status_code=400,
                 detail="Torneo già iniziato: iscrizioni chiuse.",
@@ -524,6 +592,11 @@ def build_router(
                 status_code=400,
                 detail=f"Partita non in calendario: {data.home_team} vs {data.away_team}",
             )
+        if fixtures_by_key[key].get("postponed_before"):
+            raise HTTPException(
+                status_code=400,
+                detail="Partita rinviata: scegli un'altra partita di questa giornata.",
+            )
         blocked = _blocked_dict(p)
         blocked_by = _pick_is_blocked(data.pick, data.home_team, data.away_team, blocked)
         if blocked_by:
@@ -657,15 +730,15 @@ def build_router(
             {"matchday": 1, "_id": 0},
             sort=[("matchday", 1)],
         )
-        finished = next_md is None
-        # A tournament also finishes when 0 or 1 players remain alive.
+        # A tournament finishes when there are no more matchdays OR when 0/1
+        # players remain alive.
         alive = await db.sv_participants.count_documents(
             {"tournament_id": tid, "eliminated_at": None},
         )
-        if alive <= 1:
-            finished = True
+        finished = next_md is None or alive <= 1
 
         tour_patch: dict = {}
+        new_tournament_id: Optional[str] = None
         if finished:
             tour_patch["status"] = "finished"
             tour_patch["finished_at"] = _now()
@@ -673,6 +746,42 @@ def build_router(
             tour_patch["current_matchday"] = int(next_md["matchday"])
         if tour_patch:
             await db.sv_tournaments.update_one({"id": tid}, {"$set": tour_patch})
+
+        # ----- Auto-rollover: spawn next Round starting from md+1 -----
+        # Only when the tournament finished BUT the season still has matchdays
+        # to play. New Round inherits initial_lives from the previous one and
+        # gets a fresh unique invite code.
+        if finished:
+            next_start = int(md["matchday"]) + 1
+            if next_start <= 38:
+                remaining = await db.sal_calendar.count_documents({
+                    "season": t.get("season"),
+                    "matchday": {"$gte": next_start},
+                })
+                if remaining > 0:
+                    base = t.get("name") or "Torneo"
+                    m = re.search(r"·\s*Round\s+(\d+)\s*$", base)
+                    if m:
+                        n = int(m.group(1)) + 1
+                        new_name = re.sub(r"·\s*Round\s+\d+\s*$", f"· Round {n}", base)
+                    else:
+                        new_name = f"{base} · Round 2"
+                    try:
+                        new_doc = await _spawn_tournament(
+                            admin_user_id=t["admin_user_id"],
+                            name=new_name,
+                            season=t.get("season") or "2026-27",
+                            initial_lives=int(t.get("initial_lives") or DEFAULT_LIVES),
+                            start_matchday=next_start,
+                            previous_tournament_id=t["id"],
+                        )
+                        new_tournament_id = new_doc["id"]
+                        await db.sv_tournaments.update_one(
+                            {"id": tid},
+                            {"$set": {"next_tournament_id": new_tournament_id}},
+                        )
+                    except Exception:
+                        logger.exception("Failed to spawn Surviva next Round")
 
         return {
             "ok": True,
@@ -682,7 +791,99 @@ def build_router(
             "next_matchday": None if finished else int(next_md["matchday"]),
             "tournament_finished": finished,
             "alive_players": alive,
+            "next_tournament_id": new_tournament_id,
         }
+
+    # ------------------------------------------------------------------
+    # Fixture management inside a matchday (admin only)
+    # ------------------------------------------------------------------
+
+    def _fixture_slot(md: dict, idx: int) -> dict:
+        fixtures = md.get("fixtures", [])
+        if idx < 0 or idx >= len(fixtures):
+            raise HTTPException(status_code=400, detail="Indice partita non valido")
+        return fixtures[idx]
+
+    @router.patch("/tournaments/{tid}/matchdays/{md_id}/fixtures/{idx}")
+    async def update_fixture(
+        tid: str, md_id: str, idx: int, patch: FixturePatch,
+        user: dict = Depends(current_user),
+    ):
+        """Admin edits a single fixture inside an open matchday.
+
+        Use ``postponed_before=True`` to hide a scheduled postponement from
+        the pick UI (players can no longer choose that specific game).
+        Rename teams by passing ``home_team`` / ``away_team``.
+
+        Only allowed while the matchday is still ``open`` (no picks locked).
+        """
+        await _require_tournament_admin(tid, user)
+        md = await db.sv_matchdays.find_one({"id": md_id, "tournament_id": tid}, {"_id": 0})
+        if not md:
+            raise HTTPException(status_code=404, detail="Giornata non trovata")
+        if _md_is_locked(md):
+            raise HTTPException(status_code=400, detail="Giornata già iniziata, non modificabile")
+
+        _ = _fixture_slot(md, idx)  # validates idx
+        set_ops: Dict[str, Any] = {}
+        if patch.home_team is not None and patch.home_team.strip():
+            set_ops[f"fixtures.{idx}.home_team"] = patch.home_team.strip()
+        if patch.away_team is not None and patch.away_team.strip():
+            set_ops[f"fixtures.{idx}.away_team"] = patch.away_team.strip()
+        if patch.postponed_before is not None:
+            set_ops[f"fixtures.{idx}.postponed_before"] = bool(patch.postponed_before)
+        if not set_ops:
+            raise HTTPException(status_code=400, detail="Nessun campo da aggiornare")
+        await db.sv_matchdays.update_one({"id": md_id}, {"$set": set_ops})
+
+        # If the fixture is now postponed OR its teams changed, clear any
+        # pending pick that referenced the old (home,away) tuple. Users
+        # will need to re-pick after the admin's edit.
+        if patch.postponed_before or patch.home_team is not None or patch.away_team is not None:
+            old_fx = _fixture_slot(md, idx)
+            await db.sv_picks.delete_many({
+                "tournament_id": tid,
+                "matchday_id": md_id,
+                "home_team": old_fx["home_team"],
+                "away_team": old_fx["away_team"],
+            })
+
+        updated = await db.sv_matchdays.find_one({"id": md_id}, {"_id": 0})
+        return await _matchday_dict(updated, user["id"])
+
+    @router.delete("/tournaments/{tid}/matchdays/{md_id}/fixtures/{idx}")
+    async def delete_fixture(
+        tid: str, md_id: str, idx: int, user: dict = Depends(current_user),
+    ):
+        """Admin removes a fixture (typical use: scheduled postponement).
+
+        Any pending pick on the removed fixture is discarded so players can
+        choose a different fixture for this matchday.
+        """
+        await _require_tournament_admin(tid, user)
+        md = await db.sv_matchdays.find_one({"id": md_id, "tournament_id": tid}, {"_id": 0})
+        if not md:
+            raise HTTPException(status_code=404, detail="Giornata non trovata")
+        if _md_is_locked(md):
+            raise HTTPException(status_code=400, detail="Giornata già iniziata, non modificabile")
+
+        old_fx = _fixture_slot(md, idx)
+        new_fixtures = [
+            f for i, f in enumerate(md.get("fixtures", [])) if i != idx
+        ]
+        await db.sv_matchdays.update_one(
+            {"id": md_id}, {"$set": {"fixtures": new_fixtures}},
+        )
+        # Drop any pick that pointed to the removed fixture.
+        await db.sv_picks.delete_many({
+            "tournament_id": tid,
+            "matchday_id": md_id,
+            "home_team": old_fx["home_team"],
+            "away_team": old_fx["away_team"],
+        })
+        updated = await db.sv_matchdays.find_one({"id": md_id}, {"_id": 0})
+        return await _matchday_dict(updated, user["id"])
+
 
     # ------------------------------------------------------------------
     # Leaderboard + Riassunto Giornata
