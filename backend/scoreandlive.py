@@ -713,7 +713,18 @@ def build_router(
             x["nickname"].lower(),
         ))
         matchdays: List[dict] = []
-        async for md in db.sal_matchdays.find({"tournament_id": tournament_id}, {"_id": 0}).sort("matchday_number", 1):
+        # Only show past (locked/settled) matchdays PLUS the current active
+        # one (earliest still-open). This keeps the tournament view focused
+        # on "what to do now" instead of listing all 38 upfront.
+        all_mds = [md async for md in db.sal_matchdays.find(
+            {"tournament_id": tournament_id}, {"_id": 0}
+        ).sort("matchday_number", 1)]
+        first_open_seen = False
+        for md in all_mds:
+            if md["status"] == "open":
+                if first_open_seen:
+                    continue  # skip subsequent open matchdays
+                first_open_seen = True
             matchdays.append({
                 "id": md["id"],
                 "matchday_number": md["matchday_number"],
