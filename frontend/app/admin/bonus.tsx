@@ -354,12 +354,23 @@ function BonusSection({
       </View>
       <Text style={styles.sectionDesc}>{c.desc}</Text>
 
-      {/* No config → creation form */}
-      {!config && (
+      {/* No config → creation form
+          OR config exists as draft (exact_score with big_match=null) → allow completing it */}
+      {(!config || (config.bonus_type === 'exact_score' && !config.big_match && config.status !== 'settled')) && (
         <>
           {type === 'exact_score' ? (
             <>
-              <Text style={styles.fieldLabel}>Scegli il Big Match dal calendario</Text>
+              <Text style={styles.fieldLabel}>
+                {config ? 'Completa il bonus: scegli il Big Match dal calendario' : 'Scegli il Big Match dal calendario'}
+              </Text>
+              {config && (
+                <View style={styles.infoBox}>
+                  <Ionicons name="information-circle" size={16} color={c.primary} />
+                  <Text style={styles.infoText}>
+                    Bonus creato in automatico alla creazione del torneo. Seleziona la Big Match qui sotto per attivarlo.
+                  </Text>
+                </View>
+              )}
               {fixtures.length === 0 ? (
                 <Text style={[styles.hint, { color: theme.colors.error }]}>
                   Nessuna partita disponibile. Carica il calendario da ScoreAndLive.
@@ -405,7 +416,9 @@ function BonusSection({
             testID={`admin-bonus-create-${type}`}
           >
             {busy ? <ActivityIndicator color="#fff" />
-              : <Text style={styles.primaryBtnText}>Crea Bonus Giornata {matchday}</Text>}
+              : <Text style={styles.primaryBtnText}>
+                {config ? 'Salva Big Match' : `Crea Bonus Giornata ${matchday}`}
+              </Text>}
           </Pressable>
         </>
       )}
@@ -437,8 +450,9 @@ function BonusSection({
               </Text>
             </View>
           )}
-          {/* Settle form */}
-          {config.status !== 'settled' && (
+          {/* Settle form — hidden if this is a draft (exact_score without big_match) */}
+          {config.status !== 'settled'
+             && !(config.bonus_type === 'exact_score' && !config.big_match) && (
             <>
               <Text style={[styles.fieldLabel, { marginTop: 4 }]}>Liquida ora:</Text>
               {type === 'exact_score' ? (
