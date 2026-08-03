@@ -1,21 +1,17 @@
 /*
- * /bonus/[game] — Play + admin view for a single Bonus game.
+ * /bonus/[game] — Play + history view for a single Bonus game.
  *
- * Adaptive UI:
- *  - exact_score bonuses (Tiket + Survival): show the Big Match card, form
- *    with two number inputs (home / away goals) and countdown to kickoff.
- *  - first_scorer bonuses (Score + Fanta): show a single free-text input,
- *    countdown to the earliest matchday kickoff.
+ * Per-subscription model: a user with N subscriptions (rooms/tournaments/
+ * leagues) plays the same question N times — one pick per subscription,
+ * each with an independent reward on win.
  *
- * Admin section (visible only to admins):
- *  - For exact_score: dropdown of matchday fixtures to pick the Big Match.
- *  - For first_scorer: no dropdown (question is implicit).
- *  - Settle form: enter final result / first scorer, trigger reward grant.
+ * The Admin config lives in /admin/bonus (Impostazioni → Gestione Bonus),
+ * so this page is now player-focused.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
-  TextInput, RefreshControl, Modal,
+  TextInput, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -25,6 +21,19 @@ import { theme } from '@/src/theme';
 
 type Game = 'tiket' | 'score' | 'fanta' | 'survival';
 type BonusType = 'exact_score' | 'first_scorer';
+
+type Subscription = {
+  id: string;
+  name: string;
+  kind: string;
+  color?: string;
+  my_pick: null | {
+    id: string;
+    pick: any;
+    is_correct: boolean | null;
+    reward_details?: any;
+  };
+};
 
 type Available = {
   game: Game;
@@ -39,25 +48,22 @@ type Available = {
     big_match: { home_team: string; away_team: string; kickoff_iso?: string } | null;
     result: any;
   };
-  my_pick: null | {
-    pick: any;
-    is_correct: boolean | null;
-    reward_details?: any;
-  };
+  subscriptions: Subscription[];
   fixtures: { home_team: string; away_team: string; kickoff_iso?: string | null }[];
 };
 
 type HistoryRow = {
   id: string; matchday: number; game: Game;
+  subscription_id: string; subscription_name?: string;
   pick: any; is_correct: boolean | null;
   reward_details: any; submitted_at: string;
 };
 
-const META: Record<Game, { name: string; color: string; parent: string; reward: string; icon: keyof typeof import('@expo/vector-icons').Ionicons.glyphMap }> = {
-  tiket:    { name: 'Bonus Tiket',    color: '#FFB300', parent: 'TheBestTiket', reward: 'Giocata extra', icon: 'trophy' },
-  score:    { name: 'Bonus Score',    color: '#3B82F6', parent: 'ScoreAndLive', reward: '+1 Vita',       icon: 'pulse' },
-  fanta:    { name: 'Bonus Fanta',    color: '#A855F7', parent: 'FantaGiornata', reward: '+3 Punti',     icon: 'football' },
-  survival: { name: 'Bonus Survival', color: '#EF4444', parent: 'Survival 2.0', reward: '+1 Vita',       icon: 'heart' },
+const META: Record<Game, { name: string; color: string; parent: string; reward: string; icon: keyof typeof import('@expo/vector-icons').Ionicons.glyphMap; subLabel: string }> = {
+  tiket:    { name: 'Bonus Tiket',    color: '#FFB300', parent: 'TheBestTiket',  reward: 'Giocata extra', icon: 'trophy',   subLabel: 'Stanza' },
+  score:    { name: 'Bonus Score',    color: '#3B82F6', parent: 'ScoreAndLive',  reward: '+1 Vita',       icon: 'pulse',    subLabel: 'Torneo' },
+  fanta:    { name: 'Bonus Fanta',    color: '#A855F7', parent: 'FantaGiornata', reward: '+3 Punti',      icon: 'football', subLabel: 'Lega' },
+  survival: { name: 'Bonus Survival', color: '#EF4444', parent: 'Survival 2.0',  reward: '+1 Vita',       icon: 'heart',    subLabel: 'Torneo' },
 };
 
 const SEASON = '2026-27';
@@ -72,12 +78,7 @@ export default function BonusGame() {
   const [data, setData] = useState<Available | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [homeScore, setHomeScore] = useState('');
-  const [awayScore, setAwayScore] = useState('');
-  const [scorer, setScorer] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const [adminOpen, setAdminOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -86,17 +87,10 @@ export default function BonusGame() {
       setMe(s.user);
       const [av, hs] = await Promise.all([
         api<Available>(`/bonus/available?game=${game}&season=${SEASON}`),
-        api<HistoryRow[]>(`/bonus/history?game=${game}&season=${SEASON}&limit=10`).catch(() => []),
+        api<HistoryRow[]>(`/bonus/history?game=${game}&season=${SEASON}&limit=30`).catch(() => []),
       ]);
       setData(av);
       setHistory(hs);
-      // Prefill form with existing pick if any
-      if (av.my_pick && av.bonus_type === 'exact_score') {
-        setHomeScore(String(av.my_pick.pick?.home_score ?? ''));
-        setAwayScore(String(av.my_pick.pick?.away_score ?? ''));
-      } else if (av.my_pick && av.bonus_type === 'first_scorer') {
-        setScorer(av.my_pick.pick?.player_name ?? '');
-      }
     } catch (e: any) {
       alert(e.message);
     } finally {
@@ -105,48 +99,12 @@ export default function BonusGame() {
   }, [game]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const submitExact = async () => {
-    const h = parseInt(homeScore, 10);
-    const a = parseInt(awayScore, 10);
-    if (isNaN(h) || h < 0 || h > 30) return alert('Gol casa non valido (0-30)');
-    if (isNaN(a) || a < 0 || a > 30) return alert('Gol trasferta non valido (0-30)');
-    setSubmitting(true);
-    try {
-      await api('/bonus/picks/exact', {
-        method: 'POST',
-        body: { game, season: SEASON, home_score: h, away_score: a },
-      });
-      await load();
-    } catch (e: any) {
-      alert(e.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const submitScorer = async () => {
-    const name = scorer.trim();
-    if (!name) return alert('Inserisci il nome del giocatore');
-    setSubmitting(true);
-    try {
-      await api('/bonus/picks/scorer', {
-        method: 'POST',
-        body: { game, season: SEASON, player_name: name },
-      });
-      await load();
-    } catch (e: any) {
-      alert(e.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   if (loading || !data) {
     return <View style={styles.center}><ActivityIndicator color={meta.color} /></View>;
   }
 
-  const canSubmit = !!data.config && data.config.status === 'open' && data.eligible;
   const isAdmin = me?.role === 'admin';
+  const canPlay = !!data.config && data.config.status === 'open';
 
   return (
     <View style={styles.wrap}>
@@ -163,7 +121,7 @@ export default function BonusGame() {
             <Text style={styles.sub}>{meta.parent} · Premio: {meta.reward}</Text>
           </View>
           {isAdmin && (
-            <Pressable onPress={() => setAdminOpen(true)} hitSlop={10} testID="bonus-admin-btn">
+            <Pressable onPress={() => router.push('/admin/bonus')} hitSlop={10} testID="bonus-admin-btn">
               <Ionicons name="construct" size={22} color={meta.color} />
             </Pressable>
           )}
@@ -180,16 +138,16 @@ export default function BonusGame() {
           <View style={[styles.notice, { borderColor: theme.colors.error }]}>
             <Ionicons name="lock-closed" size={18} color={theme.colors.error} />
             <Text style={styles.noticeText}>
-              Non sei iscritto a nessun torneo/stanza di {meta.parent}. Iscriviti per giocare al bonus.
+              Non sei iscritto a nessun{game === 'fanta' ? 'a lega' : ' torneo/stanza'} di {meta.parent}. Iscriviti per giocare al bonus.
             </Text>
           </View>
         )}
 
-        {!data.config && (
+        {!data.config && data.eligible && (
           <View style={styles.notice}>
             <Ionicons name="hourglass" size={18} color={theme.colors.muted} />
             <Text style={styles.noticeText}>
-              Nessun bonus attivo per questa giornata. Torna quando l&apos;admin lo avrà configurato.
+              Nessun bonus attivo. L&apos;admin deve configurarlo dalle Impostazioni → Gestione Giochi Bonus.
             </Text>
           </View>
         )}
@@ -197,28 +155,31 @@ export default function BonusGame() {
         {data.config && (
           <>
             <MatchdayCard data={data} color={meta.color} />
-            {data.bonus_type === 'exact_score' ? (
-              <ExactScoreForm
-                canSubmit={canSubmit && !!data.config.big_match}
-                color={meta.color}
-                home={homeScore} away={awayScore}
-                setHome={setHomeScore} setAway={setAwayScore}
-                submitting={submitting}
-                onSubmit={submitExact}
-                existing={data.my_pick}
-                config={data.config}
-              />
-            ) : (
-              <ScorerForm
-                canSubmit={canSubmit}
-                color={meta.color}
-                value={scorer} setValue={setScorer}
-                submitting={submitting}
-                onSubmit={submitScorer}
-                existing={data.my_pick}
-                config={data.config}
-              />
+
+            {data.subscriptions.length > 1 && (
+              <View style={styles.multiHint}>
+                <Ionicons name="ribbon" size={16} color={meta.color} />
+                <Text style={styles.multiHintText}>
+                  Hai {data.subscriptions.length} {meta.subLabel.toLowerCase()}
+                  {data.subscriptions.length === 1 ? '' : (game === 'fanta' ? '' : 'i')}: gioca il bonus per ognuno.
+                </Text>
+              </View>
             )}
+
+            {data.subscriptions.map((sub) => (
+              <SubscriptionCard
+                key={sub.id}
+                game={game}
+                subscription={sub}
+                bonusType={data.bonus_type}
+                color={meta.color}
+                subLabel={meta.subLabel}
+                canPlay={canPlay}
+                configStatus={data.config!.status}
+                season={SEASON}
+                onReload={load}
+              />
+            ))}
           </>
         )}
 
@@ -231,29 +192,178 @@ export default function BonusGame() {
           </View>
         )}
       </ScrollView>
+    </View>
+  );
+}
 
-      {isAdmin && data.config && (
-        <AdminModal
-          visible={adminOpen}
-          onClose={() => { setAdminOpen(false); load(); }}
-          game={game}
-          meta={meta}
-          data={data}
+// -------------------------------------------------------------------------
+// Subscription pick card
+// -------------------------------------------------------------------------
+function SubscriptionCard({
+  game, subscription, bonusType, color, subLabel, canPlay, configStatus, season, onReload,
+}: {
+  game: Game;
+  subscription: Subscription;
+  bonusType: BonusType;
+  color: string;
+  subLabel: string;
+  canPlay: boolean;
+  configStatus: 'open' | 'locked' | 'settled';
+  season: string;
+  onReload: () => Promise<void>;
+}) {
+  const [home, setHome] = useState(
+    bonusType === 'exact_score' && subscription.my_pick?.pick?.home_score !== undefined
+      ? String(subscription.my_pick.pick.home_score) : ''
+  );
+  const [away, setAway] = useState(
+    bonusType === 'exact_score' && subscription.my_pick?.pick?.away_score !== undefined
+      ? String(subscription.my_pick.pick.away_score) : ''
+  );
+  const [scorer, setScorer] = useState(
+    bonusType === 'first_scorer' ? (subscription.my_pick?.pick?.player_name ?? '') : ''
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  const submitExact = async () => {
+    const h = parseInt(home, 10);
+    const a = parseInt(away, 10);
+    if (isNaN(h) || h < 0 || h > 30) return alert('Gol casa non valido (0-30)');
+    if (isNaN(a) || a < 0 || a > 30) return alert('Gol trasferta non valido (0-30)');
+    setSubmitting(true);
+    try {
+      await api('/bonus/picks/exact', {
+        method: 'POST',
+        body: {
+          game, season, subscription_id: subscription.id,
+          home_score: h, away_score: a,
+        },
+      });
+      await onReload();
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitScorer = async () => {
+    const name = scorer.trim();
+    if (!name) return alert('Inserisci il nome del giocatore');
+    setSubmitting(true);
+    try {
+      await api('/bonus/picks/scorer', {
+        method: 'POST',
+        body: {
+          game, season, subscription_id: subscription.id,
+          player_name: name,
+        },
+      });
+      await onReload();
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const hasPick = !!subscription.my_pick;
+  const settled = configStatus === 'settled';
+  const isCorrect = subscription.my_pick?.is_correct;
+
+  return (
+    <View style={[styles.subCard, { borderColor: color }]}>
+      <View style={styles.subHeader}>
+        <View style={[styles.subDot, { backgroundColor: color }]} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.subTag}>{subLabel.toUpperCase()}</Text>
+          <Text style={styles.subName}>{subscription.name}</Text>
+        </View>
+        {hasPick && !settled && (
+          <View style={[styles.pickPill, { backgroundColor: color + '22', borderColor: color }]}>
+            <Ionicons name="checkmark" size={12} color={color} />
+            <Text style={[styles.pickPillText, { color }]}>Inviato</Text>
+          </View>
+        )}
+      </View>
+
+      {bonusType === 'exact_score' ? (
+        <View style={styles.scoreRow}>
+          <View style={styles.scoreCell}>
+            <Text style={styles.scoreLabel}>CASA</Text>
+            <TextInput
+              style={[styles.scoreInput, { borderColor: color }]}
+              value={home} onChangeText={setHome}
+              keyboardType="number-pad" maxLength={2}
+              editable={canPlay}
+              testID={`bonus-home-${subscription.id}`}
+            />
+          </View>
+          <Text style={[styles.scoreDash, { color }]}>-</Text>
+          <View style={styles.scoreCell}>
+            <Text style={styles.scoreLabel}>TRASFERTA</Text>
+            <TextInput
+              style={[styles.scoreInput, { borderColor: color }]}
+              value={away} onChangeText={setAway}
+              keyboardType="number-pad" maxLength={2}
+              editable={canPlay}
+              testID={`bonus-away-${subscription.id}`}
+            />
+          </View>
+        </View>
+      ) : (
+        <TextInput
+          style={[styles.scorerInput, { borderColor: color }]}
+          value={scorer} onChangeText={setScorer}
+          placeholder="Es. Lautaro Martinez"
+          placeholderTextColor={theme.colors.muted}
+          editable={canPlay}
+          autoCapitalize="words"
+          testID={`bonus-scorer-${subscription.id}`}
         />
       )}
-      {isAdmin && !data.config && (
-        <AdminModal
-          visible={adminOpen}
-          onClose={() => { setAdminOpen(false); load(); }}
-          game={game}
-          meta={meta}
-          data={data}
-        />
+
+      <Pressable
+        disabled={!canPlay || submitting}
+        onPress={bonusType === 'exact_score' ? submitExact : submitScorer}
+        style={[
+          styles.submitBtn,
+          { backgroundColor: color },
+          (!canPlay || submitting) && { opacity: 0.4 },
+        ]}
+        testID={`bonus-submit-${subscription.id}`}
+      >
+        {submitting ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.submitBtnText}>
+            {hasPick ? 'Aggiorna pronostico' : 'Invia pronostico'}
+          </Text>
+        )}
+      </Pressable>
+
+      {settled && isCorrect !== null && (
+        <View style={[styles.resultBadge, {
+          backgroundColor: isCorrect ? theme.colors.success + '22' : theme.colors.error + '22',
+          borderColor: isCorrect ? theme.colors.success : theme.colors.error,
+        }]}>
+          <Ionicons name={isCorrect ? 'trophy' : 'close-circle'} size={16}
+            color={isCorrect ? theme.colors.success : theme.colors.error} />
+          <Text style={{
+            color: isCorrect ? theme.colors.success : theme.colors.error,
+            fontWeight: '800', fontSize: 13,
+          }}>
+            {isCorrect ? '🏆 Hai vinto il bonus!' : 'Non hai indovinato'}
+          </Text>
+        </View>
       )}
     </View>
   );
 }
 
+// -------------------------------------------------------------------------
+// Matchday card (shared big match / question header)
+// -------------------------------------------------------------------------
 function MatchdayCard({ data, color }: { data: Available; color: string }) {
   const c = data.config!;
   return (
@@ -293,10 +403,10 @@ function MatchdayCard({ data, color }: { data: Available; color: string }) {
 
 function Countdown({ iso, color, settled }: { iso: string | null; color: string; settled: boolean }) {
   const [now, setNow] = useState(Date.now());
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     const t = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(t);
-  }, []);
+  }, []));
   if (settled) {
     return (
       <View style={styles.cdLocked}>
@@ -328,134 +438,6 @@ function Countdown({ iso, color, settled }: { iso: string | null; color: string;
   );
 }
 
-function ExactScoreForm({
-  canSubmit, color, home, away, setHome, setAway, submitting, onSubmit, existing, config,
-}: {
-  canSubmit: boolean; color: string;
-  home: string; away: string;
-  setHome: (v: string) => void; setAway: (v: string) => void;
-  submitting: boolean; onSubmit: () => void;
-  existing: Available['my_pick']; config: NonNullable<Available['config']>;
-}) {
-  return (
-    <View style={styles.formBox}>
-      <Text style={styles.formTitle}>Il tuo pronostico</Text>
-      <View style={styles.scoreRow}>
-        <View style={styles.scoreCell}>
-          <Text style={styles.scoreLabel}>CASA</Text>
-          <TextInput
-            style={[styles.scoreInput, { borderColor: color }]}
-            value={home} onChangeText={setHome}
-            keyboardType="number-pad" maxLength={2}
-            editable={canSubmit}
-            testID="bonus-home-score"
-          />
-        </View>
-        <Text style={[styles.scoreDash, { color }]}>-</Text>
-        <View style={styles.scoreCell}>
-          <Text style={styles.scoreLabel}>TRASFERTA</Text>
-          <TextInput
-            style={[styles.scoreInput, { borderColor: color }]}
-            value={away} onChangeText={setAway}
-            keyboardType="number-pad" maxLength={2}
-            editable={canSubmit}
-            testID="bonus-away-score"
-          />
-        </View>
-      </View>
-      <SubmitBtn
-        color={color} canSubmit={canSubmit}
-        submitting={submitting}
-        onSubmit={onSubmit}
-        hasExisting={!!existing}
-      />
-      {existing && config.status === 'settled' && (
-        <ResultBadge is_correct={existing.is_correct} color={color} />
-      )}
-    </View>
-  );
-}
-
-function ScorerForm({
-  canSubmit, color, value, setValue, submitting, onSubmit, existing, config,
-}: {
-  canSubmit: boolean; color: string;
-  value: string; setValue: (v: string) => void;
-  submitting: boolean; onSubmit: () => void;
-  existing: Available['my_pick']; config: NonNullable<Available['config']>;
-}) {
-  return (
-    <View style={styles.formBox}>
-      <Text style={styles.formTitle}>Il tuo pronostico</Text>
-      <TextInput
-        style={[styles.scorerInput, { borderColor: color }]}
-        value={value} onChangeText={setValue}
-        placeholder="Es. Lautaro Martinez"
-        placeholderTextColor={theme.colors.muted}
-        editable={canSubmit}
-        autoCapitalize="words"
-        testID="bonus-scorer-input"
-      />
-      <SubmitBtn
-        color={color} canSubmit={canSubmit}
-        submitting={submitting}
-        onSubmit={onSubmit}
-        hasExisting={!!existing}
-      />
-      {existing && config.status === 'settled' && (
-        <ResultBadge is_correct={existing.is_correct} color={color} />
-      )}
-    </View>
-  );
-}
-
-function SubmitBtn({
-  color, canSubmit, submitting, onSubmit, hasExisting,
-}: {
-  color: string; canSubmit: boolean; submitting: boolean;
-  onSubmit: () => void; hasExisting: boolean;
-}) {
-  return (
-    <Pressable
-      disabled={!canSubmit || submitting}
-      onPress={onSubmit}
-      style={[
-        styles.submitBtn,
-        { backgroundColor: color },
-        (!canSubmit || submitting) && { opacity: 0.4 },
-      ]}
-      testID="bonus-submit"
-    >
-      {submitting ? (
-        <ActivityIndicator color="#fff" />
-      ) : (
-        <Text style={styles.submitBtnText}>
-          {hasExisting ? 'Aggiorna pronostico' : 'Invia pronostico'}
-        </Text>
-      )}
-    </Pressable>
-  );
-}
-
-function ResultBadge({ is_correct, color }: { is_correct: boolean | null; color: string }) {
-  if (is_correct === null) return null;
-  return (
-    <View style={[styles.resultBadge, {
-      backgroundColor: is_correct ? theme.colors.success + '22' : theme.colors.error + '22',
-      borderColor: is_correct ? theme.colors.success : theme.colors.error,
-    }]}>
-      <Ionicons name={is_correct ? 'trophy' : 'close-circle'} size={16}
-        color={is_correct ? theme.colors.success : theme.colors.error} />
-      <Text style={{
-        color: is_correct ? theme.colors.success : theme.colors.error,
-        fontWeight: '800', fontSize: 13,
-      }}>
-        {is_correct ? '🏆 Hai vinto il bonus!' : 'Non hai indovinato'}
-      </Text>
-    </View>
-  );
-}
-
 function HistoryRowView({ h, color, type }: { h: HistoryRow; color: string; type: BonusType }) {
   const pickLabel = type === 'exact_score'
     ? `${h.pick?.home_score ?? '-'} - ${h.pick?.away_score ?? '-'}`
@@ -463,7 +445,10 @@ function HistoryRowView({ h, color, type }: { h: HistoryRow; color: string; type
   return (
     <View style={styles.histRow}>
       <Text style={styles.histMd}>G{h.matchday}</Text>
-      <Text style={styles.histPick}>{pickLabel}</Text>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.histPick}>{pickLabel}</Text>
+        {h.subscription_name && <Text style={styles.histSub}>{h.subscription_name}</Text>}
+      </View>
       {h.is_correct === true && (
         <View style={[styles.histBadge, { backgroundColor: color + '33' }]}>
           <Ionicons name="trophy" size={12} color={color} />
@@ -476,191 +461,6 @@ function HistoryRowView({ h, color, type }: { h: HistoryRow; color: string; type
         </View>
       )}
     </View>
-  );
-}
-
-// -------------------------------------------------------------------------
-// Admin modal (create/settle bonus)
-// -------------------------------------------------------------------------
-
-function AdminModal({
-  visible, onClose, game, meta, data,
-}: {
-  visible: boolean; onClose: () => void;
-  game: Game;
-  meta: { color: string; name: string };
-  data: Available;
-}) {
-  const isExact = data.bonus_type === 'exact_score';
-  const [selectedFx, setSelectedFx] = useState<string>('');
-  const [matchday, setMatchday] = useState<string>(String(data.config?.matchday || '1'));
-  const [homeR, setHomeR] = useState('');
-  const [awayR, setAwayR] = useState('');
-  const [scorerR, setScorerR] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (visible) {
-      setMatchday(String(data.config?.matchday || '1'));
-      setSelectedFx(data.config?.big_match
-        ? `${data.config.big_match.home_team}|${data.config.big_match.away_team}`
-        : '');
-      setHomeR('');
-      setAwayR('');
-      setScorerR('');
-    }
-  }, [visible, data]);
-
-  const createConfig = async () => {
-    setBusy(true);
-    try {
-      const md = parseInt(matchday, 10);
-      if (isNaN(md) || md < 1 || md > 38) return alert('Giornata non valida');
-      const body: any = { season: SEASON, matchday: md, bonus_type: data.bonus_type };
-      if (isExact) {
-        if (!selectedFx) return alert('Scegli il Big Match dal calendario');
-        const [home_team, away_team] = selectedFx.split('|');
-        body.big_match = { home_team, away_team };
-      }
-      await api('/bonus/configs', { method: 'POST', body });
-      onClose();
-    } catch (e: any) {
-      alert(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const settle = async () => {
-    if (!data.config) return;
-    setBusy(true);
-    try {
-      if (isExact) {
-        const h = parseInt(homeR, 10);
-        const a = parseInt(awayR, 10);
-        if (isNaN(h) || isNaN(a)) return alert('Inserisci il risultato finale');
-        const res = await api<any>(`/bonus/configs/${data.config.id}/settle-exact`, {
-          method: 'POST', body: { home_score: h, away_score: a },
-        });
-        alert(`Bonus liquidato ✓\nVincitori: ${res.winners} su ${res.total_picks} pronostici`);
-      } else {
-        const name = scorerR.trim();
-        if (!name) return alert('Inserisci il nome del primo marcatore');
-        const res = await api<any>(`/bonus/configs/${data.config.id}/settle-scorer`, {
-          method: 'POST', body: { player_name: name },
-        });
-        alert(`Bonus liquidato ✓\nVincitori: ${res.winners} su ${res.total_picks} pronostici`);
-      }
-      onClose();
-    } catch (e: any) {
-      alert(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalCard}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>⚙️ Admin — {meta.name}</Text>
-            <Pressable onPress={onClose} hitSlop={10}>
-              <Ionicons name="close" size={22} color={theme.colors.onSurface} />
-            </Pressable>
-          </View>
-          <ScrollView contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.md }}>
-            {!data.config && (
-              <>
-                <Text style={styles.modalSection}>1) Crea bonus per una giornata</Text>
-                <Text style={styles.modalLabel}>Giornata (1-38)</Text>
-                <TextInput
-                  style={styles.modalInput}
-                  value={matchday} onChangeText={setMatchday}
-                  keyboardType="number-pad"
-                />
-                {isExact && (
-                  <>
-                    <Text style={styles.modalLabel}>Big Match (dal calendario)</Text>
-                    <ScrollView style={styles.fxList} nestedScrollEnabled>
-                      {data.fixtures.map((fx) => {
-                        const key = `${fx.home_team}|${fx.away_team}`;
-                        const active = selectedFx === key;
-                        return (
-                          <Pressable
-                            key={key} onPress={() => setSelectedFx(key)}
-                            style={[
-                              styles.fxItem,
-                              active && { backgroundColor: meta.color + '33', borderColor: meta.color },
-                            ]}
-                          >
-                            <Text style={styles.fxItemText}>{fx.home_team} vs {fx.away_team}</Text>
-                            {active && <Ionicons name="checkmark-circle" size={16} color={meta.color} />}
-                          </Pressable>
-                        );
-                      })}
-                      {data.fixtures.length === 0 && (
-                        <Text style={styles.modalHint}>
-                          Nessuna partita in calendario per questa giornata. Carica prima il calendario in ScoreAndLive.
-                        </Text>
-                      )}
-                    </ScrollView>
-                  </>
-                )}
-                <Pressable
-                  disabled={busy} onPress={createConfig}
-                  style={[styles.modalBtn, { backgroundColor: meta.color }, busy && { opacity: 0.5 }]}
-                >
-                  {busy ? <ActivityIndicator color="#fff" />
-                    : <Text style={styles.modalBtnText}>Crea bonus giornata</Text>}
-                </Pressable>
-              </>
-            )}
-            {data.config && data.config.status !== 'settled' && (
-              <>
-                <Text style={styles.modalSection}>Liquida il bonus (giornata {data.config.matchday})</Text>
-                {isExact && (
-                  <View style={{ flexDirection: 'row', gap: 12 }}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.modalLabel}>Gol casa</Text>
-                      <TextInput style={styles.modalInput} value={homeR} onChangeText={setHomeR} keyboardType="number-pad" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.modalLabel}>Gol trasferta</Text>
-                      <TextInput style={styles.modalInput} value={awayR} onChangeText={setAwayR} keyboardType="number-pad" />
-                    </View>
-                  </View>
-                )}
-                {!isExact && (
-                  <>
-                    <Text style={styles.modalLabel}>Primo marcatore (nome esatto)</Text>
-                    <TextInput
-                      style={styles.modalInput} value={scorerR} onChangeText={setScorerR}
-                      placeholder="Es. Lautaro Martinez"
-                      placeholderTextColor={theme.colors.muted}
-                      autoCapitalize="words"
-                    />
-                  </>
-                )}
-                <Pressable
-                  disabled={busy} onPress={settle}
-                  style={[styles.modalBtn, { backgroundColor: meta.color }, busy && { opacity: 0.5 }]}
-                >
-                  {busy ? <ActivityIndicator color="#fff" />
-                    : <Text style={styles.modalBtnText}>Liquida bonus e assegna premi</Text>}
-                </Pressable>
-              </>
-            )}
-            {data.config?.status === 'settled' && (
-              <View style={styles.settledInfo}>
-                <Ionicons name="checkmark-done" size={20} color={theme.colors.success} />
-                <Text style={styles.settledText}>Bonus di questa giornata già liquidato.</Text>
-              </View>
-            )}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
   );
 }
 
@@ -718,15 +518,37 @@ const styles = StyleSheet.create({
   },
   resultText: { fontSize: 13, fontWeight: '800' },
 
-  formBox: {
+  multiHint: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: theme.spacing.sm,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.sm,
+    borderLeftWidth: 3,
+  },
+  multiHintText: { color: theme.colors.onSurfaceSecondary, fontSize: 12, flex: 1, fontWeight: '600' },
+
+  subCard: {
     backgroundColor: theme.colors.surfaceSecondary,
     padding: theme.spacing.lg, borderRadius: theme.radius.md,
     gap: theme.spacing.md,
+    borderWidth: 1.5,
   },
-  formTitle: {
-    color: theme.colors.onSurface, fontSize: 14, fontWeight: '800',
-    letterSpacing: 0.4, textTransform: 'uppercase',
+  subHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
   },
+  subDot: { width: 10, height: 10, borderRadius: 5 },
+  subTag: {
+    color: theme.colors.muted, fontSize: 10, fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  subName: { color: theme.colors.onSurface, fontSize: 15, fontWeight: '800' },
+  pickPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: theme.radius.pill, borderWidth: 1,
+  },
+  pickPillText: { fontSize: 11, fontWeight: '800' },
+
   scoreRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 12,
@@ -748,10 +570,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14, paddingVertical: 14,
   },
   submitBtn: {
-    paddingVertical: 14, borderRadius: theme.radius.md,
+    paddingVertical: 13, borderRadius: theme.radius.md,
     alignItems: 'center', justifyContent: 'center',
   },
-  submitBtnText: { color: '#fff', fontWeight: '800', fontSize: 15, letterSpacing: 0.3 },
+  submitBtnText: { color: '#fff', fontWeight: '800', fontSize: 14, letterSpacing: 0.3 },
   resultBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     padding: theme.spacing.sm, borderRadius: theme.radius.sm,
@@ -770,58 +592,11 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.sm,
   },
   histMd: { color: theme.colors.muted, fontWeight: '800', fontSize: 12, width: 32 },
-  histPick: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 13, flex: 1 },
+  histPick: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 13 },
+  histSub: { color: theme.colors.muted, fontSize: 10, marginTop: 1 },
   histBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill,
   },
   histBadgeText: { fontSize: 11, fontWeight: '800' },
-
-  // Admin modal
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#00000099' },
-  modalCard: {
-    backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: theme.radius.lg, borderTopRightRadius: theme.radius.lg,
-    maxHeight: '85%',
-  },
-  modalHeader: {
-    flexDirection: 'row', alignItems: 'center',
-    padding: theme.spacing.lg,
-    borderBottomWidth: 1, borderBottomColor: theme.colors.border,
-  },
-  modalTitle: { color: theme.colors.onSurface, fontSize: 17, fontWeight: '800', flex: 1 },
-  modalSection: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 14 },
-  modalLabel: {
-    color: theme.colors.muted, fontSize: 12, fontWeight: '700',
-    letterSpacing: 0.4, textTransform: 'uppercase',
-  },
-  modalInput: {
-    backgroundColor: theme.colors.surfaceSecondary,
-    borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.colors.border,
-    color: theme.colors.onSurface, fontSize: 15,
-    paddingHorizontal: 12, paddingVertical: 10,
-  },
-  modalHint: { color: theme.colors.muted, fontSize: 12, fontStyle: 'italic', padding: 8 },
-  fxList: { maxHeight: 220, borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.sm },
-  fxItem: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    padding: theme.spacing.sm,
-    borderBottomWidth: 1, borderBottomColor: theme.colors.divider,
-    borderRadius: theme.radius.sm,
-    borderWidth: 1.5, borderColor: 'transparent',
-  },
-  fxItemText: { color: theme.colors.onSurface, fontSize: 13, flex: 1 },
-  modalBtn: {
-    paddingVertical: 14, borderRadius: theme.radius.md,
-    alignItems: 'center', justifyContent: 'center',
-    marginTop: theme.spacing.sm,
-  },
-  modalBtnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
-  settledInfo: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    padding: theme.spacing.md,
-    backgroundColor: theme.colors.success + '22',
-    borderRadius: theme.radius.md,
-  },
-  settledText: { color: theme.colors.success, fontWeight: '700', flex: 1 },
 });

@@ -111,6 +111,7 @@ class SettleScorer(BaseModel):
 class PickExactSubmit(BaseModel):
     game: str = Field(pattern=r"^(tiket|survival)$")
     season: str = Field(default="2026-27", min_length=3, max_length=10)
+    subscription_id: str = Field(min_length=1)
     home_score: int = Field(ge=0, le=30)
     away_score: int = Field(ge=0, le=30)
 
@@ -118,6 +119,7 @@ class PickExactSubmit(BaseModel):
 class PickScorerSubmit(BaseModel):
     game: str = Field(pattern=r"^(score|fanta)$")
     season: str = Field(default="2026-27", min_length=3, max_length=10)
+    subscription_id: str = Field(min_length=1)
     player_name: str = Field(min_length=1, max_length=80)
 
 
@@ -132,18 +134,85 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
     # Eligibility check
     # ------------------------------------------------------------------
 
-    async def _user_eligible(uid: str, game: str) -> bool:
-        """A user is eligible for a game's bonus if they have joined at
-        least one room/league/tournament of that game (via invite)."""
+    async def _user_subscriptions(uid: str, game: str) -> List[dict]:
+        """Return the list of active subscriptions (rooms/tournaments/leagues)
+        the user is part of, for the given game. Each subscription entitles
+        the user to ONE separate bonus pick + ONE separate reward.
+        """
+        out: List[dict] = []
         if game == "tiket":
-            return await db.memberships.find_one({"user_id": uid}) is not None
-        if game == "score":
-            return await db.sal_participants.find_one({"user_id": uid}) is not None
-        if game == "fanta":
-            return await db.fg_memberships.find_one({"user_id": uid}) is not None
-        if game == "survival":
-            return await db.sv_participants.find_one({"user_id": uid}) is not None
-        return False
+            room_ids = [m["room_id"] async for m in db.memberships.find(
+                {"user_id": uid}, {"room_id": 1, "_id": 0},
+            )]
+            if not room_ids:
+                return []
+            rooms = [r async for r in db.rooms.find(
+                {"id": {"$in": room_ids}}, {"_id": 0, "id": 1, "name": 1, "color": 1},
+            )]
+            for r in rooms:
+                out.append({
+                    "id": r["id"], "name": r.get("name") or "Stanza",
+                    "kind": "tiket_room", "game": "tiket",
+                    "color": r.get("color"),
+                })
+        elif game == "score":
+            tour_ids = [p["tournament_id"] async for p in db.sal_participants.find(
+                {"user_id": uid}, {"tournament_id": 1, "_id": 0},
+            )]
+            if not tour_ids:
+                return []
+            tours = [t async for t in db.sal_tournaments.find(
+                {"id": {"$in": tour_ids}}, {"_id": 0, "id": 1, "name": 1},
+            )]
+            for t in tours:
+                out.append({
+                    "id": t["id"], "name": t.get("name") or "Torneo",
+                    "kind": "sal_tournament", "game": "score",
+                })
+        elif game == "fanta":
+            league_ids = [m["league_id"] async for m in db.fg_memberships.find(
+                {"user_id": uid}, {"league_id": 1, "_id": 0},
+            )]
+            if not league_ids:
+                return []
+            leagues = [l async for l in db.fg_leagues.find(
+                {"id": {"$in": league_ids}}, {"_id": 0, "id": 1, "name": 1},
+            )]
+            for l in leagues:
+                out.append({
+                    "id": l["id"], "name": l.get("name") or "Lega",
+                    "kind": "fg_league", "game": "fanta",
+                })
+        elif game == "survival":
+            tour_ids = [p["tournament_id"] async for p in db.sv_participants.find(
+                {"user_id": uid}, {"tournament_id": 1, "_id": 0},
+            )]
+            if not tour_ids:
+                return []
+            tours = [t async for t in db.sv_tournaments.find(
+                {"id": {"$in": tour_ids}}, {"_id": 0, "id": 1, "name": 1},
+            )]
+            for t in tours:
+                out.append({
+                    "id": t["id"], "name": t.get("name") or "Torneo",
+                    "kind": "sv_tournament", "game": "survival",
+                })
+        return out
+
+    async def _user_eligible(uid: str, game: str) -> bool:
+        """Kept for backwards-compatible endpoints — a user is eligible for a
+        game's bonus if they have at least one subscription of that game."""
+        subs = await _user_subscriptions(uid, game)
+        return len(subs) > 0
+
+    async def _user_in_subscription(uid: str, game: str, subscription_id: str) -> Optional[dict]:
+        """Verify the user is actually a member of the given room/tournament/
+        league. Returns the subscription dict when authorised, else None."""
+        subs = await _user_subscriptions(uid, game)
+        for s in subs:
+            if s["id"] == subscription_id:
+                return s
+        return None
 
     async def _earliest_kickoff(season: str, matchday: int) -> Optional[str]:
         first = None
@@ -199,6 +268,8 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             "id": p["id"],
             "user_id": p["user_id"],
             "game": p["game"],
+            "subscription_id": p.get("subscription_id"),
+            "subscription_name": p.get("subscription_name"),
             "season": p["season"],
             "matchday": p["matchday"],
             "bonus_type": p["bonus_type"],
@@ -317,18 +388,27 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
     async def _grant_reward(pick: dict) -> Dict[str, Any]:
         """Apply the game-specific reward for a winning pick and return
         a JSON-serialisable ``reward_details`` blob describing what was
-        granted (for audit and UI display).
+        granted. The reward is scoped to the subscription (room/tournament/
+        league) that generated the pick — so a user with N subscriptions
+        earns N independent rewards.
         """
         game = pick["game"]
         uid = pick["user_id"]
         matchday = pick["matchday"]
-        details: Dict[str, Any] = {"game": game}
+        sub_id = pick.get("subscription_id")
+        sub_name = pick.get("subscription_name")
+        details: Dict[str, Any] = {
+            "game": game,
+            "subscription_id": sub_id,
+            "subscription_name": sub_name,
+        }
         if game == "tiket":
-            # Manual handling by admin — just create a pending credit doc.
+            # Manual handling by admin — pending credit tied to this specific room.
             credit_id = str(uuid.uuid4())
             await db.bonus_credits.insert_one({
                 "id": credit_id, "user_id": uid, "game": "tiket",
                 "matchday": matchday, "season": pick["season"],
+                "room_id": sub_id, "room_name": sub_name,
                 "kind": "extra_bet_slip", "pending": True,
                 "pick_id": pick["id"], "created_at": _now(),
                 "consumed_at": None, "consumed_by": None,
@@ -336,43 +416,44 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             details["kind"] = "extra_bet_slip_pending"
             details["credit_id"] = credit_id
             return details
-        if game in ("score", "survival"):
-            coll = "sal_participants" if game == "score" else "sv_participants"
-            # Grant +1 life on every non-eliminated participation.
-            res = await db[coll].update_many(
-                {"user_id": uid, "eliminated_at": None},
+        if game == "survival":
+            # +1 life on THIS SPECIFIC tournament's participation (non-eliminated).
+            r = await db.sv_participants.update_one(
+                {"tournament_id": sub_id, "user_id": uid, "eliminated_at": None},
                 {"$inc": {"lives_left": 1}},
             )
             details["kind"] = "extra_life"
-            details["participations_updated"] = int(res.modified_count)
+            details["tournament_id"] = sub_id
+            details["participations_updated"] = int(r.modified_count)
+            return details
+        if game == "score":
+            r = await db.sal_participants.update_one(
+                {"tournament_id": sub_id, "user_id": uid, "eliminated_at_matchday": None},
+                {"$inc": {"lives_remaining": 1}},
+            )
+            details["kind"] = "extra_life"
+            details["tournament_id"] = sub_id
+            details["participations_updated"] = int(r.modified_count)
             return details
         if game == "fanta":
-            # +3 on every league the user is in for this matchday.
-            leagues = [
-                m["league_id"] async for m in db.fg_memberships.find(
-                    {"user_id": uid}, {"league_id": 1, "_id": 0},
-                )
-            ]
-            updated = 0
-            for lid in leagues:
-                r = await db.fg_matchday_results.update_one(
-                    {"league_id": lid, "user_id": uid, "matchday": matchday},
-                    {
-                        "$inc": {"total_fantavoto": 3, "bonus_extra": 3},
-                        "$setOnInsert": {
-                            "id": str(uuid.uuid4()),
-                            "league_id": lid, "user_id": uid,
-                            "matchday": matchday,
-                            "computed_at": _now(),
-                        },
+            # +3 on the SPECIFIC league's matchday total.
+            r = await db.fg_matchday_results.update_one(
+                {"league_id": sub_id, "user_id": uid, "matchday": matchday},
+                {
+                    "$inc": {"total_fantavoto": 3, "bonus_extra": 3},
+                    "$setOnInsert": {
+                        "id": str(uuid.uuid4()),
+                        "league_id": sub_id, "user_id": uid,
+                        "matchday": matchday,
+                        "computed_at": _now(),
                     },
-                    upsert=True,
-                )
-                if r.modified_count or r.upserted_id:
-                    updated += 1
+                },
+                upsert=True,
+            )
             details["kind"] = "fanta_bonus_points"
             details["points"] = 3
-            details["leagues_updated"] = updated
+            details["league_id"] = sub_id
+            details["updated"] = bool(r.modified_count or r.upserted_id)
             return details
         details["kind"] = "unknown"
         return details
@@ -457,15 +538,27 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         return await _settle(cfg, user)
 
     # ------------------------------------------------------------------
-    # Player: eligibility, available bonus, picks
+    # Player: eligibility, subscriptions, available bonus, picks
     # ------------------------------------------------------------------
 
     @router.get("/eligibility")
     async def eligibility(user: dict = Depends(current_user)):
-        out = {}
+        """Boolean per-game eligibility summary + count of subscriptions.
+        Frontend uses this to know how many bonus plays are available per game.
+        """
+        out: Dict[str, Any] = {}
         for g in GAMES:
-            out[g] = await _user_eligible(user["id"], g)
+            subs = await _user_subscriptions(user["id"], g)
+            out[g] = {"eligible": len(subs) > 0, "subscriptions": len(subs)}
         return out
+
+    @router.get("/subscriptions")
+    async def subscriptions(game: str, user: dict = Depends(current_user)):
+        """List the user's active subscriptions for a game — each entitles
+        them to a separate bonus pick."""
+        if game not in GAMES:
+            raise HTTPException(status_code=400, detail="Gioco non valido")
+        return await _user_subscriptions(user["id"], game)
 
     @router.get("/available")
     async def available(
@@ -473,43 +566,48 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         season: str = "2026-27",
         user: dict = Depends(current_user),
     ):
-        """Current open/locked bonus for a game (the most recent one for the
-        matchday cycle that has not been settled yet). Includes the user's
-        pick if any, and eligibility flag.
+        """Current open/locked bonus for a game with one card PER subscription.
+
+        Response shape:
+            {
+              game, bonus_type, season,
+              config: {...} | null,
+              subscriptions: [
+                { id, name, kind, my_pick: {...} | null }
+              ],
+              fixtures: [...]  # only for exact_score, used by admin dropdown
+            }
         """
         if game not in GAMES:
             raise HTTPException(status_code=400, detail="Gioco non valido")
-        eligible = await _user_eligible(user["id"], game)
         bonus_type = BONUS_TYPE_BY_GAME[game]
+        subs = await _user_subscriptions(user["id"], game)
         cfg = await db.bonus_configs.find_one(
             {"season": season, "bonus_type": bonus_type, "settled_at": None},
             {"_id": 0}, sort=[("matchday", -1)],
         )
-        if not cfg:
-            return {
-                "game": game, "bonus_type": bonus_type, "season": season,
-                "eligible": eligible, "config": None, "my_pick": None,
-                "fixtures": [],
-            }
-        my_pick = None
-        if eligible:
-            p = await db.bonus_picks.find_one({
-                "user_id": user["id"], "game": game,
-                "season": season, "matchday": cfg["matchday"],
-            }, {"_id": 0})
-            if p:
-                my_pick = await _pick_dict(p)
-        # Bonus type 1 (exact_score): we return the big match. Bonus type 2:
-        # we return no fixtures — just the earliest kickoff for the countdown.
+        subs_out: List[dict] = []
+        if cfg:
+            for s in subs:
+                p = await db.bonus_picks.find_one({
+                    "user_id": user["id"], "game": game,
+                    "subscription_id": s["id"],
+                    "season": season, "matchday": cfg["matchday"],
+                }, {"_id": 0})
+                subs_out.append({
+                    **s,
+                    "my_pick": (await _pick_dict(p)) if p else None,
+                })
+        else:
+            subs_out = [{**s, "my_pick": None} for s in subs]
         fixtures = []
-        if bonus_type == "exact_score":
-            # Also return the matchday fixtures so admins can pick among them.
+        if cfg and bonus_type == "exact_score":
             fixtures = await _matchday_fixtures(season, cfg["matchday"])
         return {
             "game": game, "bonus_type": bonus_type, "season": season,
-            "eligible": eligible,
-            "config": await _config_dict(cfg),
-            "my_pick": my_pick,
+            "eligible": len(subs) > 0,
+            "config": await _config_dict(cfg) if cfg else None,
+            "subscriptions": subs_out,
             "fixtures": fixtures,
         }
 
@@ -524,10 +622,11 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
     async def submit_exact(body: PickExactSubmit, user: dict = Depends(current_user)):
         if BONUS_TYPE_BY_GAME[body.game] != "exact_score":
             raise HTTPException(status_code=400, detail="Gioco non valido per bonus 'exact_score'")
-        if not await _user_eligible(user["id"], body.game):
+        sub = await _user_in_subscription(user["id"], body.game, body.subscription_id)
+        if not sub:
             raise HTTPException(
                 status_code=403,
-                detail=f"Non sei iscritto a nessun torneo/stanza di {body.game.title()}",
+                detail=f"Non sei iscritto a questa stanza/torneo di {body.game.title()}",
             )
         cfg = await db.bonus_configs.find_one(
             {"season": body.season, "bonus_type": "exact_score", "settled_at": None},
@@ -537,16 +636,17 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             raise HTTPException(status_code=404, detail="Nessun bonus attivo")
         await _check_config_open(cfg)
         pick_data = {"home_score": body.home_score, "away_score": body.away_score}
-        return await _upsert_pick(cfg, body.game, user, pick_data)
+        return await _upsert_pick(cfg, body.game, user, pick_data, sub)
 
     @router.post("/picks/scorer")
     async def submit_scorer(body: PickScorerSubmit, user: dict = Depends(current_user)):
         if BONUS_TYPE_BY_GAME[body.game] != "first_scorer":
             raise HTTPException(status_code=400, detail="Gioco non valido per bonus 'first_scorer'")
-        if not await _user_eligible(user["id"], body.game):
+        sub = await _user_in_subscription(user["id"], body.game, body.subscription_id)
+        if not sub:
             raise HTTPException(
                 status_code=403,
-                detail=f"Non sei iscritto a nessun torneo/stanza di {body.game.title()}",
+                detail=f"Non sei iscritto a questa lega/torneo di {body.game.title()}",
             )
         cfg = await db.bonus_configs.find_one(
             {"season": body.season, "bonus_type": "first_scorer", "settled_at": None},
@@ -557,17 +657,23 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         await _check_config_open(cfg)
         name = body.player_name.strip()
         pick_data = {"player_name": name, "player_name_norm": _normalize_scorer(name)}
-        return await _upsert_pick(cfg, body.game, user, pick_data)
+        return await _upsert_pick(cfg, body.game, user, pick_data, sub)
 
-    async def _upsert_pick(cfg: dict, game: str, user: dict, pick_data: dict) -> dict:
+    async def _upsert_pick(
+        cfg: dict, game: str, user: dict, pick_data: dict, sub: dict,
+    ) -> dict:
         existing = await db.bonus_picks.find_one({
             "user_id": user["id"], "game": game,
+            "subscription_id": sub["id"],
             "season": cfg["season"], "matchday": cfg["matchday"],
         }, {"_id": 0})
         if existing:
             await db.bonus_picks.update_one(
                 {"id": existing["id"]},
-                {"$set": {"pick": pick_data, "submitted_at": _now()}},
+                {"$set": {
+                    "pick": pick_data, "submitted_at": _now(),
+                    "subscription_name": sub.get("name"),
+                }},
             )
             existing = await db.bonus_picks.find_one({"id": existing["id"]}, {"_id": 0})
             return await _pick_dict(existing)
@@ -576,6 +682,8 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             "user_id": user["id"],
             "nickname": display_name(user),
             "game": game,
+            "subscription_id": sub["id"],
+            "subscription_name": sub.get("name"),
             "season": cfg["season"],
             "matchday": cfg["matchday"],
             "bonus_type": cfg["bonus_type"],
@@ -656,9 +764,18 @@ async def ensure_indexes(db) -> None:
         unique=True,
     )
     await db.bonus_picks.create_index("id", unique=True)
+    # New unique key: one pick per subscription (user can have multiple
+    # subscriptions per game and thus multiple picks). Drop the legacy
+    # index (without subscription_id) if it still exists.
+    try:
+        await db.bonus_picks.drop_index("user_id_1_game_1_season_1_matchday_1")
+    except Exception:
+        pass
     await db.bonus_picks.create_index(
-        [("user_id", 1), ("game", 1), ("season", 1), ("matchday", 1)],
+        [("user_id", 1), ("game", 1), ("subscription_id", 1),
+         ("season", 1), ("matchday", 1)],
         unique=True,
+        name="uniq_pick_per_subscription",
     )
     await db.bonus_picks.create_index(
         [("season", 1), ("matchday", 1), ("bonus_type", 1)]

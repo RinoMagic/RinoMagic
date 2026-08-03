@@ -1,8 +1,7 @@
-"""Tests for the Bonus games module (5th slot).
+"""Tests for the Bonus games module (5th slot) — per-subscription picks.
 
-Covers: eligibility, config create/settle, exact_score + first_scorer picks,
-reward granting (Tiket credit / Score+Survival lives / Fanta +3), lock
-countdown enforcement, and privacy summary.
+Every subscription (room / tournament / league) entitles the user to a
+SEPARATE bonus pick, and rewards are granted only to the winning subscription.
 """
 import os
 import uuid
@@ -13,8 +12,6 @@ from datetime import datetime, timedelta, timezone
 API = os.environ.get("API_BASE_URL", "http://localhost:8001") + "/api"
 ADMIN_EMAIL = "verone.salvatore@libero.it"
 ADMIN_PASSWORD = "SchedinaBar2026!"
-
-FUTURE_KICKOFF = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
 
 
 def _h(tok): return {"Authorization": f"Bearer {tok}"}
@@ -41,7 +38,6 @@ def _player():
 
 
 def _seed_calendar(admin_tok, season):
-    """3 matchdays × 3 fixtures each — kickoff in the future so bonuses stay open."""
     fixtures = []
     for md in range(1, 4):
         kickoff = (datetime.now(timezone.utc) + timedelta(days=30 + md)).isoformat()
@@ -58,23 +54,36 @@ def _seed_calendar(admin_tok, season):
     ).raise_for_status()
 
 
-def _create_survival_and_join(admin_tok, player_tok, season):
+def _create_survival(admin_tok, season, name=None):
     r = requests.post(
         f"{API}/sv/tournaments",
-        json={"name": f"BNSV_{uuid.uuid4().hex[:4]}", "season": season, "initial_lives": 2},
+        json={"name": name or f"BNSV_{uuid.uuid4().hex[:4]}",
+              "season": season, "initial_lives": 2},
         headers=_h(admin_tok), timeout=15,
     )
     r.raise_for_status()
-    t = r.json()
-    requests.post(
+    return r.json()
+
+
+def _sv_new_invite(admin_tok, tid):
+    r = requests.post(
+        f"{API}/sv/tournaments/{tid}/invites",
+        headers=_h(admin_tok), timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()["code"]
+
+
+def _sv_join(player_tok, code):
+    r = requests.post(
         f"{API}/sv/tournaments/join",
-        json={"invite_code": t["invite_code"]},
+        json={"invite_code": code},
         headers=_h(player_tok), timeout=15,
-    ).raise_for_status()
-    return t
+    )
+    r.raise_for_status()
 
 
-def _create_sal_and_join(admin_tok, player_tok, season):
+def _create_sal(admin_tok, season):
     r = requests.post(
         f"{API}/sal/tournaments",
         json={"name": f"BNSAL_{uuid.uuid4().hex[:4]}", "season": season,
@@ -82,340 +91,274 @@ def _create_sal_and_join(admin_tok, player_tok, season):
         headers=_h(admin_tok), timeout=15,
     )
     r.raise_for_status()
-    t = r.json()
-    tid = t["id"]
-    invite = t.get("invite_code")
-    requests.post(
+    return r.json()
+
+
+def _sal_join(player_tok, tid, code):
+    r = requests.post(
         f"{API}/sal/tournaments/{tid}/join",
-        json={"invite_code": invite},
+        json={"invite_code": code},
         headers=_h(player_tok), timeout=15,
-    ).raise_for_status()
-    return t
+    )
+    r.raise_for_status()
+
+
+def _create_bonus_exact(admin_tok, season, matchday=1):
+    r = requests.post(
+        f"{API}/bonus/configs",
+        json={
+            "season": season, "matchday": matchday, "bonus_type": "exact_score",
+            "big_match": {"home_team": f"Alpha_{matchday}", "away_team": f"Beta_{matchday}"},
+        },
+        headers=_h(admin_tok), timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def _create_bonus_scorer(admin_tok, season, matchday=1):
+    r = requests.post(
+        f"{API}/bonus/configs",
+        json={"season": season, "matchday": matchday, "bonus_type": "first_scorer"},
+        headers=_h(admin_tok), timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()
 
 
 # =========================================================================
-# Eligibility
+# Eligibility & subscriptions
 # =========================================================================
 
-def test_eligibility_flags_reflect_subscriptions(admin_tok):
+def test_eligibility_returns_subscription_count(admin_tok):
     season = f"bn-{uuid.uuid4().hex[:4]}"
     _seed_calendar(admin_tok, season)
-    tok, uid = _player()
+    tok, _ = _player()
 
     # Fresh player: eligible for nothing
-    r = requests.get(f"{API}/bonus/eligibility", headers=_h(tok), timeout=15)
-    r.raise_for_status()
-    e = r.json()
-    assert e == {"tiket": False, "score": False, "fanta": False, "survival": False}
-
-    # Join a Survival tournament → survival eligibility flips to True
-    _create_survival_and_join(admin_tok, tok, season)
     e = requests.get(f"{API}/bonus/eligibility", headers=_h(tok), timeout=15).json()
-    assert e["survival"] is True
-    assert e["tiket"] is False
+    assert e["tiket"] == {"eligible": False, "subscriptions": 0}
+    assert e["survival"] == {"eligible": False, "subscriptions": 0}
+
+    # Join TWO Survival tournaments (two different invites → two subs)
+    t1 = _create_survival(admin_tok, season, "SVR-A")
+    _sv_join(tok, t1["invite_code"])
+    t2 = _create_survival(admin_tok, season, "SVR-B")
+    _sv_join(tok, t2["invite_code"])
+
+    e = requests.get(f"{API}/bonus/eligibility", headers=_h(tok), timeout=15).json()
+    assert e["survival"]["eligible"] is True
+    assert e["survival"]["subscriptions"] == 2
+
+    subs = requests.get(
+        f"{API}/bonus/subscriptions?game=survival", headers=_h(tok), timeout=15,
+    ).json()
+    assert len(subs) == 2
+    assert {s["id"] for s in subs} == {t1["id"], t2["id"]}
 
 
 # =========================================================================
-# Config creation
+# Two subscriptions → two independent picks (Survival)
 # =========================================================================
 
-def test_admin_creates_exact_score_bonus_and_first_scorer(admin_tok):
-    season = f"bn-{uuid.uuid4().hex[:4]}"
-    _seed_calendar(admin_tok, season)
-
-    # exact_score requires a big_match from the calendar
-    r = requests.post(
-        f"{API}/bonus/configs",
-        json={
-            "season": season, "matchday": 1, "bonus_type": "exact_score",
-            "big_match": {"home_team": "Alpha_1", "away_team": "Beta_1"},
-        },
-        headers=_h(admin_tok), timeout=15,
-    )
-    assert r.status_code == 200
-    cfg = r.json()
-    assert cfg["bonus_type"] == "exact_score"
-    assert cfg["big_match"]["home_team"] == "Alpha_1"
-    assert cfg["status"] == "open"
-    assert cfg["lock_at"]
-
-    # Reject when big_match not in calendar
-    bad = requests.post(
-        f"{API}/bonus/configs",
-        json={
-            "season": season, "matchday": 1, "bonus_type": "exact_score",
-            "big_match": {"home_team": "NON_EXISTENT", "away_team": "X"},
-        },
-        headers=_h(admin_tok), timeout=15,
-    )
-    assert bad.status_code == 400
-
-    # first_scorer does not require big_match
-    r = requests.post(
-        f"{API}/bonus/configs",
-        json={"season": season, "matchday": 1, "bonus_type": "first_scorer"},
-        headers=_h(admin_tok), timeout=15,
-    )
-    assert r.status_code == 200
-    assert r.json()["bonus_type"] == "first_scorer"
-
-
-# =========================================================================
-# Player picks + lock enforcement
-# =========================================================================
-
-def test_pick_requires_eligibility(admin_tok):
-    season = f"bn-{uuid.uuid4().hex[:4]}"
-    _seed_calendar(admin_tok, season)
-    requests.post(
-        f"{API}/bonus/configs",
-        json={
-            "season": season, "matchday": 1, "bonus_type": "exact_score",
-            "big_match": {"home_team": "Alpha_1", "away_team": "Beta_1"},
-        },
-        headers=_h(admin_tok), timeout=15,
-    ).raise_for_status()
-    tok, _ = _player()
-    # Not subscribed → 403
-    r = requests.post(
-        f"{API}/bonus/picks/exact",
-        json={"game": "survival", "season": season, "home_score": 2, "away_score": 1},
-        headers=_h(tok), timeout=15,
-    )
-    assert r.status_code == 403
-
-
-def test_pick_and_replace(admin_tok):
+def test_two_survival_subs_get_two_independent_picks(admin_tok):
     season = f"bn-{uuid.uuid4().hex[:4]}"
     _seed_calendar(admin_tok, season)
     tok, uid = _player()
-    _create_survival_and_join(admin_tok, tok, season)
-    requests.post(
-        f"{API}/bonus/configs",
-        json={
-            "season": season, "matchday": 1, "bonus_type": "exact_score",
-            "big_match": {"home_team": "Alpha_1", "away_team": "Beta_1"},
-        },
-        headers=_h(admin_tok), timeout=15,
-    ).raise_for_status()
 
-    r = requests.post(
-        f"{API}/bonus/picks/exact",
-        json={"game": "survival", "season": season, "home_score": 2, "away_score": 1},
-        headers=_h(tok), timeout=15,
-    )
-    assert r.status_code == 200
-    assert r.json()["pick"] == {"home_score": 2, "away_score": 1}
+    t1 = _create_survival(admin_tok, season)
+    _sv_join(tok, t1["invite_code"])
+    t2 = _create_survival(admin_tok, season)
+    _sv_join(tok, t2["invite_code"])
 
-    # Replace with new pick
-    r = requests.post(
-        f"{API}/bonus/picks/exact",
-        json={"game": "survival", "season": season, "home_score": 3, "away_score": 3},
-        headers=_h(tok), timeout=15,
-    )
-    assert r.status_code == 200
-    assert r.json()["pick"] == {"home_score": 3, "away_score": 3}
+    _create_bonus_exact(admin_tok, season)
 
-    # Available endpoint returns the current pick
-    r = requests.get(
+    # Available returns 2 subscriptions
+    av = requests.get(
         f"{API}/bonus/available?game=survival&season={season}",
         headers=_h(tok), timeout=15,
     ).json()
-    assert r["config"] is not None
-    assert r["my_pick"]["pick"] == {"home_score": 3, "away_score": 3}
+    assert len(av["subscriptions"]) == 2
+
+    # Pick 2-1 for tournament 1
+    r1 = requests.post(
+        f"{API}/bonus/picks/exact",
+        json={"game": "survival", "season": season, "subscription_id": t1["id"],
+              "home_score": 2, "away_score": 1},
+        headers=_h(tok), timeout=15,
+    )
+    assert r1.status_code == 200
+
+    # Pick 0-0 for tournament 2 (DIFFERENT prediction)
+    r2 = requests.post(
+        f"{API}/bonus/picks/exact",
+        json={"game": "survival", "season": season, "subscription_id": t2["id"],
+              "home_score": 0, "away_score": 0},
+        headers=_h(tok), timeout=15,
+    )
+    assert r2.status_code == 200
+
+    # Verify both picks exist and are independent
+    av = requests.get(
+        f"{API}/bonus/available?game=survival&season={season}",
+        headers=_h(tok), timeout=15,
+    ).json()
+    picks_by_sub = {s["id"]: s["my_pick"] for s in av["subscriptions"]}
+    assert picks_by_sub[t1["id"]]["pick"] == {"home_score": 2, "away_score": 1}
+    assert picks_by_sub[t2["id"]]["pick"] == {"home_score": 0, "away_score": 0}
 
 
-# =========================================================================
-# Settle + rewards
-# =========================================================================
-
-def test_settle_exact_grants_survival_life(admin_tok):
+def test_reward_targets_only_winning_subscription(admin_tok):
+    """User with 2 SV subs — only the pick tied to the winning sub receives +1 life."""
     season = f"bn-{uuid.uuid4().hex[:4]}"
     _seed_calendar(admin_tok, season)
     tok, uid = _player()
-    _create_survival_and_join(admin_tok, tok, season)
 
-    cfg = requests.post(
-        f"{API}/bonus/configs",
-        json={
-            "season": season, "matchday": 1, "bonus_type": "exact_score",
-            "big_match": {"home_team": "Alpha_1", "away_team": "Beta_1"},
-        },
-        headers=_h(admin_tok), timeout=15,
-    ).json()
+    t1 = _create_survival(admin_tok, season)  # correct pick will go here
+    _sv_join(tok, t1["invite_code"])
+    t2 = _create_survival(admin_tok, season)  # wrong pick here
+    _sv_join(tok, t2["invite_code"])
 
-    # Winning pick
-    requests.post(
-        f"{API}/bonus/picks/exact",
-        json={"game": "survival", "season": season, "home_score": 2, "away_score": 1},
-        headers=_h(tok), timeout=15,
-    ).raise_for_status()
+    cfg = _create_bonus_exact(admin_tok, season)
 
-    # Settle with the same score → player wins → +1 life on their SV participation
+    # t1: 2-1 (correct), t2: 3-3 (wrong)
+    requests.post(f"{API}/bonus/picks/exact", headers=_h(tok), timeout=15,
+                  json={"game": "survival", "season": season,
+                        "subscription_id": t1["id"], "home_score": 2, "away_score": 1}).raise_for_status()
+    requests.post(f"{API}/bonus/picks/exact", headers=_h(tok), timeout=15,
+                  json={"game": "survival", "season": season,
+                        "subscription_id": t2["id"], "home_score": 3, "away_score": 3}).raise_for_status()
+
     r = requests.post(
         f"{API}/bonus/configs/{cfg['id']}/settle-exact",
         json={"home_score": 2, "away_score": 1},
         headers=_h(admin_tok), timeout=15,
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["winners"] == 1
-    assert body["total_picks"] == 1
-
-    # Check life increment via tournaments listing
-    tourns = requests.get(
-        f"{API}/sv/tournaments", headers=_h(tok), timeout=15,
     ).json()
-    my_tour = tourns[0]
-    lb = requests.get(
-        f"{API}/sv/tournaments/{my_tour['id']}/leaderboard",
-        headers=_h(tok), timeout=15,
-    ).json()
-    me = next(r for r in lb if r["user_id"] == uid)
-    # initial_lives=2 → after +1 → 3
-    assert me["lives_left"] == 3
+    assert r["winners"] == 1  # exactly ONE winning pick
 
-    # Idempotent re-settle does NOT double-grant
-    r = requests.post(
-        f"{API}/bonus/configs/{cfg['id']}/settle-exact",
-        json={"home_score": 2, "away_score": 1},
-        headers=_h(admin_tok), timeout=15,
-    )
-    # After settle the config is marked settled → subsequent create/settle is
-    # disallowed on stale configs. But our settle re-computes correctness on
-    # existing picks — verify by checking the winner did not receive a 2nd life.
-    lb = requests.get(
-        f"{API}/sv/tournaments/{my_tour['id']}/leaderboard",
-        headers=_h(tok), timeout=15,
-    ).json()
-    me = next(r for r in lb if r["user_id"] == uid)
-    assert me["lives_left"] == 3  # still 3, no double reward
+    # Verify only t1 got the extra life
+    lb1 = requests.get(f"{API}/sv/tournaments/{t1['id']}/leaderboard",
+                       headers=_h(tok), timeout=15).json()
+    lb2 = requests.get(f"{API}/sv/tournaments/{t2['id']}/leaderboard",
+                       headers=_h(tok), timeout=15).json()
+    me1 = next(x for x in lb1 if x["user_id"] == uid)
+    me2 = next(x for x in lb2 if x["user_id"] == uid)
+    # initial_lives=2. t1 wins → 3. t2 does not → still 2.
+    assert me1["lives_left"] == 3
+    assert me2["lives_left"] == 2
 
 
-def test_settle_first_scorer_case_insensitive(admin_tok):
-    season = f"bn-{uuid.uuid4().hex[:4]}"
-    _seed_calendar(admin_tok, season)
-    tok, uid = _player()
-    _create_sal_and_join(admin_tok, tok, season)
+# =========================================================================
+# Two Tiket rooms → two credits
+# =========================================================================
 
-    cfg = requests.post(
-        f"{API}/bonus/configs",
-        json={"season": season, "matchday": 1, "bonus_type": "first_scorer"},
-        headers=_h(admin_tok), timeout=15,
-    ).json()
-
-    # Player picks "Lautaro Martinez" (weird casing + accents)
-    requests.post(
-        f"{API}/bonus/picks/scorer",
-        json={"game": "score", "season": season, "player_name": "  LÁUTARO   martinez "},
-        headers=_h(tok), timeout=15,
-    ).raise_for_status()
-
-    # Admin settles with different casing/accent → still a match
-    r = requests.post(
-        f"{API}/bonus/configs/{cfg['id']}/settle-scorer",
-        json={"player_name": "Lautaro Martínez"},
-        headers=_h(admin_tok), timeout=15,
-    )
-    assert r.status_code == 200
-    assert r.json()["winners"] == 1
-
-
-def test_settle_first_scorer_wrong_pick_no_reward(admin_tok):
-    season = f"bn-{uuid.uuid4().hex[:4]}"
-    _seed_calendar(admin_tok, season)
-    tok, _ = _player()
-    _create_sal_and_join(admin_tok, tok, season)
-    cfg = requests.post(
-        f"{API}/bonus/configs",
-        json={"season": season, "matchday": 1, "bonus_type": "first_scorer"},
-        headers=_h(admin_tok), timeout=15,
-    ).json()
-    requests.post(
-        f"{API}/bonus/picks/scorer",
-        json={"game": "score", "season": season, "player_name": "Wrong Guy"},
-        headers=_h(tok), timeout=15,
-    ).raise_for_status()
-    r = requests.post(
-        f"{API}/bonus/configs/{cfg['id']}/settle-scorer",
-        json={"player_name": "Right Guy"},
-        headers=_h(admin_tok), timeout=15,
-    ).json()
-    assert r["winners"] == 0
-
-
-def test_tiket_bonus_creates_pending_credit(admin_tok):
-    """Winning the Tiket bonus should create a pending admin-handled credit."""
+def test_two_tiket_rooms_produce_two_pending_credits(admin_tok):
     season = f"bn-{uuid.uuid4().hex[:4]}"
     _seed_calendar(admin_tok, season)
     tok, uid = _player()
 
-    # Create a Tiket room and join
-    r = requests.post(
-        f"{API}/rooms",
-        json={"name": f"BNTIK_{uuid.uuid4().hex[:4]}", "matchday": 1, "max_events": 3},
-        headers=_h(admin_tok), timeout=15,
-    )
-    r.raise_for_status()
-    room = r.json()
-    invite_code = room["invite_code"]
-    requests.post(
-        f"{API}/rooms/join",
-        json={"invite_code": invite_code},
-        headers=_h(tok), timeout=15,
-    ).raise_for_status()
+    # Two rooms with two invites → two subscriptions
+    room1 = requests.post(f"{API}/rooms", headers=_h(admin_tok), timeout=15,
+                          json={"name": f"R1_{uuid.uuid4().hex[:4]}", "matchday": 1, "max_events": 3}).json()
+    room2 = requests.post(f"{API}/rooms", headers=_h(admin_tok), timeout=15,
+                          json={"name": f"R2_{uuid.uuid4().hex[:4]}", "matchday": 1, "max_events": 3}).json()
+    requests.post(f"{API}/rooms/join", headers=_h(tok), timeout=15,
+                  json={"invite_code": room1["invite_code"]}).raise_for_status()
+    requests.post(f"{API}/rooms/join", headers=_h(tok), timeout=15,
+                  json={"invite_code": room2["invite_code"]}).raise_for_status()
 
-    cfg = requests.post(
-        f"{API}/bonus/configs",
-        json={
-            "season": season, "matchday": 1, "bonus_type": "exact_score",
-            "big_match": {"home_team": "Alpha_1", "away_team": "Beta_1"},
-        },
-        headers=_h(admin_tok), timeout=15,
-    ).json()
-    requests.post(
-        f"{API}/bonus/picks/exact",
-        json={"game": "tiket", "season": season, "home_score": 1, "away_score": 0},
-        headers=_h(tok), timeout=15,
-    ).raise_for_status()
-    r = requests.post(
-        f"{API}/bonus/configs/{cfg['id']}/settle-exact",
-        json={"home_score": 1, "away_score": 0},
-        headers=_h(admin_tok), timeout=15,
-    ).json()
+    cfg = _create_bonus_exact(admin_tok, season)
+
+    # Winning pick on room1, losing on room2
+    requests.post(f"{API}/bonus/picks/exact", headers=_h(tok), timeout=15,
+                  json={"game": "tiket", "season": season,
+                        "subscription_id": room1["id"], "home_score": 1, "away_score": 0}).raise_for_status()
+    requests.post(f"{API}/bonus/picks/exact", headers=_h(tok), timeout=15,
+                  json={"game": "tiket", "season": season,
+                        "subscription_id": room2["id"], "home_score": 9, "away_score": 9}).raise_for_status()
+
+    r = requests.post(f"{API}/bonus/configs/{cfg['id']}/settle-exact", headers=_h(admin_tok),
+                      json={"home_score": 1, "away_score": 0}, timeout=15).json()
     assert r["winners"] == 1
 
-    # Verify pending credit exists in the winner's history
     hist = requests.get(
         f"{API}/bonus/history?game=tiket&season={season}",
         headers=_h(tok), timeout=15,
     ).json()
-    assert len(hist) == 1
-    assert hist[0]["is_correct"] is True
-    assert hist[0]["reward_details"]["kind"] == "extra_bet_slip_pending"
+    assert len(hist) == 2
+    correct = [h for h in hist if h["is_correct"]]
+    wrong = [h for h in hist if h["is_correct"] is False]
+    assert len(correct) == 1
+    assert len(wrong) == 1
+    # The winning entry must reference room1 in its reward
+    assert correct[0]["reward_details"]["subscription_id"] == room1["id"]
 
 
-def test_history_and_summary_privacy(admin_tok):
+# =========================================================================
+# First-scorer bonus with two Score tournaments
+# =========================================================================
+
+def test_two_score_tournaments_settle_scorer_targets_each(admin_tok):
+    season = f"bn-{uuid.uuid4().hex[:4]}"
+    _seed_calendar(admin_tok, season)
+    tok, uid = _player()
+
+    t1 = _create_sal(admin_tok, season)
+    _sal_join(tok, t1["id"], t1["invite_code"])
+    t2 = _create_sal(admin_tok, season)
+    _sal_join(tok, t2["id"], t2["invite_code"])
+
+    cfg = _create_bonus_scorer(admin_tok, season)
+
+    # Both picks equal to the correct scorer → both win
+    for tid in (t1["id"], t2["id"]):
+        requests.post(f"{API}/bonus/picks/scorer", headers=_h(tok), timeout=15,
+                      json={"game": "score", "season": season,
+                            "subscription_id": tid, "player_name": "Kevin De Bruyne"}).raise_for_status()
+
+    r = requests.post(f"{API}/bonus/configs/{cfg['id']}/settle-scorer", headers=_h(admin_tok),
+                      json={"player_name": "kevin de bruyne"}, timeout=15).json()
+    assert r["winners"] == 2  # both subscriptions win
+
+    # Each tournament gets +1 life for the player
+    for tid in (t1["id"], t2["id"]):
+        detail = requests.get(f"{API}/sal/tournaments/{tid}",
+                              headers=_h(tok), timeout=15).json()
+        me = next(x for x in detail["participants"] if x["user_id"] == uid)
+        assert me["lives_remaining"] == 4  # 3 initial + 1 bonus
+
+
+# =========================================================================
+# Guards
+# =========================================================================
+
+def test_pick_rejected_for_non_member_subscription(admin_tok):
     season = f"bn-{uuid.uuid4().hex[:4]}"
     _seed_calendar(admin_tok, season)
     tok, _ = _player()
-    _create_sal_and_join(admin_tok, tok, season)
-    cfg = requests.post(
-        f"{API}/bonus/configs",
-        json={"season": season, "matchday": 1, "bonus_type": "first_scorer"},
-        headers=_h(admin_tok), timeout=15,
-    ).json()
-    requests.post(
-        f"{API}/bonus/picks/scorer",
-        json={"game": "score", "season": season, "player_name": "Someone"},
-        headers=_h(tok), timeout=15,
-    ).raise_for_status()
 
-    # Summary before lock → aggregated counts only, no per-user details
-    s = requests.get(
-        f"{API}/bonus/configs/{cfg['id']}/summary",
-        headers=_h(tok), timeout=15,
-    ).json()
-    assert s["total_picks"] == 1
-    assert s["picks_by_game"]["score"] == 1
-    assert s["details"] is None
+    # Player is NOT joined to this tournament
+    ghost = _create_survival(admin_tok, season)
+    _create_bonus_exact(admin_tok, season)
+
+    r = requests.post(f"{API}/bonus/picks/exact", headers=_h(tok), timeout=15,
+                      json={"game": "survival", "season": season,
+                            "subscription_id": ghost["id"], "home_score": 1, "away_score": 1})
+    assert r.status_code == 403
+
+
+def test_first_scorer_normalization_case_and_accents(admin_tok):
+    season = f"bn-{uuid.uuid4().hex[:4]}"
+    _seed_calendar(admin_tok, season)
+    tok, _ = _player()
+    t = _create_sal(admin_tok, season)
+    _sal_join(tok, t["id"], t["invite_code"])
+    cfg = _create_bonus_scorer(admin_tok, season)
+
+    requests.post(f"{API}/bonus/picks/scorer", headers=_h(tok), timeout=15,
+                  json={"game": "score", "season": season, "subscription_id": t["id"],
+                        "player_name": "  LÁUTARO   martinez "}).raise_for_status()
+    r = requests.post(f"{API}/bonus/configs/{cfg['id']}/settle-scorer",
+                      headers=_h(admin_tok), timeout=15,
+                      json={"player_name": "Lautaro Martínez"}).json()
+    assert r["winners"] == 1

@@ -31,10 +31,10 @@ type Available = {
     big_match: { home_team: string; away_team: string } | null;
     result: any;
   };
-  my_pick: null | {
-    pick: any;
-    is_correct: boolean | null;
-  };
+  subscriptions: {
+    id: string; name: string;
+    my_pick: null | { is_correct: boolean | null };
+  }[];
 };
 
 const GAMES: { id: Game; name: string; color: string; icon: keyof typeof import('@expo/vector-icons').Ionicons.glyphMap; parent: string; reward: string }[] = [
@@ -131,16 +131,23 @@ function BonusCard({
 }) {
   const status = data?.config?.status;
   const eligible = data?.eligible;
-  const hasPick = !!data?.my_pick;
-  const isWinner = data?.my_pick?.is_correct === true;
+  const subsCount = data?.subscriptions?.length || 0;
+  const subsWithPick = data?.subscriptions?.filter((s) => s.my_pick).length || 0;
+  const subsToPlay = subsCount - subsWithPick;
+  const winners = data?.subscriptions?.filter((s) => s.my_pick?.is_correct === true).length || 0;
 
   const statusLabel = useMemo(() => {
     if (!eligible) return 'Iscriviti per giocare';
     if (!data?.config) return 'Bonus non attivo';
-    if (status === 'settled') return isWinner ? '🏆 Hai vinto!' : (hasPick ? 'Hai perso' : 'Non giocato');
-    if (status === 'locked') return hasPick ? 'In attesa esito' : 'Countdown scaduto';
-    return hasPick ? '✓ Pronostico inviato' : '⏳ In attesa pronostico';
-  }, [eligible, status, hasPick, isWinner, data]);
+    if (status === 'settled') {
+      if (winners > 0) return `🏆 Vinto ×${winners}`;
+      if (subsWithPick > 0) return 'Nessuna vincita';
+      return 'Non giocato';
+    }
+    if (status === 'locked') return subsWithPick > 0 ? 'In attesa esito' : 'Countdown scaduto';
+    if (subsToPlay === 0) return `✓ ${subsCount} pronostic${subsCount === 1 ? 'o inviato' : 'i inviati'}`;
+    return `⏳ ${subsToPlay}/${subsCount} da giocare`;
+  }, [eligible, status, subsCount, subsWithPick, subsToPlay, winners, data]);
 
   const countdown = useCountdown(data?.config?.lock_at);
 
