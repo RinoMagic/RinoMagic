@@ -96,11 +96,6 @@ export default function UploadSchedina() {
         );
       } else {
         setEvents(res.events);
-        if (res.events.length < 3) {
-          setMsg(
-            `OCR ha trovato ${res.events.length} evento/i. Se lo screenshot conteneva più partite, aggiungi manualmente le mancanti.`
-          );
-        }
       }
       setStep('confirm');
     } catch (e: any) {
