@@ -602,6 +602,7 @@ def build_router(
                 "fixtures": [
                     {"idx": i, "home_team": r["home_team"].strip(),
                      "away_team": r["away_team"].strip(),
+                     "kickoff_iso": r.get("kickoff_iso"),
                      "postponed_before": False, "postponed_during": False}
                     for i, r in enumerate(cal_rows)
                 ],
@@ -1055,12 +1056,24 @@ def build_router(
             ]
 
         md_id = str(uuid.uuid4())
+        # Optional: look up kickoff_iso for each fixture from the season calendar
+        # so /summary can decide the pre/post kickoff privacy window.
+        kickoff_map: Dict[tuple, Optional[str]] = {}
+        async for row in db.sal_calendar.find(
+            {"season": season, "matchday": data.matchday_number},
+            {"_id": 0, "home_team": 1, "away_team": 1, "kickoff_iso": 1},
+        ):
+            kickoff_map[(row["home_team"].strip(), row["away_team"].strip())] = row.get("kickoff_iso")
+
         fixtures = []
         for i, fx in enumerate(provided):
+            home = fx.home_team.strip()
+            away = fx.away_team.strip()
             fixtures.append({
                 "idx": i,
-                "home_team": fx.home_team.strip(),
-                "away_team": fx.away_team.strip(),
+                "home_team": home,
+                "away_team": away,
+                "kickoff_iso": kickoff_map.get((home, away)),
                 "postponed_before": bool(getattr(fx, "postponed", False)),
                 "postponed_during": False,
             })
@@ -1530,6 +1543,115 @@ def build_router(
                 next_tid = await _close_tournament_and_advance(fresh, md["matchday_number"])
         return {"ok": True, "settled": True, "alive_count": len(alive),
                 "next_tournament_id": next_tid}
+
+    # ------------------------------------------------------------------
+    # Riassunto Giornata (privacy-aware aggregation)
+    # ------------------------------------------------------------------
+
+    def _md_first_kickoff(md: dict) -> Optional[str]:
+        first: Optional[str] = None
+        for fx in md.get("fixtures", []) or []:
+            k = fx.get("kickoff_iso")
+            if k and (first is None or k < first):
+                first = k
+        return first
+
+    def _md_summary_locked(md: dict) -> bool:
+        """Return True once the FIRST kickoff of the matchday has passed
+        (or the matchday is already settled)."""
+        if md.get("status") == "settled":
+            return True
+        k = _md_first_kickoff(md)
+        if not k:
+            return False
+        try:
+            dt = datetime.fromisoformat(k.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) >= dt
+        except Exception:
+            return False
+
+    @router.get("/tournaments/{tournament_id}/matchdays/{matchday_id}/summary")
+    async def matchday_summary(
+        tournament_id: str, matchday_id: str, user: dict = Depends(current_user),
+    ):
+        """Riassunto Giornata for ScoreAndLive.
+
+        - Pre-kickoff of the first fixture: shows only aggregated counts per
+          fixture (which players/teams have been picked, how many times) —
+          without revealing which user picked which player.
+        - Post-kickoff: reveals every pick with the nickname of who made it,
+          so all participants can review the group's choices.
+        """
+        # Any user in the tournament can read it (participants + admins).
+        part = await _participant(tournament_id, user["id"])
+        t = await db.sal_tournaments.find_one({"id": tournament_id}, {"admin_user_id": 1, "_id": 0})
+        is_admin = t and (user["role"] == "admin" or user["id"] == t.get("admin_user_id"))
+        if not part and not is_admin:
+            raise HTTPException(status_code=403, detail="Non sei iscritto a questo torneo")
+
+        md = await _get_matchday(matchday_id)
+        if md["tournament_id"] != tournament_id:
+            raise HTTPException(status_code=404, detail="Giornata non trovata")
+
+        locked = _md_summary_locked(md)
+        first_kick = _md_first_kickoff(md)
+
+        # Load ALL picks for this matchday in a single roundtrip
+        picks_cur = db.sal_picks.find(
+            {"tournament_id": tournament_id, "matchday_id": matchday_id},
+        )
+        # Bucket picks by fixture_idx → player_id → list of pick metadata
+        by_fx_player: Dict[int, Dict[str, Dict[str, Any]]] = {}
+        async for doc in picks_cur:
+            nickname = doc.get("nickname", "?")
+            uid = doc["user_id"]
+            for pk in doc.get("picks", []) or []:
+                fi = int(pk.get("fixture_idx", -1))
+                pid = pk.get("player_id") or "?"
+                slot = by_fx_player.setdefault(fi, {}).setdefault(pid, {
+                    "player_id": pid,
+                    "player_name": pk.get("player_name"),
+                    "team": pk.get("team"),
+                    "count": 0,
+                    "pickers": [],  # populated only when the summary is unlocked
+                })
+                slot["count"] += 1
+                if locked:
+                    slot["pickers"].append({
+                        "user_id": uid,
+                        "nickname": nickname,
+                        "deadlock_override": bool(pk.get("deadlock_override")),
+                    })
+
+        # Build the per-fixture output preserving the order of md.fixtures
+        fixtures_out: List[dict] = []
+        for i, fx in enumerate(md.get("fixtures", []) or []):
+            candidates = list(by_fx_player.get(i, {}).values())
+            candidates.sort(key=lambda c: (-c["count"], (c.get("player_name") or "").lower()))
+            # Strip pickers when locked=False (defense in depth against
+            # tampering the client — the loop above already skips them, but
+            # this makes the guarantee explicit).
+            if not locked:
+                for c in candidates:
+                    c["pickers"] = None
+            fixtures_out.append({
+                "fixture_idx": i,
+                "home_team": fx.get("home_team"),
+                "away_team": fx.get("away_team"),
+                "kickoff_iso": fx.get("kickoff_iso"),
+                "total_picks": sum(c["count"] for c in candidates),
+                "candidates": candidates,
+            })
+
+        return {
+            "matchday": md.get("matchday_number"),
+            "kickoff_first": first_kick,
+            "locked": locked,
+            "settled": md.get("status") == "settled",
+            "fixtures": fixtures_out,
+        }
 
     return router
 

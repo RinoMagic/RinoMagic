@@ -82,13 +82,25 @@ export default function TournamentPage() {
           <Text style={styles.cardTitle}>Giornate ({t.matchdays.length})</Text>
           {t.matchdays.length === 0 && <Text style={styles.muted}>Ancora nessuna giornata creata.</Text>}
           {t.matchdays.map((m) => (
-            <Pressable key={m.id} style={styles.mdRow}
-              onPress={() => router.push(`/scoreandlive/${id}/pick?matchday_id=${m.id}`)}
-              testID={`sal-md-${m.matchday_number}`}>
-              <Text style={styles.mdNum}>G{m.matchday_number}</Text>
-              <Text style={styles.mdMeta}>{m.fixtures_count} partite · {m.status}</Text>
+            <View key={m.id} style={styles.mdRow}>
+              <Pressable
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}
+                onPress={() => router.push(`/scoreandlive/${id}/pick?matchday_id=${m.id}`)}
+                testID={`sal-md-${m.matchday_number}`}
+              >
+                <Text style={styles.mdNum}>G{m.matchday_number}</Text>
+                <Text style={styles.mdMeta}>{m.fixtures_count} partite · {m.status}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => router.push(`/scoreandlive/${id}/summary?matchday_id=${m.id}`)}
+                hitSlop={10}
+                testID={`sal-summary-${m.matchday_number}`}
+                style={styles.summaryBtn}
+              >
+                <Ionicons name="stats-chart" size={16} color={COLOR} />
+              </Pressable>
               <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
-            </Pressable>
+            </View>
           ))}
         </View>
 
@@ -195,6 +207,11 @@ const styles = StyleSheet.create({
   mdRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, padding: theme.spacing.sm, borderRadius: theme.radius.sm, backgroundColor: theme.colors.surface },
   mdNum: { color: COLOR, fontWeight: '800', fontSize: 15, width: 40 },
   mdMeta: { color: theme.colors.onSurface, fontSize: 13, flex: 1 },
+  summaryBtn: {
+    paddingHorizontal: 8, paddingVertical: 6,
+    borderRadius: theme.radius.sm,
+    backgroundColor: COLOR + '18',
+  },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   nick: { color: theme.colors.onSurface, fontSize: 14, flex: 1 },
   lives: { color: theme.colors.onSurfaceSecondary, fontSize: 13, fontWeight: '600' },
