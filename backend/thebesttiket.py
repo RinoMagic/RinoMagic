@@ -1502,12 +1502,7 @@ def build_router(
             )
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Schedina rifiutata: non riconosciuta come Star Yes "
-                    f"({sy_reason}). TheBestTiket accetta SOLO schedine "
-                    "dal sito ufficiale staryes.it — controlla di aver "
-                    "caricato lo screenshot dell'app/sito Star Yes."
-                ),
+                detail="Schedina non corrispondente al sito staryes.",
             )
 
         if len(parsed) > room["max_events"]:
