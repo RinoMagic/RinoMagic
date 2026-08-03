@@ -100,6 +100,27 @@ export default function Settings() {
           </View>
         </View>
 
+        {/* Admin tools */}
+        {isAdmin && (
+          <View style={styles.card}>
+            <Text style={styles.cardLabel}>STRUMENTI ADMIN</Text>
+            <Pressable
+              testID="settings-admin-bonus"
+              onPress={() => router.push('/admin/bonus')}
+              style={styles.adminRow}
+            >
+              <View style={[styles.adminIcon, { backgroundColor: '#F59E0B' }]}>
+                <Ionicons name="gift" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowText}>Gestione Giochi Bonus</Text>
+                <Text style={styles.rowSub}>Configura Big Match, primo marcatore e liquida i premi</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+            </Pressable>
+          </View>
+        )}
+
         {/* Change password (admin only) */}
         {isAdmin ? (
           <View style={styles.card}>
@@ -273,6 +294,17 @@ const styles = StyleSheet.create({
   },
   rowText: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 15 },
   rowSub: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
+  adminRow: {
+    flexDirection: 'row', alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surface,
+  },
+  adminIcon: {
+    width: 40, height: 40, borderRadius: theme.radius.md,
+    alignItems: 'center', justifyContent: 'center',
+  },
   fieldWrap: { gap: 6 },
   fieldLabel: {
     color: theme.colors.onSurfaceSecondary,
