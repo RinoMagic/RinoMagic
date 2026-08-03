@@ -78,34 +78,29 @@ export default function AdminBonus() {
         return;
       }
       setMe(s.user);
-      const [cfgs, av] = await Promise.all([
-        api<Config[]>('/bonus/configs'),
-        // Use the exact_score available to fetch fixtures for the current matchday
-        api<Available>(`/bonus/available?game=tiket&season=${season}`).catch(() => ({
-          bonus_type: 'exact_score' as BonusType, fixtures: [],
-        })),
-      ]);
+      const cfgs = await api<Config[]>('/bonus/configs');
       setConfigs(cfgs);
-      setFixtures(av.fixtures || []);
     } catch (e: any) {
       alert(e.message || 'Errore caricamento');
     } finally {
       setLoading(false);
     }
-  }, [season, router]);
+  }, [router]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  // When user changes the matchday input, reload fixtures for that matchday.
+  // Reload fixtures whenever the target matchday/season changes.
   const [fxLoading, setFxLoading] = useState(false);
   useEffect(() => {
     (async () => {
       const md = parseInt(matchday, 10);
-      if (isNaN(md) || md < 1 || md > 38) return;
+      if (isNaN(md) || md < 1 || md > 38) {
+        setFixtures([]);
+        return;
+      }
       setFxLoading(true);
       try {
-        // Fetch fixtures directly from the SAL calendar for the target matchday.
         const cal = await api<{ fixtures: { home_team: string; away_team: string; kickoff_iso?: string }[] }>(
-          `/sal/calendar?season=${season}&matchday=${md}`,
+          `/sal/calendar?season=${encodeURIComponent(season)}&matchday=${md}`,
         ).catch(() => ({ fixtures: [] }));
         setFixtures(cal.fixtures || []);
       } finally {
