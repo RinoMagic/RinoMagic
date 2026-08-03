@@ -11,7 +11,7 @@
  *  - Anyone can tap an archived tournament to inspect its picks history.
  */
 import { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -43,6 +43,13 @@ export default function ScoreAndLiveHome() {
   const [loading, setLoading] = useState(true);
   const [showArchive, setShowArchive] = useState(false);
   const [role, setRole] = useState<'admin' | 'player' | null>(null);
+  // Admin: create tournament modal state
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newLives, setNewLives] = useState('3');
+  const [newSeason, setNewSeason] = useState('2026-27');
+  const [newStartMd, setNewStartMd] = useState('1');
+  const [creating, setCreating] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -99,6 +106,40 @@ export default function ScoreAndLiveHome() {
     } catch (e: any) { alert(e.message || 'Errore'); }
   };
 
+  const doCreate = async () => {
+    const name = newName.trim();
+    const lives = parseInt(newLives || '3', 10);
+    const startMd = parseInt(newStartMd || '1', 10);
+    if (!name) return alert('Inserisci un nome per il torneo');
+    if (isNaN(lives) || lives < 1 || lives > 10) {
+      return alert('Le vite iniziali devono essere tra 1 e 10');
+    }
+    if (isNaN(startMd) || startMd < 1 || startMd > 38) {
+      return alert('La giornata di partenza deve essere tra 1 e 38');
+    }
+    setCreating(true);
+    try {
+      await api('/sal/tournaments', {
+        method: 'POST',
+        body: {
+          name,
+          initial_lives: lives,
+          season: newSeason.trim() || '2026-27',
+          start_matchday: startMd,
+        },
+      });
+      setCreateOpen(false);
+      setNewName('');
+      setNewLives('3');
+      setNewStartMd('1');
+      await load();
+    } catch (e: any) {
+      alert(e.message || 'Errore creazione torneo');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const activeItems = items.filter((t) => t.status !== 'finished');
   const isAdmin = role === 'admin';
 
@@ -141,14 +182,19 @@ export default function ScoreAndLiveHome() {
               <View style={[styles.card, { backgroundColor: COLOR + '18', borderColor: COLOR + '55', borderWidth: 1 }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <Ionicons name="flash" size={18} color={COLOR} />
-                  <Text style={[styles.cardTitle, { flex: 1, color: COLOR }]}>Auto-progressione attiva</Text>
+                  <Text style={[styles.cardTitle, { flex: 1, color: COLOR }]}>Gestione tornei</Text>
                 </View>
                 <Text style={styles.hint}>
-                  I tornei vengono creati automaticamente: quando l&apos;ultimo
-                  sopravvissuto del round è decretato, viene aperto un nuovo
-                  round con un nuovo codice invito. Il primo torneo di una
-                  stagione parte all&apos;upload del calendario stagionale.
+                  Crea manualmente il primo torneo di una stagione. I round successivi vengono generati automaticamente quando l&apos;ultimo sopravvissuto è decretato (nuovo codice invito univoco).
                 </Text>
+                <Pressable
+                  style={[styles.cta, { backgroundColor: COLOR }]}
+                  onPress={() => setCreateOpen(true)}
+                  testID="sal-create-tournament"
+                >
+                  <Ionicons name="add-circle" size={18} color="#fff" />
+                  <Text style={styles.ctaText}>Crea nuovo torneo</Text>
+                </Pressable>
               </View>
             )}
 
@@ -219,6 +265,78 @@ export default function ScoreAndLiveHome() {
           </>
         )}
       </ScrollView>
+
+      {/* Admin: Create tournament modal */}
+      <Modal visible={createOpen} transparent animationType="slide" onRequestClose={() => setCreateOpen(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Nuovo torneo ScoreAndLive</Text>
+              <Pressable onPress={() => setCreateOpen(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={theme.colors.onSurface} />
+              </Pressable>
+            </View>
+            <View style={styles.modalBody}>
+              <View style={styles.field}>
+                <Text style={styles.fieldLabel}>Nome torneo</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Es. Round 1"
+                  placeholderTextColor={theme.colors.muted}
+                  value={newName}
+                  onChangeText={setNewName}
+                  testID="sal-new-name"
+                />
+              </View>
+              <View style={{ flexDirection: 'row', gap: 12 }}>
+                <View style={[styles.field, { flex: 1 }]}>
+                  <Text style={styles.fieldLabel}>Vite iniziali</Text>
+                  <TextInput
+                    style={styles.input}
+                    keyboardType="number-pad"
+                    value={newLives}
+                    onChangeText={setNewLives}
+                    testID="sal-new-lives"
+                  />
+                </View>
+                <View style={[styles.field, { flex: 1 }]}>
+                  <Text style={styles.fieldLabel}>Giornata partenza</Text>
+                  <TextInput
+                    style={styles.input}
+                    keyboardType="number-pad"
+                    value={newStartMd}
+                    onChangeText={setNewStartMd}
+                    testID="sal-new-md"
+                  />
+                </View>
+              </View>
+              <View style={styles.field}>
+                <Text style={styles.fieldLabel}>Stagione</Text>
+                <TextInput
+                  style={styles.input}
+                  value={newSeason}
+                  onChangeText={setNewSeason}
+                />
+              </View>
+              <Text style={styles.hint}>
+                Alla creazione viene emesso automaticamente un codice invito univoco. Dalla scheda torneo potrai generarne altri per iscrivere più giocatori.
+              </Text>
+              <Pressable
+                disabled={creating}
+                style={[styles.cta, { backgroundColor: COLOR }, creating && { opacity: 0.5 }]}
+                onPress={doCreate}
+                testID="sal-create-submit"
+              >
+                {creating ? <ActivityIndicator color="#fff" />
+                  : <>
+                      <Ionicons name="checkmark" size={18} color="#fff" />
+                      <Text style={styles.ctaText}>Crea torneo</Text>
+                    </>}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -285,4 +403,26 @@ const styles = StyleSheet.create({
   aName: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 14 },
   aMeta: { color: theme.colors.onSurfaceSecondary, fontSize: 12, marginTop: 2 },
   aDate: { color: theme.colors.muted, fontSize: 11, marginTop: 2, fontStyle: 'italic' },
+
+  modalOverlay: {
+    flex: 1, justifyContent: 'flex-end',
+    backgroundColor: '#00000099',
+  },
+  modalCard: {
+    backgroundColor: theme.colors.surface,
+    borderTopLeftRadius: theme.radius.lg, borderTopRightRadius: theme.radius.lg,
+    maxHeight: '85%',
+  },
+  modalHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    padding: theme.spacing.lg,
+    borderBottomWidth: 1, borderBottomColor: theme.colors.border,
+  },
+  modalTitle: { color: theme.colors.onSurface, fontSize: 17, fontWeight: '800', flex: 1 },
+  modalBody: { padding: theme.spacing.lg, gap: theme.spacing.md },
+  field: { gap: 6 },
+  fieldLabel: {
+    color: theme.colors.muted, fontSize: 11, fontWeight: '800',
+    letterSpacing: 0.6, textTransform: 'uppercase',
+  },
 });
