@@ -310,12 +310,18 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             lock_iso = kickoff
         else:  # first_scorer
             big_match = None
-            lock_iso = await _earliest_kickoff(body.season, body.matchday)
-            if not lock_iso:
+            # Confirm there are actually fixtures for this matchday (calendar
+            # loaded), but do NOT require kickoff_iso — the Serie A PDF often
+            # ships without dates and we still want to allow bonus creation.
+            has_fixtures = await db.sal_calendar.count_documents({
+                "season": body.season, "matchday": body.matchday,
+            })
+            if not has_fixtures:
                 raise HTTPException(
                     status_code=400,
                     detail="Nessuna partita nel calendario per questa giornata",
                 )
+            lock_iso = await _earliest_kickoff(body.season, body.matchday)
         lock_at = None
         if lock_iso:
             try:
