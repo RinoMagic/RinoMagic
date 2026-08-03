@@ -141,7 +141,7 @@ export default function SurvivaHome() {
             <Ionicons name="home" size={22} color={theme.colors.onSurface} />
           </Pressable>
           <View style={{ flex: 1 }}>
-            <Text style={styles.title}>Surviva 2.0</Text>
+            <Text style={styles.title}>Survival 2.0</Text>
             <Text style={styles.subtitle}>3 vite, 1 pronostico a giornata</Text>
           </View>
           {isAdmin && (
@@ -265,7 +265,7 @@ export default function SurvivaHome() {
       <Modal visible={createOpen} transparent animationType="slide" onRequestClose={() => setCreateOpen(false)}>
         <View style={styles.modalBg}>
           <View style={styles.modalBody}>
-            <Text style={styles.modalTitle}>Nuovo torneo Surviva</Text>
+            <Text style={styles.modalTitle}>Nuovo torneo Survival</Text>
             <View style={styles.field}>
               <Text style={styles.fieldLabel}>Nome torneo</Text>
               <TextInput

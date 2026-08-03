@@ -82,7 +82,7 @@ GAMES: Dict[str, Dict[str, Any]] = {
     },
     "surviva": {
         "id": "surviva",
-        "name": "Surviva 2.0",
+        "name": "Survival 2.0",
         "tagline": "3 vite, 1 pronostico a giornata: sopravvivi!",
         "color": "#EF4444",
         "icon": "heart",
