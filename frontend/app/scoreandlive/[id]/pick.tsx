@@ -15,8 +15,9 @@ import { theme } from '@/src/theme';
 const COLOR = '#10B981';
 
 type Fixture = { idx: number; home_team: string; away_team: string; postponed_before?: boolean };
-type Matchday = { id: string; matchday_number: number; status: string; fixtures: Fixture[]; my_picks?: { picks: { fixture_idx: number; player_id: string; player_name: string; team: string; deadlock_override?: boolean }[] } };
+type Matchday = { id: string; matchday_number: number; status: string; fixtures: Fixture[]; my_picks?: { picks: { fixture_idx: number; player_id: string; player_name: string; team: string }[] } };
 type Player = { id: string; full_name: string; team: string; role: string };
+type BlockedPlayer = { player_id: string; full_name: string; team: string };
 
 export default function PickPage() {
   const { id, matchday_id } = useLocalSearchParams<{ id: string; matchday_id: string }>();
@@ -25,14 +26,14 @@ export default function PickPage() {
   const [players, setPlayers] = useState<Record<string, Player[]>>({});
   const [picks, setPicks] = useState<Record<number, string>>({});
   const [q, setQ] = useState<Record<number, string>>({});
-  const [tournament, setTournament] = useState<{ my_blocked_teams: string[] } | null>(null);
+  const [blockedPlayers, setBlockedPlayers] = useState<BlockedPlayer[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   const load = async () => {
     try {
       const t = await api<any>(`/sal/tournaments/${id}`);
-      setTournament({ my_blocked_teams: t.my_blocked_teams || [] });
+      setBlockedPlayers(t.my_blocked_players || []);
       const m = await api<Matchday>(`/sal/tournaments/${id}/matchdays/${matchday_id}`);
       setMd(m);
       // Preload picks
@@ -52,9 +53,10 @@ export default function PickPage() {
   };
   useFocusEffect(useCallback(() => { load(); }, [id, matchday_id]));
 
-  const blockedTeams = useMemo(() => {
-    return new Set((tournament?.my_blocked_teams || []).map((t) => t.toLowerCase()));
-  }, [tournament]);
+  const blockedPlayerIds = useMemo(
+    () => new Set(blockedPlayers.map((b) => b.player_id)),
+    [blockedPlayers],
+  );
 
   const submit = async () => {
     if (!md) return;
@@ -94,10 +96,16 @@ export default function PickPage() {
       </SafeAreaView>
 
       <ScrollView contentContainerStyle={{ padding: theme.spacing.md, gap: theme.spacing.lg, paddingBottom: 80 }}>
+        {blockedPlayers.length > 0 && (
+          <View style={styles.blockedBanner}>
+            <Ionicons name="lock-closed" size={14} color={theme.colors.muted} />
+            <Text style={styles.blockedBannerText}>
+              Giocatori bloccati ({blockedPlayers.length}): {blockedPlayers.slice(0, 5).map(b => b.full_name).join(', ')}
+              {blockedPlayers.length > 5 ? ` +${blockedPlayers.length - 5}` : ''}
+            </Text>
+          </View>
+        )}
         {playable.map((f) => {
-          const homeBlocked = blockedTeams.has(f.home_team.toLowerCase());
-          const awayBlocked = blockedTeams.has(f.away_team.toLowerCase());
-          const bothBlocked = homeBlocked && awayBlocked;
           const teamPool = [
             ...(players[f.home_team.toLowerCase()] || []),
             ...(players[f.away_team.toLowerCase()] || []),
@@ -110,16 +118,10 @@ export default function PickPage() {
           return (
             <View key={f.idx} style={styles.card}>
               <View style={styles.fixHeader}>
-                <Text style={[styles.team, homeBlocked && !bothBlocked && styles.blocked]}>{f.home_team}{homeBlocked ? ' 🔒' : ''}</Text>
+                <Text style={styles.team}>{f.home_team}</Text>
                 <Text style={styles.vs}>vs</Text>
-                <Text style={[styles.team, awayBlocked && !bothBlocked && styles.blocked]}>{f.away_team}{awayBlocked ? ' 🔒' : ''}</Text>
+                <Text style={styles.team}>{f.away_team}</Text>
               </View>
-              {bothBlocked && (
-                <View style={styles.deroga}>
-                  <Ionicons name="warning" size={14} color={theme.colors.warning} />
-                  <Text style={styles.derogaText}>Deroga di stallo: entrambe bloccate, qualsiasi pick è ammesso</Text>
-                </View>
-              )}
               <TextInput
                 style={styles.input}
                 placeholder="Cerca calciatore..."
@@ -129,9 +131,8 @@ export default function PickPage() {
               />
               <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled>
                 {filtered.slice(0, 30).map((p) => {
-                  const teamLower = p.team.toLowerCase();
                   const isSelected = selectedId === p.id;
-                  const isBlockedTeam = blockedTeams.has(teamLower) && !bothBlocked;
+                  const isBlocked = blockedPlayerIds.has(p.id);
                   return (
                     <Pressable
                       key={p.id}
@@ -139,15 +140,15 @@ export default function PickPage() {
                       style={[
                         styles.playerRow,
                         isSelected && { backgroundColor: COLOR + '22', borderColor: COLOR },
-                        isBlockedTeam && { opacity: 0.4 },
+                        isBlocked && { opacity: 0.4 },
                       ]}
-                      disabled={isBlockedTeam}
+                      disabled={isBlocked}
                     >
                       <View style={styles.roleBadge}><Text style={styles.roleBadgeText}>{p.role}</Text></View>
                       <Text style={styles.playerName} numberOfLines={1}>{p.full_name}</Text>
                       <Text style={styles.playerTeam}>{p.team}</Text>
                       {isSelected && <Ionicons name="checkmark-circle" size={18} color={COLOR} />}
-                      {isBlockedTeam && <Ionicons name="lock-closed" size={14} color={theme.colors.error} />}
+                      {isBlocked && <Ionicons name="lock-closed" size={14} color={theme.colors.error} />}
                     </Pressable>
                   );
                 })}
@@ -174,14 +175,16 @@ const styles = StyleSheet.create({
   },
   fixHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing.md },
   team: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15, flex: 1, textAlign: 'center' },
-  blocked: { color: theme.colors.error },
   vs: { color: theme.colors.muted, fontSize: 12 },
-  deroga: {
+  blockedBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    padding: 6, borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.warning + '22',
+    padding: theme.spacing.sm, borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderWidth: 1, borderColor: theme.colors.border,
   },
-  derogaText: { color: theme.colors.warning, fontSize: 11, flex: 1 },
+  blockedBannerText: {
+    color: theme.colors.muted, fontSize: 11, flex: 1, fontStyle: 'italic',
+  },
   input: {
     color: theme.colors.onSurface, backgroundColor: theme.colors.surface,
     padding: theme.spacing.sm, borderRadius: theme.radius.sm,

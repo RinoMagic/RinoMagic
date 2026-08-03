@@ -2,14 +2,9 @@
 
 Elimination tournament based on guessing goalscorers. Each matchday a player
 picks one scorer per playable fixture; a missed pick costs a life. Zero lives
-means elimination. Once a scorer is hit, the whole team is off-limits for the
-rest of the tournament. Postponed matches never cost lives.
-
-**Deadlock deroga (Option B rule)**: if both teams of a specific fixture are
-already blocked for the user, that fixture accepts any pick regardless (the
-pick is stored with ``deadlock_override: True``). This avoids situations where
-a player would be unable to make a valid pick because both fixture sides are
-already blocked.
+means elimination. Once a scorer is hit, ONLY THAT specific player is off-
+limits for the rest of the tournament — the rest of the team stays available.
+Postponed matches never cost lives.
 
 Data model (all collections prefixed with `sal_`):
 
@@ -17,7 +12,7 @@ Data model (all collections prefixed with `sal_`):
 * ``sal_tournaments``    — one running elimination tournament
 * ``sal_matchdays``      — a matchday inside a tournament
 * ``sal_picks``          — the picks a player submits for a matchday
-* ``sal_participants``   — per-tournament state (lives, blocked teams, ...)
+* ``sal_participants``   — per-tournament state (lives, blocked players, ...)
 """
 from __future__ import annotations
 
@@ -571,7 +566,8 @@ def build_router(
             "finished_at": None,
             "invite_code": code,
             "winner_user_id": None,
-            "blocked_teams_by_user": {},
+            "blocked_players_by_user": {},
+            "blocked_teams_by_user": {},  # legacy; kept for read compat, unused in v2
             "previous_tournament_id": previous_tournament_id,
             "next_tournament_id": None,
         }
@@ -740,11 +736,24 @@ def build_router(
                 "status": md["status"],
                 "fixtures_count": sum(1 for f in md.get("fixtures", []) if not f.get("postponed_before")),
             })
+        # Resolve blocked player IDs → names for the UI
+        blocked_ids = t.get("blocked_players_by_user", {}).get(user["id"], []) or []
+        blocked_players_detail: List[dict] = []
+        if blocked_ids:
+            async for pl in db.sal_players.find(
+                {"id": {"$in": blocked_ids}}, {"_id": 0, "id": 1, "full_name": 1, "team": 1},
+            ):
+                blocked_players_detail.append({
+                    "player_id": pl["id"],
+                    "full_name": pl.get("full_name"),
+                    "team": pl.get("team"),
+                })
         return {
             **await _tournament_dict(t, user),
             "participants": participants,
             "matchdays": matchdays,
-            "my_blocked_teams": t.get("blocked_teams_by_user", {}).get(user["id"], []),
+            "my_blocked_players": blocked_players_detail,
+            "my_blocked_teams": [],  # legacy field (empty in v2 rules)
         }
 
     @router.get("/tournaments/by-code/{invite_code}")
@@ -1392,7 +1401,13 @@ def build_router(
             raise HTTPException(status_code=400, detail=f"Manca il pick per {len(missing)} partita/e")
 
         t = await _get_tournament(tournament_id)
-        blocked = {_norm_team(x) for x in t.get("blocked_teams_by_user", {}).get(user["id"], [])}
+        # v2 rule: block ONLY the specific players a user has previously hit
+        # (not the whole team). We still read the legacy team-block field for
+        # backwards compat on old tournaments but new blocks go into
+        # ``blocked_players_by_user``.
+        blocked_players = set(
+            t.get("blocked_players_by_user", {}).get(user["id"], []),
+        )
 
         pick_docs = []
         for p in data.picks:
@@ -1411,18 +1426,15 @@ def build_router(
                         f"che non fa parte di {fx['home_team']} - {fx['away_team']}"
                     ),
                 )
-            # Option B — team-block rule with deadlock exception:
-            #   * if BOTH teams of this fixture are already blocked for the user,
-            #     the pick is admitted regardless (deroga di stallo).
-            #   * otherwise, reject the pick only if the chosen player's own
-            #     team is blocked (the opposite team is fine).
-            both_blocked = home in blocked and away in blocked
-            if not both_blocked and p_team in blocked:
+            # v2 rule: reject the pick if THIS specific player is already
+            # blocked for the user (i.e. they already scored in a previous
+            # matchday). Team-level blocks no longer exist.
+            if p.player_id in blocked_players:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"La squadra {player.get('team')} è bloccata per te. "
-                        f"Scegli un giocatore del {fx['away_team'] if p_team == home else fx['home_team']}."
+                        f"Hai già usato {player.get('full_name')} in una "
+                        "giornata precedente: scegli un altro marcatore."
                     ),
                 )
             pick_docs.append({
@@ -1430,8 +1442,8 @@ def build_router(
                 "player_id": p.player_id,
                 "player_name": player.get("full_name"),
                 "team": player.get("team"),
-                # informational — clients can badge these picks in review UIs
-                "deadlock_override": both_blocked,
+                # legacy field, no longer used (kept for downstream tools)
+                "deadlock_override": False,
             })
 
         await db.sal_picks.update_one(
@@ -1479,13 +1491,10 @@ def build_router(
                 raise HTTPException(status_code=400, detail=f"Giocatore {s.player_id} non trovato")
             scorers_by_fixture.setdefault(s.fixture_idx, []).append(s.player_id)
 
-        global_blocked_teams: set[str] = set()
-        for fx in md["fixtures"]:
-            if fx["idx"] in postponed_during:
-                global_blocked_teams.add(fx["home_team"])
-                global_blocked_teams.add(fx["away_team"])
-
-        blocked_by_user = dict(t.get("blocked_teams_by_user", {}))
+        # v2 rule: block only the individual scorer that was hit, not the
+        # whole team. Postponed matches during the matchday just skip the
+        # pick (no life lost, no block gained).
+        blocked_by_user = dict(t.get("blocked_players_by_user", {}))
 
         picks_cursor = db.sal_picks.find(
             {"tournament_id": tournament_id, "matchday_id": matchday_id}, {"_id": 0}
@@ -1506,15 +1515,11 @@ def build_router(
                 if p["player_id"] in scorer_ids:
                     hits.append(p)
                     blocked_set = set(blocked_by_user.get(user_id, []))
-                    blocked_set.add(p["team"])
+                    blocked_set.add(p["player_id"])
                     blocked_by_user[user_id] = sorted(blocked_set)
                 else:
                     misses.append(p)
                     lives_lost += 1
-            if global_blocked_teams:
-                blocked_set = set(blocked_by_user.get(user_id, []))
-                blocked_set.update(global_blocked_teams)
-                blocked_by_user[user_id] = sorted(blocked_set)
             new_lives = max(0, part["lives_remaining"] - lives_lost)
             set_fields = {"lives_remaining": new_lives}
             if new_lives == 0 and part.get("eliminated_at_matchday") is None:
@@ -1530,7 +1535,7 @@ def build_router(
 
         await db.sal_tournaments.update_one(
             {"id": tournament_id},
-            {"$set": {"blocked_teams_by_user": blocked_by_user}},
+            {"$set": {"blocked_players_by_user": blocked_by_user}},
         )
         scorers_list = [
             {"fixture_idx": fidx, "player_id": pid}
