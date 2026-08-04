@@ -119,6 +119,20 @@ export default function Settings() {
               <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
             </Pressable>
             <Pressable
+              testID="settings-admin-players"
+              onPress={() => router.push('/admin/players')}
+              style={styles.adminRow}
+            >
+              <View style={[styles.adminIcon, { backgroundColor: '#8B5CF6' }]}>
+                <Ionicons name="people" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowText}>Lista Calciatori</Text>
+                <Text style={styles.rowSub}>Carica il Listone Fantacalcio (PDF) — richiesto per picks e settlement</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+            </Pressable>
+            <Pressable
               testID="settings-admin-bonus"
               onPress={() => router.push('/admin/bonus')}
               style={styles.adminRow}
