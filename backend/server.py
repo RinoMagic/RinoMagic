@@ -165,6 +165,14 @@ _bonus_router = _build_bonus_router(
 api.include_router(_bonus_router)
 
 
+from matchday_settle import build_router as _build_settle_router  # noqa: E402
+_settle_router = _build_settle_router(
+    db=db,
+    require_admin=require_admin,
+)
+api.include_router(_settle_router)
+
+
 # =========================================================================
 # Startup / shutdown
 # =========================================================================
