@@ -95,6 +95,8 @@ export default function SettleMatchday() {
   const [calculating, setCalculating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveLog, setSaveLog] = useState<any | null>(null);
+  // Manual overrides: keyed by "Home||Away" → {home_score, away_score}
+  const [overrides, setOverrides] = useState<Record<string, { home_score: string; away_score: string }>>({});
 
   const loadState = async (md: number) => {
     try {
@@ -130,6 +132,21 @@ export default function SettleMatchday() {
   };
   const openPicker = useWebFileInput(doUploadPdf);
 
+  const _buildOverrides = () => {
+    return Object.entries(overrides)
+      .filter(([, v]) => v.home_score !== '' && v.away_score !== ''
+        && !Number.isNaN(parseInt(v.home_score, 10))
+        && !Number.isNaN(parseInt(v.away_score, 10)))
+      .map(([k, v]) => {
+        const [home_team, away_team] = k.split('||');
+        return {
+          home_team, away_team,
+          home_score: parseInt(v.home_score, 10),
+          away_score: parseInt(v.away_score, 10),
+        };
+      });
+  };
+
   const doCalculate = async () => {
     setCalculating(true); setPreview(null); setSaveLog(null);
     try {
@@ -140,6 +157,7 @@ export default function SettleMatchday() {
           matchday: md, season: '2026-27',
           first_scorer_player_name: firstScorer?.player_name,
           first_scorer_team: firstScorer?.team,
+          fixture_overrides: _buildOverrides(),
         },
       });
       setPreview(p);
@@ -161,11 +179,12 @@ export default function SettleMatchday() {
           matchday: md, season: '2026-27',
           first_scorer_player_name: firstScorer?.player_name,
           first_scorer_team: firstScorer?.team,
+          fixture_overrides: _buildOverrides(),
         },
       });
       setSaveLog(r);
-      setPreview(null);      // clear preview so it can't be resaved
-      await loadState(md);   // refresh state (counts should drop to 0)
+      setPreview(null);
+      await loadState(md);
     } catch (e: any) {
       alert(e.message);
     } finally {
@@ -176,6 +195,25 @@ export default function SettleMatchday() {
   const doCancel = () => {
     setPreview(null); setSaveLog(null);
   };
+
+  // Prefill the overrides state with the auto-derived scores of played
+  // fixtures so the admin can freely edit ANY match (not just postponed).
+  useEffect(() => {
+    if (preview) {
+      const next: Record<string, { home_score: string; away_score: string }> = { ...overrides };
+      preview.fixtures.list.forEach(f => {
+        const k = `${f.home_team}||${f.away_team}`;
+        if (!(k in next)) {
+          next[k] = {
+            home_score: f.home_score !== null ? String(f.home_score) : '',
+            away_score: f.away_score !== null ? String(f.away_score) : '',
+          };
+        }
+      });
+      setOverrides(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
@@ -279,7 +317,18 @@ export default function SettleMatchday() {
 
         {/* Step 5 — Preview + Salva/Annulla */}
         {preview && !saveLog && (
-          <PreviewBlock preview={preview} onSave={doCommit} onCancel={doCancel} saving={saving} />
+          <PreviewBlock
+            preview={preview}
+            overrides={overrides}
+            setOverride={(k, side, val) => setOverrides(o => ({
+              ...o, [k]: { ...(o[k] || { home_score: '', away_score: '' }), [side]: val },
+            }))}
+            onRecalc={doCalculate}
+            recalculating={calculating}
+            onSave={doCommit}
+            onCancel={doCancel}
+            saving={saving}
+          />
         )}
 
         {/* Step 6 — Save log */}
@@ -363,11 +412,19 @@ function FirstScorerPicker({ matchday, value, onChange }: {
 }
 
 
-function PreviewBlock({ preview, onSave, onCancel, saving }: {
-  preview: Preview; onSave: () => void; onCancel: () => void; saving: boolean;
+function PreviewBlock({
+  preview, overrides, setOverride, onRecalc, recalculating,
+  onSave, onCancel, saving,
+}: {
+  preview: Preview;
+  overrides: Record<string, { home_score: string; away_score: string }>;
+  setOverride: (key: string, side: 'home_score' | 'away_score', val: string) => void;
+  onRecalc: () => void;
+  recalculating: boolean;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
 }) {
-  const played = preview.fixtures.list.filter(f => f.played);
-  const postponed = preview.fixtures.list.filter(f => !f.played);
   return (
     <View style={styles.card}>
       <Text style={styles.previewTitle}>ANTEPRIMA GIORNATA {preview.matchday}</Text>
@@ -383,23 +440,60 @@ function PreviewBlock({ preview, onSave, onCancel, saving }: {
         </View>
       )}
 
-      <Text style={styles.sectionH}>Partite ({played.length} giocate · {postponed.length} rinviate)</Text>
+      <Text style={styles.sectionH}>Partite (modifica se manca un risultato o è sbagliato)</Text>
       <View style={{ gap: 4 }}>
-        {played.map((f, i) => (
-          <View key={i} style={styles.fxRow}>
-            <Text style={styles.fxTeam}>{f.home_team}</Text>
-            <Text style={styles.fxScore}>{f.home_score} – {f.away_score}</Text>
-            <Text style={styles.fxTeam}>{f.away_team}</Text>
-          </View>
-        ))}
-        {postponed.map((f, i) => (
-          <View key={i} style={[styles.fxRow, { opacity: 0.6 }]}>
-            <Text style={styles.fxTeam}>{f.home_team}</Text>
-            <Text style={styles.fxScorePost}>rinviata</Text>
-            <Text style={styles.fxTeam}>{f.away_team}</Text>
-          </View>
-        ))}
+        {preview.fixtures.list.map((f, i) => {
+          const k = `${f.home_team}||${f.away_team}`;
+          const ov = overrides[k] || {
+            home_score: f.home_score !== null ? String(f.home_score) : '',
+            away_score: f.away_score !== null ? String(f.away_score) : '',
+          };
+          const isManual = (f as any).manual || (!f.played && (ov.home_score !== '' || ov.away_score !== ''));
+          return (
+            <View
+              key={i}
+              style={[
+                styles.fxRow,
+                !f.played && { borderWidth: 1, borderColor: '#F59E0B55' },
+                isManual && { borderWidth: 1, borderColor: '#3B82F655' },
+              ]}
+            >
+              <Text style={styles.fxTeam}>{f.home_team}</Text>
+              <View style={styles.scoreInputRow}>
+                <TextInput
+                  style={styles.scoreInput}
+                  keyboardType="numeric"
+                  value={ov.home_score}
+                  onChangeText={(v) => setOverride(k, 'home_score', v.replace(/[^0-9]/g, ''))}
+                  placeholder="-"
+                  placeholderTextColor={theme.colors.muted}
+                  maxLength={2}
+                />
+                <Text style={styles.scoreDash}>–</Text>
+                <TextInput
+                  style={styles.scoreInput}
+                  keyboardType="numeric"
+                  value={ov.away_score}
+                  onChangeText={(v) => setOverride(k, 'away_score', v.replace(/[^0-9]/g, ''))}
+                  placeholder="-"
+                  placeholderTextColor={theme.colors.muted}
+                  maxLength={2}
+                />
+              </View>
+              <Text style={styles.fxTeam}>{f.away_team}</Text>
+            </View>
+          );
+        })}
       </View>
+      <Pressable
+        onPress={onRecalc}
+        disabled={recalculating}
+        style={[styles.recalcBtn, recalculating && { opacity: 0.5 }]}
+        testID="mds-recalc"
+      >
+        {recalculating ? <ActivityIndicator color={COLOR} size="small" />
+          : <><Ionicons name="refresh" size={14} color={COLOR} /><Text style={styles.recalcBtnText}>Ricalcola con i dati inseriti</Text></>}
+      </Pressable>
 
       {preview.big_match && (
         <>
@@ -588,6 +682,25 @@ const styles = StyleSheet.create({
   fxTeam: { color: theme.colors.text, fontSize: 12, fontWeight: '700', flex: 1 },
   fxScore: { color: COLOR, fontSize: 14, fontWeight: '900', flex: 0.6, textAlign: 'center' },
   fxScorePost: { color: theme.colors.muted, fontSize: 11, fontStyle: 'italic', flex: 0.6, textAlign: 'center' },
+  scoreInputRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    flex: 0.7, justifyContent: 'center',
+  },
+  scoreInput: {
+    width: 36, height: 32, borderRadius: 6,
+    borderWidth: 1, borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg,
+    color: theme.colors.text, fontWeight: '900', fontSize: 15,
+    textAlign: 'center', padding: 0,
+  },
+  scoreDash: { color: theme.colors.muted, fontWeight: '900', fontSize: 14 },
+  recalcBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, alignSelf: 'flex-start',
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6,
+    backgroundColor: COLOR + '15', borderWidth: 1, borderColor: COLOR + '55',
+  },
+  recalcBtnText: { color: COLOR, fontWeight: '800', fontSize: 12 },
   fsInfo: { color: theme.colors.text, fontSize: 13, fontWeight: '700', padding: 8, backgroundColor: theme.colors.surfaceSecondary, borderRadius: 8 },
   impactGrid: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
   impactCell: {

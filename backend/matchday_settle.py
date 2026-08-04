@@ -40,6 +40,10 @@ class SettleInput(BaseModel):
     # first_scorer bonus which cannot be derived from voti data).
     first_scorer_player_name: Optional[str] = None
     first_scorer_team: Optional[str] = None
+    # Manual overrides for fixtures missing/incorrect data in the voti PDF.
+    # Each item is {home_team, away_team, home_score, away_score}. This is
+    # merged over the PDF-derived fixtures before settlement.
+    fixture_overrides: Optional[List[Dict[str, Any]]] = None
 
 
 # =========================================================================
@@ -76,13 +80,29 @@ def _norm(s: str) -> str:
 
 async def _fixtures_with_scores(
     db, matchday: int, season: str,
+    overrides: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Return the matchday fixtures from ``sal_calendar`` with their final
     score derived from ``matchday_facts``. Postponed / unreported matches
     end up with ``home_score = away_score = None``.
+
+    If ``overrides`` is provided, each entry ``{home_team, away_team,
+    home_score, away_score}`` REPLACES the auto-derived score for that
+    fixture (matched case-insensitively). This lets the admin fill in
+    missing/wrong data before commit.
     """
     per_team = await _per_team_goals(db, matchday)
     per_team_norm = {_norm(k): v for k, v in per_team.items()}
+    # Index overrides by (home_norm, away_norm) for O(1) lookup
+    ov_map: Dict[tuple, Dict[str, int]] = {}
+    for ov in (overrides or []):
+        try:
+            ov_map[(_norm(ov["home_team"]), _norm(ov["away_team"]))] = {
+                "home_score": int(ov["home_score"]),
+                "away_score": int(ov["away_score"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
     fixtures = []
     async for fx in db.sal_calendar.find(
         {"season": season, "matchday": matchday},
@@ -90,13 +110,17 @@ async def _fixtures_with_scores(
     ):
         home = fx["home_team"]
         away = fx["away_team"]
-        h = per_team_norm.get(_norm(home))
-        a = per_team_norm.get(_norm(away))
-        # We can infer both scores from either side (gk_goals_conceded for
-        # the OPPONENT's team equals goals_scored of THIS team). Prefer
-        # goals_scored per team as source of truth.
-        home_score = h["scored"] if h else None
-        away_score = a["scored"] if a else None
+        ov = ov_map.get((_norm(home), _norm(away)))
+        if ov:
+            home_score = ov["home_score"]
+            away_score = ov["away_score"]
+            manual = True
+        else:
+            h = per_team_norm.get(_norm(home))
+            a = per_team_norm.get(_norm(away))
+            home_score = h["scored"] if h else None
+            away_score = a["scored"] if a else None
+            manual = False
         played = home_score is not None and away_score is not None
         fixtures.append({
             "home_team": home,
@@ -104,6 +128,7 @@ async def _fixtures_with_scores(
             "home_score": home_score,
             "away_score": away_score,
             "played": played,
+            "manual": manual,
         })
     return fixtures
 
@@ -227,7 +252,7 @@ def build_router(*, db, require_admin) -> APIRouter:
                 ),
             )
 
-        fixtures = await _fixtures_with_scores(db, matchday, season)
+        fixtures = await _fixtures_with_scores(db, matchday, season, body.fixture_overrides)
         played = [fx for fx in fixtures if fx["played"]]
         postponed = [fx for fx in fixtures if not fx["played"]]
         scorers = await _list_scorers(db, matchday)
@@ -310,7 +335,7 @@ def build_router(*, db, require_admin) -> APIRouter:
                 ),
             )
 
-        fixtures = await _fixtures_with_scores(db, matchday, season)
+        fixtures = await _fixtures_with_scores(db, matchday, season, body.fixture_overrides)
         scorers_map = await _scorers_by_fixture(db, matchday, fixtures)
 
         # Build an internal HTTP client that uses the caller's admin JWT.
