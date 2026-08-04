@@ -370,7 +370,7 @@ export default function SurvivaTournament() {
           />
         )}
         {tab === 'leaderboard' && (
-          <LeaderboardTab rows={lb} onSelect={setSelectedLbRow} />
+          <LeaderboardTab rows={lb} onSelect={setSelectedLbRow} isAdmin={t.is_admin} tournamentId={t.id} onReload={load} />
         )}
         {tab === 'summary' && (
           <SummaryTab
@@ -815,12 +815,31 @@ function AdminTab({
 }
 
 function LeaderboardTab({
-  rows, onSelect,
+  rows, onSelect, isAdmin, tournamentId, onReload,
 }: {
   rows: LeaderboardRow[];
   onSelect: (row: LeaderboardRow) => void;
+  isAdmin: boolean;
+  tournamentId: string;
+  onReload: () => Promise<void> | void;
 }) {
   if (rows.length === 0) return <Text style={styles.muted}>Nessun partecipante.</Text>;
+  const doKick = async (r: LeaderboardRow) => {
+    const ok = await confirmDialog(
+      'Escludi giocatore',
+      `Vuoi escludere "${r.nickname}" da questo torneo?\n\nVerrà rimosso dalla classifica e tutti i suoi pronostici saranno eliminati.\n\nL'azione è IRREVERSIBILE.`,
+      { destructive: true, confirmLabel: 'Escludi' },
+    );
+    if (!ok) return;
+    try {
+      await api(`/sv/tournaments/${tournamentId}/kick/${r.user_id}`, { method: 'POST' });
+      await onReload();
+    } catch (e: any) {
+      if (typeof window !== 'undefined' && (window as any).alert) {
+        (window as any).alert(e?.message || 'Errore durante l\'esclusione');
+      }
+    }
+  };
   return (
     <>
       {rows.map((r) => (
@@ -850,6 +869,19 @@ function LeaderboardTab({
             <Ionicons name="heart" size={14} color={COLOR} />
             <Text style={styles.livesBadgeText}>{r.lives_left}</Text>
           </View>
+          {isAdmin && (
+            <Pressable
+              testID={`sv-kick-${r.user_id}`}
+              onPress={(e) => {
+                e.stopPropagation();
+                doKick(r);
+              }}
+              hitSlop={6}
+              style={styles.lbKickBtn}
+            >
+              <Ionicons name="person-remove" size={14} color={theme.colors.error} />
+            </Pressable>
+          )}
           <Ionicons
             name="chevron-forward"
             size={16}
@@ -1341,6 +1373,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 4,
   },
   livesBadgeText: { color: COLOR, fontWeight: '900', fontSize: 14 },
+  lbKickBtn: {
+    marginLeft: 6,
+    padding: 6,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.error + '18',
+    borderWidth: 1,
+    borderColor: theme.colors.error + '55',
+  },
 
   summaryRow: { flexDirection: 'row', gap: theme.spacing.sm },
   summaryCell: {

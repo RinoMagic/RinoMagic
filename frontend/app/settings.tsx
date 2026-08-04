@@ -160,6 +160,20 @@ export default function Settings() {
               </View>
               <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
             </Pressable>
+            <Pressable
+              testID="settings-admin-admins"
+              onPress={() => router.push('/admin/admins')}
+              style={styles.adminRow}
+            >
+              <View style={[styles.adminIcon, { backgroundColor: '#EC4899' }]}>
+                <Ionicons name="shield-checkmark" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowText}>Gestione Admin</Text>
+                <Text style={styles.rowSub}>Crea o rimuovi altri amministratori</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+            </Pressable>
           </View>
         )}
 

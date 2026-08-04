@@ -328,9 +328,29 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
         target = await db.users.find_one({"id": user_id}, {"_id": 0})
         if not target:
             raise HTTPException(status_code=404, detail="Utente non trovato")
-        # Cascade delete: remove memberships & schedine
+        # Cannot delete the last admin (must always be at least one).
+        if target.get("role") == "admin":
+            admin_count = await db.users.count_documents({"role": "admin"})
+            if admin_count <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Impossibile eliminare l'unico admin rimasto",
+                )
+        # Cascade delete: remove memberships & schedine (TheBestTiket)
         await db.memberships.delete_many({"user_id": user_id})
         await db.schedine.delete_many({"user_id": user_id})
+        # Survival
+        await db.sv_participants.delete_many({"user_id": user_id})
+        await db.sv_picks.delete_many({"user_id": user_id})
+        # ScoreAndLive
+        await db.sal_participants.delete_many({"user_id": user_id})
+        await db.sal_picks.delete_many({"user_id": user_id})
+        # FantaGiornata
+        await db.fg_memberships.delete_many({"user_id": user_id})
+        await db.fg_lineups.delete_many({"user_id": user_id})
+        await db.fg_matchday_results.delete_many({"user_id": user_id})
+        # Bonus
+        await db.bonus_picks.delete_many({"user_id": user_id})
         await db.users.delete_one({"id": user_id})
         return {"ok": True}
 

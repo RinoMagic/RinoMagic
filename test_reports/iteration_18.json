@@ -1,0 +1,42 @@
+{
+  "summary": "Backend-only regression testing for the new Admin panel + kick feature. Created /app/backend/tests/test_admin_kick.py with 12 tests covering all 9 review items across 5 games (TheBestTiket, Survival, ScoreAndLive, FantaGiornata, Bonus) + admin management (promote / list / delete-with-cascade). All 12 tests PASS (100%) under pytest-xdist parallel scheduling. Verified: (1) POST /api/auth/admin/promote creates a new admin whose login returns must_change_password=true; (2) GET /api/auth/users returns list without password_hash for admins and 403 for players; (3) DELETE /api/auth/users/{id} enforces 'cannot delete self' guard (which shields the last-admin path); (4) DELETE cascades — a joined player is fully removed from memberships after deletion; (5–8) kick endpoints on rooms, sv-tournaments, sal-tournaments, fg-leagues each: 400 on admin target, 200 on player + kicked_user_id in body, 404 on repeat kick; (9) bonus /configs/{cid}/kick/{user_id} requires an actual pick — created a SAL tournament, submitted a scorer pick, verified picks-admin lists it, kicked player, verified deleted_picks>=1 + picks-admin no longer shows the user + repeat kick returns 404; (10) GET /api/bonus/configs/{cid}/picks-admin returns 401 without auth, 403 with player token, 200 + correct shape ({config_id, picks:[]}) with admin token. All test data (rooms, tournaments, leagues, configs, players, calendars for the throw-away season) is cleaned up in try/finally blocks — DB left clean after run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "DELETE /api/auth/users/{id}",
+        "issue": "The 'last admin' safeguard is currently unreachable via /admin/login (self-delete 400 fires first). If a second admin ever exists and is deleted before the seed admin, only the self-delete guard prevents deleting the last one. Consider swapping the order of the two 400 checks (target-role check first) so an admin trying to delete _themselves_ when they are the last admin still gets the more accurate error. Non-blocking — the current code is still safe."
+      },
+      {
+        "endpoint": "POST /api/bonus/configs/{cid}/kick/{user_id}",
+        "issue": "The endpoint returns 404 'Il giocatore non ha fatto pronostici per questo bonus' when the user has no picks. This means kick is not idempotent — repeat kick fails. Behaviour matches the review request (which requires 404 on repeat), so this is documented, not a bug."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_kick.py",
+    "/app/test_reports/pytest/admin_kick_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "auth.py:326-338 — 'last admin' safeguard sits AFTER the self-delete 400 check, so an admin cannot ever hit the 'unico admin rimasto' branch by deleting themselves. Works as intended today (self-delete blocks first), but if you ever remove the self-delete guard, reorder the checks.",
+    "bonus.py:414-449 — kick endpoint deletes by (season, matchday, bonus_type, user_id) across all games. This is correct given the review request but note that if a user has picks for multiple games (score AND fanta) on the same bonus_type/matchday, ALL of them are deleted in a single kick. This matches the 'HARD kick' requirement.",
+    "surviva.py:591-624, scoreandlive.py:921-959, fantagiornata.py:404-447, thebesttiket.py:1509-1539 — all four kick endpoints correctly (a) check target != resource-admin, (b) verify target user exists, (c) verify target is actually a participant, (d) cascade-delete picks/lineups/schedine, (e) return {ok, kicked_user_id, deleted_*}. Consistent, well-mirrored implementations.",
+    "bonus.py:931-951 picks-admin does not paginate. For a large-scale bonus (thousands of users), the response could grow unbounded. Minor — acceptable for current scale."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_kick.py (new)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "skipped (backend-only request)"},
+  "seed_data_creation": "Each test creates its own throw-away rooms/tournaments/leagues/configs/players prefixed with TEST_ and a unique 10-char season 'k<uuid8>' shared across the sv/sal/bonus tests via a module-scoped `seeded_calendar` fixture. All resources are teardown-deleted in try/finally blocks; no orphan data was observed after the run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_admin_kick.py is safe to rerun (isolated season, module-scoped calendar seed, per-test cleanup). It runs green under pytest-xdist. If you extend it, note that the bonus 'first_scorer' bonus_type only accepts games 'score' and 'fanta' (see BONUS_TYPE_BY_GAME in bonus.py:47); 'exact_score' only accepts 'tiket' and 'survival' and additionally requires a big_match reference matching an existing calendar fixture.",
+  "rca_of_issue": "N/A — new feature verified. Only issue encountered during test authoring: /api/sal/calendar/import caps `season` at 10 characters (pydantic validator returned 422 for 'admk-<hex6>'). Fixed the test seed to 'k<hex8>' (=9 chars). Not a bug in the feature under review — pre-existing calendar validator."
+}

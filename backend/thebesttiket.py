@@ -1506,6 +1506,38 @@ def build_router(
         await db.invites.delete_many({"room_id": room_id})
         return {"ok": True}
 
+    @router.post("/rooms/{room_id}/kick/{user_id}")
+    async def kick_from_room(
+        room_id: str, user_id: str, user: dict = Depends(require_admin),
+    ):
+        """Hard-remove a player from a Tiket room: removes membership + all
+        schedine + frees any used invite slot for that user. Irreversible."""
+        room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+        if not room:
+            raise HTTPException(status_code=404, detail="Stanza non trovata")
+        target = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        # Cannot kick the room admin
+        if room.get("admin_user_id") == user_id:
+            raise HTTPException(
+                status_code=400, detail="Impossibile escludere l'admin della stanza",
+            )
+        m = await db.memberships.find_one({"room_id": room_id, "user_id": user_id})
+        if not m:
+            raise HTTPException(
+                status_code=404, detail="Il giocatore non è iscritto a questa stanza",
+            )
+        deleted_schedine = await db.schedine.delete_many(
+            {"room_id": room_id, "user_id": user_id}
+        )
+        await db.memberships.delete_many({"room_id": room_id, "user_id": user_id})
+        return {
+            "ok": True,
+            "deleted_schedine": deleted_schedine.deleted_count,
+            "kicked_user_id": user_id,
+        }
+
     # ==================================================================
     # Rooms — invites (one-shot)
     # ==================================================================

@@ -12,6 +12,7 @@
  *  3. Recent configs list with quick jump.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import * as React from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, TextInput,
   ActivityIndicator, RefreshControl,
@@ -41,6 +42,16 @@ type Config = {
 type Available = {
   bonus_type: BonusType;
   fixtures: { home_team: string; away_team: string; kickoff_iso?: string | null }[];
+};
+
+type PickRow = {
+  user_id: string;
+  nickname: string | null;
+  game: string;
+  pick: any;
+  subscription_id?: string | null;
+  subscription_name?: string | null;
+  is_correct?: boolean;
 };
 
 const COLORS: Record<BonusType, { primary: string; dot1: string; dot2: string; label: string; games: string; desc: string }> = {
@@ -248,6 +259,29 @@ function BonusSection({
   const [homeR, setHomeR] = useState('');
   const [awayR, setAwayR] = useState('');
   const [scorerR, setScorerR] = useState('');
+  const [picks, setPicks] = useState<PickRow[]>([]);
+  const [picksLoading, setPicksLoading] = useState(false);
+  const [picksOpen, setPicksOpen] = useState(false);
+
+  const loadPicks = React.useCallback(async () => {
+    if (!config) return;
+    setPicksLoading(true);
+    try {
+      const r = await api<{ picks: PickRow[] }>(`/bonus/configs/${config.id}/picks-admin`);
+      setPicks(r.picks || []);
+    } catch {
+      setPicks([]);
+    } finally {
+      setPicksLoading(false);
+    }
+  }, [config?.id]);
+
+  useEffect(() => {
+    if (picksOpen && config) {
+      loadPicks();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picksOpen, config?.id]);
 
   useEffect(() => {
     setSelectedFx(config?.big_match
@@ -256,6 +290,7 @@ function BonusSection({
     setHomeR('');
     setAwayR('');
     setScorerR('');
+    setPicksOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config?.id]);
 
@@ -493,6 +528,64 @@ function BonusSection({
               </Pressable>
             </>
           )}
+          {/* Picks list (admin) */}
+          {config.status !== 'settled' && (
+            <>
+              <Pressable
+                onPress={() => setPicksOpen((v) => !v)}
+                style={styles.picksToggle}
+                testID={`admin-bonus-picks-toggle-${type}`}
+              >
+                <Ionicons name={picksOpen ? 'chevron-down' : 'chevron-forward'} size={16} color={c.primary} />
+                <Text style={[styles.picksToggleText, { color: c.primary }]}>
+                  Pronostici ricevuti
+                </Text>
+              </Pressable>
+              {picksOpen && (
+                <View style={styles.picksList}>
+                  {picksLoading && <ActivityIndicator color={c.primary} />}
+                  {!picksLoading && picks.length === 0 && (
+                    <Text style={styles.hint}>Nessun pronostico inviato.</Text>
+                  )}
+                  {!picksLoading && picks.map((p) => (
+                    <View key={`${p.user_id}-${p.game}-${p.subscription_id || ''}`} style={styles.picksRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.picksNick} numberOfLines={1}>
+                          {p.nickname || p.user_id.slice(0, 8)}
+                        </Text>
+                        <Text style={styles.picksMeta} numberOfLines={1}>
+                          {p.game.toUpperCase()}
+                          {p.subscription_name ? ` · ${p.subscription_name}` : ''}
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={async () => {
+                          const ok = await confirmDialog(
+                            'Escludi giocatore',
+                            `Vuoi rimuovere il pronostico bonus di "${p.nickname || 'utente'}"?\n\nL'azione è IRREVERSIBILE.`,
+                            { destructive: true, confirmLabel: 'Escludi' },
+                          );
+                          if (!ok) return;
+                          try {
+                            await api(`/bonus/configs/${config.id}/kick/${p.user_id}`, { method: 'POST' });
+                            await loadPicks();
+                            await onChanged();
+                          } catch (e: any) {
+                            alert(e?.message || 'Errore');
+                          }
+                        }}
+                        hitSlop={6}
+                        style={styles.picksKick}
+                        testID={`admin-bonus-kick-${p.user_id}`}
+                      >
+                        <Ionicons name="person-remove" size={14} color={theme.colors.error} />
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </>
+          )}
           {/* Delete (only unsettled) */}
           {config.status !== 'settled' && (
             <Pressable
@@ -663,4 +756,30 @@ const styles = StyleSheet.create({
   recentDot: { width: 8, height: 8, borderRadius: 4 },
   recentTitle: { color: theme.colors.onSurface, fontSize: 13, fontWeight: '700' },
   recentSub: { color: theme.colors.muted, fontSize: 11, marginTop: 1 },
+
+  picksToggle: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingVertical: 6,
+  },
+  picksToggleText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.3 },
+  picksList: {
+    gap: 6,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.sm,
+  },
+  picksRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 4,
+  },
+  picksNick: { color: theme.colors.onSurface, fontSize: 13, fontWeight: '700' },
+  picksMeta: { color: theme.colors.muted, fontSize: 11, marginTop: 2 },
+  picksKick: {
+    padding: 6,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.error + '18',
+    borderWidth: 1,
+    borderColor: theme.colors.error + '55',
+  },
 });

@@ -588,6 +588,41 @@ def build_router(
         await db.sv_picks.delete_many({"tournament_id": tid})
         return {"ok": True}
 
+    @router.post("/tournaments/{tid}/kick/{user_id}")
+    async def kick_from_tournament(
+        tid: str, user_id: str, user: dict = Depends(require_admin),
+    ):
+        """Hard-remove a player from a Survival tournament: removes participant
+        record, all their picks across all matchdays. Irreversible."""
+        t = await _get_tournament(tid)
+        if t.get("admin_user_id") == user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Impossibile escludere l'admin del torneo",
+            )
+        target = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+        if not target:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        part = await db.sv_participants.find_one(
+            {"tournament_id": tid, "user_id": user_id}
+        )
+        if not part:
+            raise HTTPException(
+                status_code=404,
+                detail="Il giocatore non è iscritto a questo torneo",
+            )
+        deleted_picks = await db.sv_picks.delete_many(
+            {"tournament_id": tid, "user_id": user_id}
+        )
+        await db.sv_participants.delete_many(
+            {"tournament_id": tid, "user_id": user_id}
+        )
+        return {
+            "ok": True,
+            "deleted_picks": deleted_picks.deleted_count,
+            "kicked_user_id": user_id,
+        }
+
     @router.post("/tournaments/join")
     async def join_tournament(data: JoinIn, user: dict = Depends(current_user)):
         code = data.invite_code

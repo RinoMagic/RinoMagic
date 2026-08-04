@@ -219,6 +219,24 @@ export default function RoomDetail() {
     setSelectedNick(nickname);
   };
 
+  const kickMember = async (m: Member) => {
+    if (!room?.is_admin || m.role === 'admin' || m.user_id === room.admin_user_id) return;
+    const ok = await confirmDialog(
+      'Escludi giocatore',
+      `Vuoi escludere "${m.nickname}" da questa stanza?\n\nVerrà rimosso dalla classifica e la sua schedina (se caricata) sarà eliminata.\n\nL'azione è IRREVERSIBILE.`,
+      { destructive: true, confirmLabel: 'Escludi' },
+    );
+    if (!ok) return;
+    try {
+      await api(`/rooms/${room.id}/kick/${m.user_id}`, { method: 'POST' });
+      await load();
+    } catch (e: any) {
+      if (Platform.OS === 'web') {
+        window.alert(e?.message || 'Errore durante l\'esclusione');
+      }
+    }
+  };
+
   if (loading || !room) {
     return (
       <View style={styles.center}>
@@ -507,6 +525,19 @@ export default function RoomDetail() {
                       </Pressable>
                     )}
                   </>
+                )}
+                {room.is_admin && m.role !== 'admin' && m.user_id !== room.admin_user_id && (
+                  <Pressable
+                    testID={`kick-member-${m.nickname}`}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      kickMember(m);
+                    }}
+                    hitSlop={6}
+                    style={styles.kickBtn}
+                  >
+                    <Ionicons name="person-remove" size={16} color={theme.colors.error} />
+                  </Pressable>
                 )}
               </Pressable>
             ))}
@@ -1304,6 +1335,14 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.brand + '22',
     borderWidth: 1,
     borderColor: theme.colors.brand + '55',
+  },
+  kickBtn: {
+    marginLeft: 6,
+    padding: 8,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.error + '18',
+    borderWidth: 1,
+    borderColor: theme.colors.error + '55',
   },
 });
 

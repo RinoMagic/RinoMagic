@@ -411,6 +411,43 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         })
         return {"ok": True}
 
+    @router.post("/configs/{cid}/kick/{user_id}")
+    async def kick_from_bonus(
+        cid: str, user_id: str, user: dict = Depends(require_admin),
+    ):
+        """Hard-remove a user's bonus picks for a given bonus config.
+        Deletes all bonus_picks for that user in (season, matchday, bonus_type).
+        Cannot be applied after the config is settled. Irreversible."""
+        cfg = await db.bonus_configs.find_one({"id": cid}, {"_id": 0})
+        if not cfg:
+            raise HTTPException(status_code=404, detail="Config non trovata")
+        if cfg.get("settled_at"):
+            raise HTTPException(
+                status_code=400,
+                detail="Bonus già liquidato: non è più possibile escludere giocatori",
+            )
+        target = await db.users.find_one(
+            {"id": user_id}, {"_id": 0, "password_hash": 0}
+        )
+        if not target:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        deleted = await db.bonus_picks.delete_many({
+            "season": cfg["season"],
+            "matchday": cfg["matchday"],
+            "bonus_type": cfg["bonus_type"],
+            "user_id": user_id,
+        })
+        if deleted.deleted_count == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="Il giocatore non ha fatto pronostici per questo bonus",
+            )
+        return {
+            "ok": True,
+            "deleted_picks": deleted.deleted_count,
+            "kicked_user_id": user_id,
+        }
+
     # ------------------------------------------------------------------
     # Reward granting
     # ------------------------------------------------------------------
@@ -889,6 +926,29 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             "winners_by_game": winners_by_game,
             "details": details,
         }
+
+    # Admin-only: raw list of picks for a config (used for kick / management).
+    @router.get("/configs/{cid}/picks-admin")
+    async def picks_admin(cid: str, user: dict = Depends(require_admin)):
+        cfg = await db.bonus_configs.find_one({"id": cid}, {"_id": 0})
+        if not cfg:
+            raise HTTPException(status_code=404, detail="Config non trovata")
+        rows = [
+            {
+                "user_id": p.get("user_id"),
+                "nickname": p.get("nickname"),
+                "game": p.get("game"),
+                "pick": p.get("pick"),
+                "subscription_id": p.get("subscription_id"),
+                "subscription_name": p.get("subscription_name"),
+                "is_correct": p.get("is_correct"),
+            }
+            async for p in db.bonus_picks.find({
+                "season": cfg["season"], "matchday": cfg["matchday"],
+                "bonus_type": cfg["bonus_type"],
+            }, {"_id": 0})
+        ]
+        return {"config_id": cid, "picks": rows}
 
     return router
 

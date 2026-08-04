@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
+import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#10B981';
 
@@ -52,6 +53,20 @@ export default function TournamentPage() {
       await api<{ code: string }>(`/sal/tournaments/${id}/invites`, { method: 'POST' });
       await load();
     } catch (e: any) { alert(e.message); } finally { setBusy(false); }
+  };
+
+  const kickParticipant = async (p: Participant) => {
+    if (!t?.is_admin || p.is_me) return;
+    const ok = await confirmDialog(
+      'Escludi giocatore',
+      `Vuoi escludere "${p.nickname}" da questo torneo?\n\nVerrà rimosso dalla classifica e tutti i suoi pronostici saranno eliminati.\n\nL'azione è IRREVERSIBILE.`,
+      { destructive: true, confirmLabel: 'Escludi' },
+    );
+    if (!ok) return;
+    try {
+      await api(`/sal/tournaments/${id}/kick/${p.user_id}`, { method: 'POST' });
+      await load();
+    } catch (e: any) { alert(e?.message || 'Errore'); }
   };
 
   if (!t) return <View style={styles.center}><ActivityIndicator color={COLOR} /></View>;
@@ -163,6 +178,16 @@ export default function TournamentPage() {
                   ? `💀 elim G${p.eliminated_at_matchday}`
                   : `❤️ ${p.lives_remaining}`}
               </Text>
+              {t.is_admin && !p.is_me && (
+                <Pressable
+                  testID={`sal-kick-${p.user_id}`}
+                  onPress={() => kickParticipant(p)}
+                  hitSlop={6}
+                  style={styles.kickBtn}
+                >
+                  <Ionicons name="person-remove" size={14} color={theme.colors.error} />
+                </Pressable>
+              )}
             </View>
           ))}
         </View>
@@ -218,6 +243,14 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   nick: { color: theme.colors.onSurface, fontSize: 14, flex: 1 },
   lives: { color: theme.colors.onSurfaceSecondary, fontSize: 13, fontWeight: '600' },
+  kickBtn: {
+    marginLeft: 8,
+    padding: 6,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.error + '18',
+    borderWidth: 1,
+    borderColor: theme.colors.error + '55',
+  },
   inviteRow: {
     flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
     padding: theme.spacing.sm, borderRadius: theme.radius.sm,

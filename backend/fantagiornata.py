@@ -401,6 +401,51 @@ def build_router(
         await db.fg_matchday_results.delete_many({"league_id": league_id})
         return {"ok": True}
 
+    @router.post("/leagues/{league_id}/kick/{user_id}")
+    async def kick_from_league(
+        league_id: str,
+        user_id: str,
+        user: dict = Depends(current_user),
+    ):
+        """Hard-remove a player from a FantaGiornata league: removes
+        membership + all lineups + all matchday results for that user in
+        that league. Irreversible."""
+        await _require_league_admin(league_id, user)
+        lg = await db.fg_leagues.find_one({"id": league_id}, {"_id": 0})
+        if lg and lg.get("admin_user_id") == user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Impossibile escludere l'admin della lega",
+            )
+        target = await db.users.find_one(
+            {"id": user_id}, {"_id": 0, "password_hash": 0}
+        )
+        if not target:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        m = await db.fg_memberships.find_one(
+            {"league_id": league_id, "user_id": user_id}
+        )
+        if not m:
+            raise HTTPException(
+                status_code=404,
+                detail="Il giocatore non è iscritto a questa lega",
+            )
+        deleted_lineups = await db.fg_lineups.delete_many(
+            {"league_id": league_id, "user_id": user_id}
+        )
+        deleted_results = await db.fg_matchday_results.delete_many(
+            {"league_id": league_id, "user_id": user_id}
+        )
+        await db.fg_memberships.delete_many(
+            {"league_id": league_id, "user_id": user_id}
+        )
+        return {
+            "ok": True,
+            "deleted_lineups": deleted_lineups.deleted_count,
+            "deleted_results": deleted_results.deleted_count,
+            "kicked_user_id": user_id,
+        }
+
     # ==================================================================
     # Invites (single-use, mirror of TheBestTiket and SAL)
     # ==================================================================

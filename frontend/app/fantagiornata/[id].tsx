@@ -11,6 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
+import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#A855F7';
 
@@ -69,6 +70,20 @@ export default function LeaguePage() {
       setFlash(`Giornata ${n} calcolata: ${r.settled_users} formazioni`);
       await load();
     } catch (e: any) { alert(e.message); } finally { setBusy(false); }
+  };
+
+  const kickMember = async (m: { user_id: string; nickname: string }) => {
+    if (!lg?.is_admin) return;
+    const ok = await confirmDialog(
+      'Escludi giocatore',
+      `Vuoi escludere "${m.nickname}" da questa lega?\n\nVerrà rimosso dalla classifica e tutte le sue formazioni saranno eliminate.\n\nL'azione è IRREVERSIBILE.`,
+      { destructive: true, confirmLabel: 'Escludi' },
+    );
+    if (!ok) return;
+    try {
+      await api(`/fg/leagues/${id}/kick/${m.user_id}`, { method: 'POST' });
+      await load();
+    } catch (e: any) { alert(e?.message || 'Errore'); }
   };
 
   if (!lg) return <View style={styles.center}><ActivityIndicator color={COLOR} /></View>;
@@ -134,9 +149,39 @@ export default function LeaguePage() {
               <Text style={styles.rank}>{i + 1}.</Text>
               <Text style={styles.nick}>{r.nickname}</Text>
               <Text style={styles.pts}>{r.total.toFixed(2)} pt</Text>
+              {lg.is_admin && (
+                <Pressable
+                  testID={`fg-kick-${r.user_id}`}
+                  onPress={() => kickMember(r)}
+                  hitSlop={6}
+                  style={styles.kickBtn}
+                >
+                  <Ionicons name="person-remove" size={14} color={theme.colors.error} />
+                </Pressable>
+              )}
             </View>
           ))}
         </View>
+
+        {lg.is_admin && lg.members && lg.members.length > 0 && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Membri iscritti ({lg.members.length})</Text>
+            <Text style={styles.muted}>Escludi qui i giocatori non ancora presenti in classifica.</Text>
+            {lg.members.map((m) => (
+              <View key={m.user_id} style={styles.row}>
+                <Text style={styles.nick}>{m.nickname}</Text>
+                <Pressable
+                  testID={`fg-kick-member-${m.user_id}`}
+                  onPress={() => kickMember(m)}
+                  hitSlop={6}
+                  style={styles.kickBtn}
+                >
+                  <Ionicons name="person-remove" size={14} color={theme.colors.error} />
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        )}
 
         {lg.is_admin && (
           <View style={styles.card}>
@@ -199,6 +244,13 @@ const styles = StyleSheet.create({
   rank: { color: theme.colors.muted, fontSize: 13, fontWeight: '700', width: 24 },
   nick: { color: theme.colors.onSurface, fontSize: 14, flex: 1 },
   pts: { color: COLOR, fontWeight: '800', fontSize: 14 },
+  kickBtn: {
+    padding: 6,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.error + '18',
+    borderWidth: 1,
+    borderColor: theme.colors.error + '55',
+  },
   inviteRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   code: { color: theme.colors.onSurface, fontSize: 14, fontWeight: '800', fontFamily: 'monospace' as any },
   gameTag: {

@@ -918,6 +918,46 @@ def build_router(
         await db.sal_invites.delete_many({"tournament_id": tournament_id})
         return {"ok": True, "deleted_picks": picks_count}
 
+    @router.post("/tournaments/{tournament_id}/kick/{user_id}")
+    async def kick_from_tournament(
+        tournament_id: str,
+        user_id: str,
+        user: dict = Depends(require_admin),
+    ):
+        """Hard-remove a player from a ScoreAndLive tournament: removes
+        participant record, all their picks across all matchdays. Irreversible."""
+        await _require_tournament_admin(tournament_id, user)
+        t = await db.sal_tournaments.find_one({"id": tournament_id}, {"_id": 0})
+        if t and t.get("admin_user_id") == user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Impossibile escludere l'admin del torneo",
+            )
+        target = await db.users.find_one(
+            {"id": user_id}, {"_id": 0, "password_hash": 0}
+        )
+        if not target:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        part = await db.sal_participants.find_one(
+            {"tournament_id": tournament_id, "user_id": user_id}
+        )
+        if not part:
+            raise HTTPException(
+                status_code=404,
+                detail="Il giocatore non è iscritto a questo torneo",
+            )
+        deleted_picks = await db.sal_picks.delete_many(
+            {"tournament_id": tournament_id, "user_id": user_id}
+        )
+        await db.sal_participants.delete_many(
+            {"tournament_id": tournament_id, "user_id": user_id}
+        )
+        return {
+            "ok": True,
+            "deleted_picks": deleted_picks.deleted_count,
+            "kicked_user_id": user_id,
+        }
+
     @router.get("/tournaments/archive/list")
     async def list_archived_tournaments(user: dict = Depends(current_user)):
         """List all finished tournaments (permanent history, visible to all)."""
