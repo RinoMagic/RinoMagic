@@ -67,18 +67,18 @@ GAMES: Dict[str, Dict[str, Any]] = {
     "scoreandlive": {
         "id": "scoreandlive",
         "name": "ScoreAndLive",
-        "tagline": "In arrivo prossimamente",
+        "tagline": "Indovina i marcatori e sopravvivi",
         "color": "#3B82F6",
         "icon": "pulse",
-        "enabled": False,  # Coming soon
+        "enabled": True,
     },
     "fantagiornata": {
         "id": "fantagiornata",
         "name": "FantaGiornata",
-        "tagline": "Fantacalcio a giornata singola — in arrivo",
+        "tagline": "Fantacalcio a giornata singola",
         "color": "#A855F7",
         "icon": "football",
-        "enabled": False,  # Coming soon (archived project, will be integrated later)
+        "enabled": True,
     },
     "surviva": {
         "id": "surviva",
