@@ -186,7 +186,7 @@ export default function Hub() {
             </View>
             <Text style={styles.cardTag}>4 bonus a giornata: vinci vite, punti extra e giocate</Text>
             <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
-              <View style={[styles.bonusDot, { backgroundColor: '#FFB300' }]} />
+              <View style={[styles.bonusDot, { backgroundColor: '#34D399' }]} />
               <View style={[styles.bonusDot, { backgroundColor: '#3B82F6' }]} />
               <View style={[styles.bonusDot, { backgroundColor: '#A855F7' }]} />
               <View style={[styles.bonusDot, { backgroundColor: '#EF4444' }]} />
@@ -239,13 +239,13 @@ const styles = StyleSheet.create({
   pillSoonText: { color: theme.colors.muted, fontSize: 9, fontWeight: '800', letterSpacing: 0.8 },
 
   bonusCard: {
-    borderColor: '#F59E0B',
-    backgroundColor: '#F59E0B12',
+    borderColor: '#10B981',
+    backgroundColor: '#10B98112',
   },
   bonusIconBox: {
     width: 56, height: 56, borderRadius: theme.radius.md,
     alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#F59E0B',
+    backgroundColor: '#10B981',
   },
   bonusDot: {
     width: 10, height: 10, borderRadius: 5,
@@ -253,7 +253,7 @@ const styles = StyleSheet.create({
   pillHot: {
     paddingHorizontal: 8, paddingVertical: 3,
     borderRadius: theme.radius.pill,
-    backgroundColor: '#F59E0B',
+    backgroundColor: '#10B981',
   },
   pillHotText: {
     color: theme.colors.onBrand, fontSize: 9, fontWeight: '800',
