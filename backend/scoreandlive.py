@@ -959,6 +959,7 @@ def build_router(
         """
         t = await _get_tournament(tournament_id)
         is_finished = t.get("status") == "finished"
+        _season_ = t.get("season") or "2026-27"
         matchdays = [m async for m in db.sal_matchdays.find(
             {"tournament_id": tournament_id}, {"_id": 0}
         ).sort("matchday_number", 1)]
@@ -967,7 +968,16 @@ def build_router(
         )}
         result_mds = []
         for md in matchdays:
-            picks_visible = is_finished or md.get("status") in ("locked", "settled")
+            # Visibility gate: finished tournament, matchday locked/settled,
+            # OR the global deadline for that matchday has elapsed.
+            deadline_passed = await _global_deadline_passed(
+                db, _season_, md["matchday_number"],
+            )
+            picks_visible = (
+                is_finished
+                or md.get("status") in ("locked", "settled")
+                or deadline_passed
+            )
             entry = {
                 "id": md["id"],
                 "matchday_number": md["matchday_number"],
@@ -976,6 +986,7 @@ def build_router(
                 "settled_at": md.get("settled_at"),
                 "fixtures": md.get("fixtures", []),
                 "scorers": md.get("scorers", []),
+                "deadline_passed": deadline_passed,
                 "picks_visible": picks_visible,
                 "picks": [],
             }

@@ -76,6 +76,10 @@ export default function RoomDetail() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedNick, setSelectedNick] = useState<string | null>(null);
+  const [myUserId, setMyUserId] = useState<string | null>(null);
+  useEffect(() => {
+    session.load().then((s) => setMyUserId(s.user?.id ?? null));
+  }, []);
   const [deadlineModalOpen, setDeadlineModalOpen] = useState(false);
   const [deadlineDraft, setDeadlineDraft] = useState('');
   const [deadlineBusy, setDeadlineBusy] = useState(false);
@@ -205,8 +209,13 @@ export default function RoomDetail() {
     return leaderboard.find((e) => e.nickname === selectedNick) || null;
   }, [selectedNick, leaderboard]);
 
-  const openPlayerSchedina = (nickname: string, submitted: boolean) => {
+  const openPlayerSchedina = (nickname: string, submitted: boolean, memberUserId?: string) => {
     if (!submitted) return;
+    // Visibility gate (same rule as Survival & the other games):
+    // - own schedina: always visible to the owner
+    // - others' schedine: only after the deadline (submissions_locked) or for admins
+    const isMe = !!memberUserId && !!myUserId && memberUserId === myUserId;
+    if (!isMe && !room?.is_admin && !room?.submissions_locked) return;
     setSelectedNick(nickname);
   };
 
@@ -433,8 +442,16 @@ export default function RoomDetail() {
             {members.map((m) => (
               <Pressable
                 key={m.nickname}
-                onPress={() => openPlayerSchedina(m.nickname, m.submitted)}
-                disabled={!m.submitted && !room.is_admin}
+                onPress={() => openPlayerSchedina(m.nickname, m.submitted, m.user_id)}
+                disabled={
+                  (!m.submitted && !room.is_admin)
+                  || (
+                    m.submitted
+                    && m.user_id !== myUserId
+                    && !room.is_admin
+                    && !room.submissions_locked
+                  )
+                }
                 testID={`member-row-${m.nickname}`}
                 style={({ pressed }) => [
                   styles.row,
@@ -454,11 +471,20 @@ export default function RoomDetail() {
                 </View>
                 {m.submitted ? (
                   <>
-                    <View style={styles.badgeOk}>
-                      <Ionicons name="checkmark" size={14} color={theme.colors.accent} />
-                      <Text style={styles.badgeOkText}>Consegnata</Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
+                    {(m.user_id === myUserId || room.is_admin || room.submissions_locked) ? (
+                      <>
+                        <View style={styles.badgeOk}>
+                          <Ionicons name="checkmark" size={14} color={theme.colors.accent} />
+                          <Text style={styles.badgeOkText}>Consegnata</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
+                      </>
+                    ) : (
+                      <View style={styles.badgePending}>
+                        <Ionicons name="eye-off" size={14} color={theme.colors.muted} />
+                        <Text style={styles.badgePendingText}>Nascosta</Text>
+                      </View>
+                    )}
                   </>
                 ) : (
                   <>

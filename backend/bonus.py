@@ -758,7 +758,14 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         if not cfg:
             raise HTTPException(status_code=404, detail="Config non trovata")
         status = _config_status(cfg)
-        reveal = status in ("locked", "settled")
+        # Reveal picks when the bonus is locked/settled, OR when the global
+        # matchday deadline has already elapsed (aligned with Survival & co).
+        season = cfg.get("season") or "2026-27"
+        md = cfg.get("matchday")
+        deadline_passed = False
+        if isinstance(md, int):
+            deadline_passed = await _global_deadline_passed(db, season, md)
+        reveal = status in ("locked", "settled") or deadline_passed
         picks = [
             p async for p in db.bonus_picks.find({
                 "season": cfg["season"], "matchday": cfg["matchday"],

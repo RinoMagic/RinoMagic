@@ -688,6 +688,71 @@ def build_router(
             "settled_users": len(results),
         }
 
+    @router.get("/leagues/{league_id}/lineups/{matchday}")
+    async def list_all_lineups(
+        league_id: str, matchday: int, user: dict = Depends(current_user),
+    ):
+        """Return every member's lineup for the given matchday.
+
+        Visibility rule (aligned with Survival & the other games): each
+        member's lineup is included ONLY when the global deadline for that
+        matchday has already elapsed. Before then, the caller sees just
+        their OWN lineup and the entries for the others are marked
+        ``hidden: true``.
+        """
+        await _ensure_member(league_id, user["id"])
+        lg = await db.fg_leagues.find_one({"id": league_id}, {"_id": 0, "season": 1})
+        season = (lg or {}).get("season") or "2026-27"
+        deadline_passed = await _global_deadline_passed(db, season, matchday)
+
+        # Gather members
+        members = [
+            m async for m in db.fg_memberships.find(
+                {"league_id": league_id}, {"_id": 0},
+            )
+        ]
+        # Gather lineups
+        lineups_by_uid: Dict[str, dict] = {}
+        async for ln in db.fg_lineups.find(
+            {"league_id": league_id, "matchday": matchday}, {"_id": 0},
+        ):
+            lineups_by_uid[ln["user_id"]] = ln
+
+        rows: List[dict] = []
+        for m in members:
+            uid = m["user_id"]
+            is_self = uid == user["id"]
+            can_see = deadline_passed or is_self
+            ln = lineups_by_uid.get(uid)
+            row = {
+                "user_id": uid,
+                "nickname": m.get("nickname"),
+                "has_lineup": bool(ln),
+                "hidden": not can_see,
+            }
+            if can_see and ln:
+                # Resolve player details for display
+                ids = list(ln.get("starters", [])) + list(ln.get("bench", []))
+                players_by_id = {
+                    p["id"]: p async for p in db.sal_players.find(
+                        {"id": {"$in": ids}}, {"_id": 0},
+                    )
+                }
+                row.update({
+                    "matchday": ln.get("matchday"),
+                    "module": ln.get("module"),
+                    "starters": [players_by_id.get(i) for i in ln.get("starters", [])],
+                    "bench": [players_by_id.get(i) for i in ln.get("bench", [])],
+                    "updated_at": ln.get("updated_at"),
+                })
+            rows.append(row)
+        return {
+            "league_id": league_id,
+            "matchday": matchday,
+            "deadline_passed": deadline_passed,
+            "members": rows,
+        }
+
     @router.get("/leagues/{league_id}/results/{matchday}")
     async def get_matchday_results(league_id: str, matchday: int, user: dict = Depends(current_user)):
         await _ensure_member(league_id, user["id"])

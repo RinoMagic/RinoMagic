@@ -106,6 +106,14 @@ export default function LeaguePage() {
               <Text style={styles.ctaText}>Apri formazione</Text>
             </Pressable>
           </View>
+          <Pressable
+            style={[styles.ctaOutline, { borderColor: COLOR }]}
+            onPress={() => router.push(`/fantagiornata/${id}/lineups?matchday=${md}`)}
+            testID="fg-view-all-lineups"
+          >
+            <Ionicons name="people" size={16} color={COLOR} />
+            <Text style={[styles.ctaTextOutline, { color: COLOR }]}>Formazioni di tutti (giornata {md || '?'})</Text>
+          </Pressable>
           {lg.is_admin && (
             <Pressable
               style={[styles.ctaOutline, { borderColor: COLOR, opacity: busy ? 0.5 : 1 }]}

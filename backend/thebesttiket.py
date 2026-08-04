@@ -44,7 +44,10 @@ from schedina_vision import (
     extract_events_from_image as vision_extract_events,
     is_available as vision_is_available,
 )
-from deadlines import get_deadline as _global_deadline_get
+from deadlines import (
+    get_deadline as _global_deadline_get,
+    is_matchday_locked as _global_deadline_passed,
+)
 
 logger = logging.getLogger("thebesttiket")
 
@@ -1824,6 +1827,66 @@ def build_router(
             {"_id": 0, "screenshot_base64": 0, "raw_text": 0},
         )
         return s or {"empty": True, "membership_id": membership["id"]}
+
+    @router.get("/rooms/{room_id}/schedine/all")
+    async def list_all_schedine(
+        room_id: str,
+        user: dict = Depends(current_user),
+    ):
+        """Public listing of every member's schedina, gated by the global
+        deadline (same rule as Survival & the other games).
+
+        Before the deadline: the caller sees only their own schedine;
+        every other user's entry is marked ``hidden: true`` without content.
+        After the deadline: full content is exposed to every room member.
+        """
+        room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+        if not room:
+            raise HTTPException(status_code=404, detail="Stanza non trovata")
+
+        # Must be either a room member (any slot) or a global admin
+        is_admin = user["role"] == "admin" or user["id"] == room.get("admin_user_id")
+        is_member = bool(await db.memberships.find_one(
+            {"room_id": room_id, "user_id": user["id"]}, {"_id": 1}
+        ))
+        if not (is_admin or is_member):
+            raise HTTPException(status_code=403, detail="Non fai parte di questa stanza")
+
+        season = room.get("season") or "2026-27"
+        md = room.get("matchday")
+        deadline_passed = False
+        if isinstance(md, int):
+            deadline_passed = await _global_deadline_passed(db, season, md)
+
+        # Gather all schedine of this room
+        rows: List[dict] = []
+        async for s in db.schedine.find(
+            {"room_id": room_id}, {"_id": 0},
+        ).sort("updated_at", -1):
+            uid = s["user_id"]
+            is_self = uid == user["id"]
+            can_see = deadline_passed or is_self or is_admin
+            row: Dict[str, Any] = {
+                "user_id": uid,
+                "membership_id": s.get("membership_id"),
+                "nickname": s.get("nickname", "?"),
+                "status": s.get("status", "draft"),
+                "hidden": not can_see,
+                "updated_at": s.get("updated_at"),
+            }
+            if can_see:
+                row.update({
+                    "events": s.get("events") or [],
+                    "screenshot_base64": s.get("screenshot_base64", ""),
+                    "raw_text": s.get("raw_text", ""),
+                })
+            rows.append(row)
+        return {
+            "room_id": room_id,
+            "matchday": md,
+            "deadline_passed": deadline_passed,
+            "schedine": rows,
+        }
 
     @router.get("/rooms/{room_id}/schedina-review/{user_id}")
     async def schedina_review(
