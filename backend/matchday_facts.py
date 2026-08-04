@@ -76,12 +76,16 @@ ROLE_TOKENS = {"P", "D", "C", "A", "ALL"}
 # PDF Parser
 # =========================================================================
 
-# Player row: <code> <role> <name...> <voto> <gf> <gs> <rp> <rs> <rf> <au> <amm> <esp> <ass>
+# Player row: <code> <role> <name...> <voto> <gf> <gs> <rp> <rs> <rf> <au> [<amm> <esp> <ass>]
 # `voto` supports comma decimals and optional trailing `*` (senza voto marker).
+# Two PDF formats are supported:
+#   - long  (13 fields): includes Amm / Esp / Ass at the tail
+#   - short (10 fields): the older/light Fantacalcio.it layout (Gf..Au only)
 # Trailing whitespace / extra spurious tokens tolerated with `\s*.*$`.
 _ROW_RE = re.compile(
     r"^(\d+)\s+(P|D|C|A|ALL)\s+(.+?)\s+([\d]+(?:[.,]\d+)?\*?)\s+"
-    r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"
+    r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"
+    r"(?:\s+(\d+)\s+(\d+)\s+(\d+))?"
     r"\s*.*$"
 )
 _MATCHDAY_RE = re.compile(r"(\d+)\s*[ªa°]?\s*giornata", re.IGNORECASE)
@@ -166,6 +170,11 @@ def _parse_voti_pdf(pdf_bytes: bytes) -> Tuple[Optional[int], List[dict], Dict[s
                 row_matched_lines += 1
                 (code, role, name, voto_raw,
                  gf, gs, rp, rs, rf, au, amm, esp, ass) = pm.groups()
+
+                # Short-format PDFs omit Amm/Esp/Ass — treat as 0.
+                amm = amm or "0"
+                esp = esp or "0"
+                ass = ass or "0"
 
                 voto_txt = voto_raw.replace("*", "").replace(",", ".")
                 try:
