@@ -105,6 +105,20 @@ export default function Settings() {
           <View style={styles.card}>
             <Text style={styles.cardLabel}>STRUMENTI ADMIN</Text>
             <Pressable
+              testID="settings-admin-settle"
+              onPress={() => router.push('/admin/settle-matchday')}
+              style={styles.adminRow}
+            >
+              <View style={[styles.adminIcon, { backgroundColor: '#10B981' }]}>
+                <Ionicons name="calculator" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowText}>Calcola Giornata</Text>
+                <Text style={styles.rowSub}>Carica PDF voti e liquida tutti i giochi in un solo passaggio</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+            </Pressable>
+            <Pressable
               testID="settings-admin-bonus"
               onPress={() => router.push('/admin/bonus')}
               style={styles.adminRow}
