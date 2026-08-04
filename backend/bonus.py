@@ -750,6 +750,97 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         ]
         return [await _pick_dict(p) for p in rows]
 
+    @router.get("/history/full")
+    async def history_full(
+        game: str,
+        season: str = "2026-27",
+        limit: int = 20,
+        user: dict = Depends(current_user),
+    ):
+        """Full public history for a game: every settled bonus with ALL
+        participants' picks (winners flagged). The caller must be an admin
+        OR be part of at least one subscription that participated in the
+        bonus for the row to appear.
+        """
+        if game not in GAMES:
+            raise HTTPException(status_code=400, detail="Gioco non valido")
+        bonus_type = BONUS_TYPE_BY_GAME[game]
+        is_admin = user["role"] == "admin"
+
+        # Get user's subscription ids for this game (rooms/tournaments/leagues)
+        my_sub_ids: set = set()
+        if not is_admin:
+            if game == "survival":
+                async for p in db.sv_participants.find(
+                    {"user_id": user["id"]}, {"_id": 0, "tournament_id": 1},
+                ):
+                    my_sub_ids.add(p["tournament_id"])
+            elif game == "score":
+                async for p in db.sal_participants.find(
+                    {"user_id": user["id"]}, {"_id": 0, "tournament_id": 1},
+                ):
+                    my_sub_ids.add(p["tournament_id"])
+            elif game == "fanta":
+                async for m in db.fg_memberships.find(
+                    {"user_id": user["id"]}, {"_id": 0, "league_id": 1},
+                ):
+                    my_sub_ids.add(m["league_id"])
+            elif game == "tiket":
+                async for m in db.memberships.find(
+                    {"user_id": user["id"]}, {"_id": 0, "room_id": 1},
+                ):
+                    my_sub_ids.add(m["room_id"])
+
+        # Only settled configs count as history
+        configs = [
+            cfg async for cfg in db.bonus_configs.find(
+                {"season": season, "bonus_type": bonus_type,
+                 "settled_at": {"$ne": None}},
+                {"_id": 0},
+            ).sort("matchday", -1).limit(limit)
+        ]
+
+        out: List[dict] = []
+        for cfg in configs:
+            picks = [
+                p async for p in db.bonus_picks.find({
+                    "season": cfg["season"],
+                    "matchday": cfg["matchday"],
+                    "bonus_type": cfg["bonus_type"],
+                    "game": game,
+                }, {"_id": 0})
+            ]
+            # Filter by "visible to caller": if not admin, only show picks
+            # tied to subscriptions the caller was in.
+            if not is_admin:
+                picks = [p for p in picks if p.get("subscription_id") in my_sub_ids]
+            if not picks:
+                continue
+            out.append({
+                "matchday": cfg["matchday"],
+                "bonus_type": cfg["bonus_type"],
+                "big_match": cfg.get("big_match"),
+                "result": cfg.get("result"),
+                "settled_at": (
+                    cfg["settled_at"].isoformat()
+                    if hasattr(cfg["settled_at"], "isoformat")
+                    else cfg.get("settled_at")
+                ),
+                "picks": [
+                    {
+                        "user_id": p["user_id"],
+                        "nickname": p.get("nickname"),
+                        "subscription_id": p.get("subscription_id"),
+                        "subscription_name": p.get("subscription_name"),
+                        "pick": p.get("pick"),
+                        "is_correct": bool(p.get("is_correct")),
+                        "reward_details": p.get("reward_details"),
+                    }
+                    for p in picks
+                ],
+            })
+        return out
+
     # Public matchday leaderboard (aggregate — no per-user picks leaked
     # before kickoff, mirroring the Riassunto Giornata privacy pattern).
     @router.get("/configs/{cid}/summary")

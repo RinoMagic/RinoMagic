@@ -60,6 +60,24 @@ type HistoryRow = {
   reward_details: any; submitted_at: string;
 };
 
+type FullHistoryPick = {
+  user_id: string;
+  nickname: string | null;
+  subscription_id: string;
+  subscription_name: string | null;
+  pick: { home_score?: number; away_score?: number; player_name?: string } | null;
+  is_correct: boolean;
+  reward_details: any;
+};
+type FullHistoryRow = {
+  matchday: number;
+  bonus_type: BonusType;
+  big_match: { home_team: string; away_team: string } | null;
+  result: { home_score?: number; away_score?: number; player_name?: string } | null;
+  settled_at: string | null;
+  picks: FullHistoryPick[];
+};
+
 const META: Record<Game, { name: string; color: string; parent: string; reward: string; icon: keyof typeof import('@expo/vector-icons').Ionicons.glyphMap; subLabel: string; subPlural: string }> = {
   tiket:    { name: 'Bonus Tiket',    color: '#FFB300', parent: 'TheBestTiket',  reward: 'Giocata extra', icon: 'trophy',   subLabel: 'Stanza', subPlural: 'stanze' },
   score:    { name: 'Bonus Score',    color: '#3B82F6', parent: 'ScoreAndLive',  reward: '+1 Vita',       icon: 'pulse',    subLabel: 'Torneo', subPlural: 'tornei' },
@@ -78,6 +96,7 @@ export default function BonusGame() {
   const [me, setMe] = useState<User | null>(null);
   const [data, setData] = useState<Available | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [fullHistory, setFullHistory] = useState<FullHistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -86,12 +105,14 @@ export default function BonusGame() {
     try {
       const s = await session.load();
       setMe(s.user);
-      const [av, hs] = await Promise.all([
+      const [av, hs, fh] = await Promise.all([
         api<Available>(`/bonus/available?game=${game}&season=${SEASON}`),
         api<HistoryRow[]>(`/bonus/history?game=${game}&season=${SEASON}&limit=30`).catch(() => []),
+        api<FullHistoryRow[]>(`/bonus/history/full?game=${game}&season=${SEASON}&limit=30`).catch(() => []),
       ]);
       setData(av);
       setHistory(hs);
+      setFullHistory(fh);
     } catch (e: any) {
       alert(e.message);
     } finally {
@@ -188,9 +209,19 @@ export default function BonusGame() {
           </>
         )}
 
+        {fullHistory.length > 0 && (
+          <View style={styles.histBox}>
+            <Text style={styles.histTitle}>Storico Big Match</Text>
+            <Text style={styles.histSub}>Pronostici di tutti i partecipanti · verde = vincitore</Text>
+            {fullHistory.map((h) => (
+              <FullHistoryRowView key={`fh-${h.matchday}`} h={h} color={meta.color} />
+            ))}
+          </View>
+        )}
+
         {history.length > 0 && (
           <View style={styles.histBox}>
-            <Text style={styles.histTitle}>Storico giornate</Text>
+            <Text style={styles.histTitle}>I tuoi pronostici</Text>
             {history.map((h) => (
               <HistoryRowView key={h.id} h={h} color={meta.color} type={data.bonus_type} />
             ))}
@@ -469,6 +500,69 @@ function HistoryRowView({ h, color, type }: { h: HistoryRow; color: string; type
   );
 }
 
+// -------------------------------------------------------------------------
+// Full history — every participant's pick for each past matchday
+// -------------------------------------------------------------------------
+function FullHistoryRowView({ h, color }: { h: FullHistoryRow; color: string }) {
+  const isExact = h.bonus_type === 'exact_score';
+  const bigMatchLabel = h.big_match
+    ? `${h.big_match.home_team} - ${h.big_match.away_team}`
+    : '(nessuna partita)';
+  const resultLabel = h.result
+    ? (isExact
+        ? `${h.result.home_score ?? '-'}-${h.result.away_score ?? '-'}`
+        : (h.result.player_name ?? '-'))
+    : '?';
+  const pickText = (p: FullHistoryPick): string => {
+    if (isExact) return `${p.pick?.home_score ?? '-'}-${p.pick?.away_score ?? '-'}`;
+    return p.pick?.player_name ?? '-';
+  };
+  return (
+    <View style={styles.fullHistCard}>
+      <View style={styles.fullHistHeader}>
+        <View style={[styles.histMdBadge, { backgroundColor: color + '33' }]}>
+          <Text style={[styles.histMdBadgeText, { color }]}>G{h.matchday}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.fullHistTitle} numberOfLines={1}>{bigMatchLabel}</Text>
+          <Text style={styles.fullHistSub}>Risultato ufficiale: <Text style={{ color: theme.colors.success, fontWeight: '800' }}>{resultLabel}</Text></Text>
+        </View>
+      </View>
+      <View style={styles.fullHistPicks}>
+        {h.picks.map((p) => (
+          <View
+            key={`${p.user_id}-${p.subscription_id}`}
+            style={[
+              styles.fullHistPickRow,
+              p.is_correct
+                ? { backgroundColor: theme.colors.success + '18', borderColor: theme.colors.success + '55' }
+                : { backgroundColor: theme.colors.error + '15', borderColor: theme.colors.error + '55' },
+            ]}
+          >
+            <Text
+              style={[
+                styles.fullHistNick,
+                { color: p.is_correct ? theme.colors.success : theme.colors.error },
+              ]}
+              numberOfLines={1}
+            >
+              {p.is_correct ? '🏆 ' : ''}{p.nickname || p.user_id.slice(0, 8)}
+            </Text>
+            <Text
+              style={[
+                styles.fullHistPick,
+                { color: p.is_correct ? theme.colors.success : theme.colors.error },
+              ]}
+            >
+              {pickText(p)}
+            </Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: theme.colors.surface },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.surface },
@@ -604,4 +698,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill,
   },
   histBadgeText: { fontSize: 11, fontWeight: '800' },
+
+  // Full history — per-matchday participants block
+  fullHistCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: theme.spacing.sm,
+    gap: theme.spacing.sm,
+  },
+  fullHistHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  histMdBadge: {
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: theme.radius.sm,
+  },
+  histMdBadgeText: { fontSize: 12, fontWeight: '900' },
+  fullHistTitle: { color: theme.colors.onSurface, fontSize: 13, fontWeight: '800' },
+  fullHistSub: { color: theme.colors.muted, fontSize: 11, marginTop: 1 },
+  fullHistPicks: { gap: 4 },
+  fullHistPickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+  },
+  fullHistNick: { fontSize: 12, fontWeight: '700', flex: 1 },
+  fullHistPick: { fontSize: 13, fontWeight: '900', marginLeft: 8 },
 });
