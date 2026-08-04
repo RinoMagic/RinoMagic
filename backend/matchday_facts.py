@@ -59,7 +59,7 @@ SERIE_A_TEAMS = {
     "Parma", "Pisa", "Roma", "Sassuolo", "Torino", "Udinese", "Verona",
     # historical / possibly-recurring variants (last ~5 seasons)
     "Hellas Verona", "Empoli", "Monza", "Frosinone", "Salernitana", "Venezia",
-    "Spezia", "Sampdoria", "Bari", "Benevento", "Brescia", "Chievo", "Spal",
+    "Spezia", "Sampdoria", "Benevento", "Brescia", "Chievo", "Spal",
     "Palermo", "Novara", "Livorno", "Bari",
 }
 _SERIE_A_LOWER = {t.lower(): t for t in SERIE_A_TEAMS}
