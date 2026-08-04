@@ -15,10 +15,10 @@
  *   • Classifica — participants leaderboard (lives + status)
  *   • Riassunto — aggregated picks (private pre-kickoff, detailed after)
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
-  useWindowDimensions,
+  useWindowDimensions, Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -26,6 +26,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 import { confirmDialog } from '@/src/utils/confirm';
+import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
 
 const COLOR = '#EF4444';
 const REQUIRED_PICKS = 3;
@@ -88,6 +89,7 @@ export default function SurvivaTournament() {
   const [busyInvite, setBusyInvite] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [selectedLbRow, setSelectedLbRow] = useState<LeaderboardRow | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -349,6 +351,9 @@ export default function SurvivaTournament() {
       </SafeAreaView>
 
       <ScrollView contentContainerStyle={styles.body}>
+        {md && (
+          <MatchdayCountdown matchday={md.matchday} season={t.season} />
+        )}
         {tab === 'play' && (
           <PlayTab
             t={t} md={md}
@@ -364,7 +369,9 @@ export default function SurvivaTournament() {
             onTogglePostponed={togglePostponed}
           />
         )}
-        {tab === 'leaderboard' && <LeaderboardTab rows={lb} />}
+        {tab === 'leaderboard' && (
+          <LeaderboardTab rows={lb} onSelect={setSelectedLbRow} />
+        )}
         {tab === 'summary' && (
           <SummaryTab
             md={md} summary={summary}
@@ -385,6 +392,12 @@ export default function SurvivaTournament() {
           />
         )}
       </ScrollView>
+
+      <ParticipantPicksModal
+        tid={id!}
+        row={selectedLbRow}
+        onClose={() => setSelectedLbRow(null)}
+      />
     </View>
   );
 }
@@ -801,12 +814,26 @@ function AdminTab({
   );
 }
 
-function LeaderboardTab({ rows }: { rows: LeaderboardRow[] }) {
+function LeaderboardTab({
+  rows, onSelect,
+}: {
+  rows: LeaderboardRow[];
+  onSelect: (row: LeaderboardRow) => void;
+}) {
   if (rows.length === 0) return <Text style={styles.muted}>Nessun partecipante.</Text>;
   return (
     <>
       {rows.map((r) => (
-        <View key={r.user_id} style={[styles.lbRow, r.eliminated && { opacity: 0.5 }]}>
+        <Pressable
+          key={r.user_id}
+          onPress={() => onSelect(r)}
+          testID={`sv-lb-row-${r.user_id}`}
+          style={({ pressed }) => [
+            styles.lbRow,
+            r.eliminated && { opacity: 0.5 },
+            pressed && { backgroundColor: theme.colors.surfaceTertiary },
+          ]}
+        >
           <Text style={styles.lbRank}>#{r.rank}</Text>
           <View style={{ flex: 1 }}>
             <Text style={styles.lbName}>{r.nickname}</Text>
@@ -823,9 +850,156 @@ function LeaderboardTab({ rows }: { rows: LeaderboardRow[] }) {
             <Ionicons name="heart" size={14} color={COLOR} />
             <Text style={styles.livesBadgeText}>{r.lives_left}</Text>
           </View>
-        </View>
+          <Ionicons
+            name="chevron-forward"
+            size={16}
+            color={theme.colors.muted}
+            style={{ marginLeft: 4 }}
+          />
+        </Pressable>
       ))}
     </>
+  );
+}
+
+// --- Participant picks modal ---------------------------------------------
+
+type ParticipantPickRow = {
+  matchday: number;
+  matchday_id: string;
+  status: string;
+  settled: boolean;
+  deadline_passed: boolean;
+  hidden: boolean;
+  picks?: {
+    home_team: string;
+    away_team: string;
+    pick: '1' | 'X' | '2';
+    correct?: boolean | null;
+    concession?: boolean;
+    is_lock?: boolean;
+  }[];
+};
+type ParticipantPicksResp = {
+  participant: {
+    user_id: string;
+    display_name: string | null;
+    lives_left: number;
+    eliminated_at: string | null;
+    locked_teams: string[];
+  };
+  matchdays: ParticipantPickRow[];
+};
+
+function ParticipantPicksModal({
+  tid, row, onClose,
+}: {
+  tid: string;
+  row: LeaderboardRow | null;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<ParticipantPicksResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!row) return;
+    let alive = true;
+    setData(null); setErr(null);
+    api<ParticipantPicksResp>(
+      `/sv/tournaments/${tid}/participants/${row.user_id}/picks`,
+    )
+      .then((r) => { if (alive) setData(r); })
+      .catch((e: any) => { if (alive) setErr(e.message || 'Errore'); });
+    return () => { alive = false; };
+  }, [tid, row]);
+
+  return (
+    <Modal
+      visible={!!row}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.modalTitle}>
+                {row?.nickname ?? ''}
+              </Text>
+              <Text style={styles.modalSub}>
+                {row ? `#${row.rank} · ${row.lives_left} ${row.lives_left === 1 ? 'vita' : 'vite'}${row.eliminated ? ' · Eliminato' : ''}` : ''}
+              </Text>
+            </View>
+            <Pressable onPress={onClose} hitSlop={10} testID="sv-modal-close">
+              <Ionicons name="close" size={24} color={theme.colors.onSurface} />
+            </Pressable>
+          </View>
+
+          <ScrollView style={{ maxHeight: 520 }}
+            contentContainerStyle={{ padding: theme.spacing.md, gap: theme.spacing.sm }}
+          >
+            {err && (
+              <View style={[styles.notice, { borderColor: theme.colors.error + '55' }]}>
+                <Ionicons name="alert-circle" size={16} color={theme.colors.error} />
+                <Text style={[styles.noticeText, { color: theme.colors.error }]}>{err}</Text>
+              </View>
+            )}
+            {!data && !err && <ActivityIndicator color={COLOR} />}
+            {data && data.matchdays.length === 0 && (
+              <Text style={styles.muted}>Nessuna giornata giocata.</Text>
+            )}
+            {data && data.matchdays.map((md) => (
+              <View key={md.matchday_id} style={styles.mdBlock}>
+                <View style={styles.mdBlockHeader}>
+                  <Text style={styles.mdBlockTitle}>Giornata {md.matchday}</Text>
+                  <View style={styles.mdBlockBadge}>
+                    <Text style={styles.mdBlockBadgeText}>
+                      {md.settled ? 'Calcolata' : md.deadline_passed ? 'Chiusa' : 'Aperta'}
+                    </Text>
+                  </View>
+                </View>
+                {md.hidden ? (
+                  <View style={styles.hiddenBox}>
+                    <Ionicons name="eye-off" size={14} color={theme.colors.muted} />
+                    <Text style={styles.hiddenText}>
+                      Pronostici nascosti finché il timer non scade
+                    </Text>
+                  </View>
+                ) : (md.picks && md.picks.length > 0) ? (
+                  md.picks.map((p, i) => {
+                    const outcome = md.settled
+                      ? (p.correct === true ? 'ok' : p.correct === false ? 'ko' : 'na')
+                      : 'na';
+                    return (
+                      <View key={i} style={styles.pickRow}>
+                        <Text style={styles.pickTeams} numberOfLines={1}>
+                          {p.home_team} - {p.away_team}
+                        </Text>
+                        <View style={[
+                          styles.pickSign,
+                          outcome === 'ok' && { backgroundColor: theme.colors.success + '22', borderColor: theme.colors.success },
+                          outcome === 'ko' && { backgroundColor: theme.colors.error + '22', borderColor: theme.colors.error },
+                        ]}>
+                          <Text style={styles.pickSignText}>{p.pick}</Text>
+                        </View>
+                        <View style={{ width: 24, alignItems: 'center' }}>
+                          {outcome === 'ok' && <Ionicons name="checkmark-circle" size={18} color={theme.colors.success} />}
+                          {outcome === 'ko' && <Ionicons name="close-circle" size={18} color={theme.colors.error} />}
+                          {outcome === 'na' && <Ionicons name="time" size={16} color={theme.colors.muted} />}
+                        </View>
+                      </View>
+                    );
+                  })
+                ) : (
+                  <Text style={styles.muted}>Nessuna scelta inviata.</Text>
+                )}
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -1272,4 +1446,65 @@ const styles = StyleSheet.create({
   },
   pickChipSign: { color: COLOR, fontWeight: '900', fontSize: 12 },
   pickChipName: { color: theme.colors.onSurface, fontSize: 11 },
+
+  // Participant picks modal
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: theme.colors.surface,
+    borderTopLeftRadius: theme.radius.lg,
+    borderTopRightRadius: theme.radius.lg,
+    maxHeight: '85%' as any,
+    paddingBottom: 24,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  modalTitle: { color: theme.colors.onSurface, fontSize: 17, fontWeight: '800' },
+  modalSub: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
+  mdBlock: {
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    gap: 6,
+  },
+  mdBlockHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  },
+  mdBlockTitle: { color: theme.colors.onSurface, fontSize: 13, fontWeight: '800' },
+  mdBlockBadge: {
+    paddingHorizontal: 8, paddingVertical: 2,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surfaceTertiary,
+  },
+  mdBlockBadgeText: { color: theme.colors.muted, fontSize: 10, fontWeight: '800' },
+  hiddenBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    padding: 8,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surfaceTertiary,
+  },
+  hiddenText: { color: theme.colors.muted, fontSize: 11, fontStyle: 'italic' },
+  pickRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 4,
+  },
+  pickTeams: { flex: 1, color: theme.colors.onSurface, fontSize: 12 },
+  pickSign: {
+    minWidth: 26, paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: theme.colors.border,
+    alignItems: 'center',
+  },
+  pickSignText: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 12 },
 });

@@ -19,6 +19,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, session } from '@/src/api';
 import { theme } from '@/src/theme';
+import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
 import { formatPrediction } from '@/src/utils/predictions';
 import { confirmDialog } from '@/src/utils/confirm';
 
@@ -242,6 +243,9 @@ export default function RoomDetail() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.brand} />
         }
       >
+        <View style={{ padding: 16, paddingBottom: 0 }}>
+          <MatchdayCountdown matchday={typeof room.matchday === 'number' ? room.matchday : undefined} />
+        </View>
         {/* Invites section (admin only) / Participants summary (everyone) */}
         {room.is_admin ? (
           <Pressable

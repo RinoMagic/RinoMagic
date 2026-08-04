@@ -38,6 +38,8 @@ from typing import List, Optional, Dict, Any, Callable, Tuple
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+from deadlines import is_matchday_locked as _global_deadline_passed
+
 logger = logging.getLogger(__name__)
 
 # Games supported and their bonus type mapping
@@ -645,6 +647,14 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             raise HTTPException(status_code=400, detail="Bonus già liquidato")
         if status == "locked":
             raise HTTPException(status_code=400, detail="Countdown scaduto: pronostici bloccati")
+        # Global cross-game deadline (shared with Survival/Score/Fanta/Tiket)
+        season = cfg.get("season") or "2026-27"
+        md = cfg.get("matchday")
+        if isinstance(md, int) and await _global_deadline_passed(db, season, md):
+            raise HTTPException(
+                status_code=403,
+                detail="Il timer di invio pronostici è scaduto per questa giornata.",
+            )
 
     @router.post("/picks/exact")
     async def submit_exact(body: PickExactSubmit, user: dict = Depends(current_user)):

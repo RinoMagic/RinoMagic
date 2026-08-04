@@ -18,6 +18,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, session, User } from '@/src/api';
 import { theme } from '@/src/theme';
+import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
 
 type Game = 'tiket' | 'score' | 'fanta' | 'survival';
 type BonusType = 'exact_score' | 'first_scorer';
@@ -134,6 +135,7 @@ export default function BonusGame() {
           onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }}
         />}
       >
+        <MatchdayCountdown />
         {!data.eligible && (
           <View style={[styles.notice, { borderColor: theme.colors.error }]}>
             <Ionicons name="lock-closed" size={18} color={theme.colors.error} />

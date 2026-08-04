@@ -26,6 +26,8 @@ from typing import List, Optional, Dict, Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field, field_validator
+
+from deadlines import is_matchday_locked as _global_deadline_passed
 from pymongo import ReturnDocument
 
 logger = logging.getLogger("scoreandlive")
@@ -1385,6 +1387,15 @@ def build_router(
             raise HTTPException(status_code=404, detail="Giornata non trovata")
         if md["status"] != "open":
             raise HTTPException(status_code=400, detail="I pick per questa giornata sono chiusi")
+
+        # Global deadline gate (shared timer across all games).
+        t_for_gate = await _get_tournament(tournament_id)
+        _season_for_gate = t_for_gate.get("season") or "2026-27"
+        if await _global_deadline_passed(db, _season_for_gate, md["matchday"]):
+            raise HTTPException(
+                status_code=403,
+                detail="Il timer di invio pronostici è scaduto per questa giornata.",
+            )
 
         playable = [f for f in md["fixtures"] if not f.get("postponed_before")]
         playable_ids = {f["idx"] for f in playable}

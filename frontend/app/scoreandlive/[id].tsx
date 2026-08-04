@@ -8,6 +8,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
 
 const COLOR = '#10B981';
 
@@ -22,6 +23,7 @@ type Detail = {
   id: string; name: string; status: string; initial_lives: number; is_admin: boolean;
   invite_code: string; participants: Participant[]; matchdays: Matchday[];
   my_blocked_teams: string[]; invites_available: number;
+  season?: string;
 };
 
 export default function TournamentPage() {
@@ -69,6 +71,7 @@ export default function TournamentPage() {
       </SafeAreaView>
 
       <ScrollView contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg, paddingBottom: 60 }}>
+        <MatchdayCountdown season={t.season} />
         {me && (
           <View style={[styles.card, { borderLeftWidth: 4, borderLeftColor: COLOR }]}>
             <Text style={styles.cardTitle}>Le tue vite: {me.lives_remaining}/{t.initial_lives}</Text>

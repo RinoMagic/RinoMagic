@@ -32,6 +32,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from pymongo import ReturnDocument
 
+from deadlines import is_matchday_locked as _global_deadline_passed
+
 logger = logging.getLogger("fantagiornata")
 
 ROLE_ORDER = ("P", "D", "C", "A")
@@ -520,6 +522,15 @@ def build_router(
     @router.post("/leagues/{league_id}/lineup")
     async def save_lineup(league_id: str, data: LineupIn, user: dict = Depends(current_user)):
         await _ensure_member(league_id, user["id"])
+
+        # Global deadline gate (shared timer across all games).
+        _lg_for_gate = await db.fg_leagues.find_one({"id": league_id}, {"_id": 0, "season": 1})
+        _season_for_gate = (_lg_for_gate or {}).get("season") or "2026-27"
+        if await _global_deadline_passed(db, _season_for_gate, data.matchday):
+            raise HTTPException(
+                status_code=403,
+                detail="Il timer di invio pronostici è scaduto per questa giornata.",
+            )
         # Check nothing is on both lists
         overlap = set(data.starters) & set(data.bench)
         if overlap:

@@ -10,6 +10,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
 
 const COLOR = '#A855F7';
 
@@ -85,6 +86,7 @@ export default function LeaguePage() {
       </SafeAreaView>
 
       <ScrollView contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg, paddingBottom: 60 }}>
+        <MatchdayCountdown />
         {flash && <View style={styles.okBox}><Text style={styles.okText}>{flash}</Text></View>}
 
         <View style={styles.card}>
