@@ -52,14 +52,17 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
 logger = logging.getLogger("matchday_facts")
 
-# Serie A 2025-26 + variants encountered in the PDF header row.
+# Serie A + historical variants encountered in past PDFs (last ~5 seasons).
 SERIE_A_TEAMS = {
     "Atalanta", "Bologna", "Cagliari", "Como", "Cremonese", "Fiorentina",
     "Genoa", "Inter", "Juventus", "Lazio", "Lecce", "Milan", "Napoli",
     "Parma", "Pisa", "Roma", "Sassuolo", "Torino", "Udinese", "Verona",
-    # historical / possibly-recurring variants
+    # historical / possibly-recurring variants (last ~5 seasons)
     "Hellas Verona", "Empoli", "Monza", "Frosinone", "Salernitana", "Venezia",
+    "Spezia", "Sampdoria", "Bari", "Benevento", "Brescia", "Chievo", "Spal",
+    "Palermo", "Novara", "Livorno", "Bari",
 }
+_SERIE_A_LOWER = {t.lower(): t for t in SERIE_A_TEAMS}
 
 # Canonicalize team labels (e.g. "Hellas Verona" -> "Verona") if desired later.
 TEAM_ALIASES = {
@@ -75,27 +78,34 @@ ROLE_TOKENS = {"P", "D", "C", "A", "ALL"}
 
 # Player row: <code> <role> <name...> <voto> <gf> <gs> <rp> <rs> <rf> <au> <amm> <esp> <ass>
 # `voto` supports comma decimals and optional trailing `*` (senza voto marker).
+# Trailing whitespace / extra spurious tokens tolerated with `\s*.*$`.
 _ROW_RE = re.compile(
     r"^(\d+)\s+(P|D|C|A|ALL)\s+(.+?)\s+([\d]+(?:[.,]\d+)?\*?)\s+"
-    r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$"
+    r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"
+    r"\s*.*$"
 )
 _MATCHDAY_RE = re.compile(r"(\d+)\s*[ªa°]?\s*giornata", re.IGNORECASE)
+
+
+def _team_from_line(line: str) -> Optional[str]:
+    """Return the canonical team name if *line* is a Serie A team header,
+    otherwise None. Tolerates case + surrounding whitespace/punctuation."""
+    key = re.sub(r"[^a-zA-Z\s]", "", line).strip().lower()
+    if key in _SERIE_A_LOWER:
+        return _canonical_team(_SERIE_A_LOWER[key])
+    return None
 
 
 def _canonical_team(name: str) -> str:
     return TEAM_ALIASES.get(name, name)
 
 
-def _parse_voti_pdf(pdf_bytes: bytes) -> Tuple[Optional[int], List[dict]]:
+def _parse_voti_pdf(pdf_bytes: bytes) -> Tuple[Optional[int], List[dict], Dict[str, Any]]:
     """Parse a fantacalcio.it "Voti" PDF.
 
-    Returns ``(matchday, rows)`` where ``matchday`` is detected from the header
-    ("38ª giornata di campionato") if present, and ``rows`` is a list of
-    per-player dicts matching the ``matchday_facts`` schema (minus ids and
-    timestamps).
-
-    Rows that do not match the strict row regex are silently skipped (headers,
-    team labels, page banners...).
+    Returns ``(matchday, rows, diagnostics)`` where diagnostics contains
+    useful fields when the parse yields 0 rows (line counts, sample lines,
+    teams seen, etc.) so the admin can debug format issues.
     """
     try:
         import pdfplumber
@@ -105,7 +115,12 @@ def _parse_voti_pdf(pdf_bytes: bytes) -> Tuple[Optional[int], List[dict]]:
     matchday: Optional[int] = None
     current_team: Optional[str] = None
     rows: List[dict] = []
-    seen: set = set()  # (team, code) dedupe across pages
+    seen: set = set()
+    total_lines = 0
+    teams_seen: List[str] = []
+    row_looking_lines = 0        # lines that "look like" a row (start with digits)
+    row_matched_lines = 0        # lines that actually match _ROW_RE
+    sample_unmatched: List[str] = []
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
@@ -114,8 +129,8 @@ def _parse_voti_pdf(pdf_bytes: bytes) -> Tuple[Optional[int], List[dict]]:
                 line = raw_line.strip()
                 if not line:
                     continue
+                total_lines += 1
 
-                # Detect matchday from header ("Voti Fantacalcio 38ª giornata di campionato")
                 if matchday is None:
                     m = _MATCHDAY_RE.search(line)
                     if m:
@@ -124,20 +139,31 @@ def _parse_voti_pdf(pdf_bytes: bytes) -> Tuple[Optional[int], List[dict]]:
                         except ValueError:
                             pass
 
-                # Team header line = a full known team name
-                if line in SERIE_A_TEAMS:
-                    current_team = _canonical_team(line)
+                # Team header — tolerant match (case, punctuation)
+                team_name = _team_from_line(line)
+                if team_name:
+                    current_team = team_name
+                    if team_name not in teams_seen:
+                        teams_seen.append(team_name)
                     continue
 
-                # Skip column-header lines
                 if line.startswith("Cod."):
                     continue
 
-                # Try player row
+                # Track "looks like a row" for diagnostics (line starts with number+role)
+                if re.match(r"^\d+\s+(P|D|C|A|ALL)\s", line):
+                    row_looking_lines += 1
+
                 pm = _ROW_RE.match(line)
                 if not pm or not current_team:
+                    if pm and not current_team and len(sample_unmatched) < 5:
+                        sample_unmatched.append(f"[team?] {line[:80]}")
+                    elif not pm and re.match(r"^\d+\s+(P|D|C|A|ALL)\s", line) \
+                         and len(sample_unmatched) < 5:
+                        sample_unmatched.append(line[:100])
                     continue
 
+                row_matched_lines += 1
                 (code, role, name, voto_raw,
                  gf, gs, rp, rs, rf, au, amm, esp, ass) = pm.groups()
 
@@ -174,7 +200,16 @@ def _parse_voti_pdf(pdf_bytes: bytes) -> Tuple[Optional[int], List[dict]]:
                     "total_goals": gf_i + rf_i,
                 })
 
-    return matchday, rows
+    diagnostics = {
+        "total_lines": total_lines,
+        "teams_seen_count": len(teams_seen),
+        "teams_seen": teams_seen,
+        "row_looking_lines": row_looking_lines,
+        "row_matched_lines": row_matched_lines,
+        "sample_unmatched": sample_unmatched,
+        "matchday_detected": matchday,
+    }
+    return matchday, rows, diagnostics
 
 
 def summarize(rows: List[dict]) -> Dict[str, Any]:
@@ -260,7 +295,7 @@ def build_router(
             raise HTTPException(status_code=413, detail="PDF troppo grande (max 20MB)")
 
         try:
-            matchday, rows = _parse_voti_pdf(raw)
+            matchday, rows, diagnostics = _parse_voti_pdf(raw)
         except HTTPException:
             raise
         except Exception as e:
@@ -273,9 +308,23 @@ def build_router(
                 r["matchday"] = matchday
 
         if not rows:
+            # Detailed diagnostics message so the admin knows WHAT went wrong
+            teams_str = ", ".join(diagnostics["teams_seen"][:10]) or "nessuna"
+            sample_str = (
+                " · Righe simili non riconosciute: "
+                + " || ".join(diagnostics["sample_unmatched"][:3])
+                if diagnostics["sample_unmatched"] else ""
+            )
             raise HTTPException(
                 status_code=400,
-                detail="Nessun giocatore riconosciuto nel PDF. Verifica il formato.",
+                detail=(
+                    f"Nessun giocatore riconosciuto ({diagnostics['total_lines']} righe totali, "
+                    f"{diagnostics['row_looking_lines']} sembrano giocatori, "
+                    f"{diagnostics['row_matched_lines']} riconosciute). "
+                    f"Squadre trovate: {teams_str}."
+                    + sample_str
+                    + " Assicurati che il PDF sia il 'Voti Fantacalcio' ufficiale."
+                ),
             )
         if not matchday:
             raise HTTPException(

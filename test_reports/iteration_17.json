@@ -1,0 +1,31 @@
+{
+  "summary": "Backend-only regression testing for the tolerant Voti PDF parser fix in /app/backend/matchday_facts.py. Created /app/backend/tests/test_voti_pdf_regression.py with 5 focused tests covering all 3 review scenarios (P0 API upload regression, P1 unit-level _parse_voti_pdf, P2 improved error diagnostics). All 5 tests PASS (100%) under both serial and pytest-xdist parallel execution. Reference fixture voti_giornata_38.pdf still parses to matchday=38 / 340 rows / 20 teams; diagnostics.row_matched_lines == 340; stored_total after non-dry-run upload == 340; scorers_count > 0. Bogus non-Voti PDF now returns a 400 with detailed diagnostics (e.g. 'Nessun giocatore riconosciuto (1 righe totali, 0 sembrano giocatori, 0 riconosciute). Squadre trovate: nessuna.') — the old generic 'Verifica il formato.' message is gone. DB left clean (md=38 count=0). No production code changes required.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_voti_pdf_regression.py",
+    "/app/test_reports/pytest/voti_pdf_regression_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Minor: SERIE_A_TEAMS set literal contains 'Bari' twice — harmless because it's a set, but noise; consider removing the duplicate for cleanliness (matchday_facts.py:56-64).",
+    "Minor: TestErrorDiagnostics::test_error_shape_via_mocked_parse validates the error-string CONTRACT via a manually-built string (monkeypatch cannot reach the closure-captured _parse_voti_pdf inside the built router). The live-endpoint bogus-PDF test already covers the real path, so this stays as documentation of the format expectation."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_voti_pdf_regression.py (new)"
+  ],
+  "success_rate": {"backend": "100% (5/5)", "frontend": "skipped"},
+  "seed_data_creation": "Class-scoped _clean_md38 fixture deletes matchday_facts for md=38 before and after each DB-touching test class. Final DB state verified: md=38 count=0.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_voti_pdf_regression.py is safe to rerun under pytest-xdist (class-scoped cleanup, not module-scoped). If you ever see stored_total=332 instead of 340, that's a leftover from a previous run that raced with cleanup — rerun once and it resolves. reportlab is now installed (pip) and used by the bogus-PDF test.",
+  "rca_of_issue": "N/A — this iteration verified a completed fix, not a regression. Verified fix behavior: (1) _team_from_line() strips non-alphabetic chars + lowercases so 'ATALANTA', 'Atalanta.', 'atalanta ' all match; (2) _ROW_RE now ends with '\\s*.*$' tolerating trailing whitespace/columns; (3) _parse_voti_pdf returns 3-tuple with diagnostics that feed the new error message. First run under xdist parallel showed 332/340 stored (race between module-scoped cleanup fixture and upload). Fixed by narrowing scope of cleanup fixture to class-level; subsequent parallel runs all green."
+}
