@@ -13,6 +13,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, session, User } from '@/src/api';
 import { theme } from '@/src/theme';
+import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
 
 type GameInfo = {
   id: string;
@@ -114,6 +115,10 @@ export default function Hub() {
           <Text style={styles.sectionTitle}>Scegli il gioco</Text>
           <Text style={styles.sectionSub}>Sfida i tuoi amici in due giochi diversi con lo stesso account.</Text>
         </View>
+
+        <MatchdayCountdown
+          onPress={me.role === 'admin' ? () => router.push('/admin/deadlines') : undefined}
+        />
 
         {games.map((g) => (
           <Pressable

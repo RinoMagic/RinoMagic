@@ -119,6 +119,20 @@ export default function Settings() {
               <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
             </Pressable>
             <Pressable
+              testID="settings-admin-deadlines"
+              onPress={() => router.push('/admin/deadlines')}
+              style={styles.adminRow}
+            >
+              <View style={[styles.adminIcon, { backgroundColor: '#F97316' }]}>
+                <Ionicons name="time" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowText}>Deadline Giornate</Text>
+                <Text style={styles.rowSub}>Timer di chiusura pronostici · vale per tutti i giochi</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+            </Pressable>
+            <Pressable
               testID="settings-admin-players"
               onPress={() => router.push('/admin/players')}
               style={styles.adminRow}

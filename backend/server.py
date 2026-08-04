@@ -173,6 +173,20 @@ _settle_router = _build_settle_router(
 api.include_router(_settle_router)
 
 
+# --- Global Matchday Deadlines (shared timer for all games) --------------
+from deadlines import (  # noqa: E402
+    build_router as _build_deadlines_router,
+    ensure_indexes as _deadlines_ensure_indexes,
+    backfill_from_tiket_rooms as _deadlines_backfill,
+)
+_deadlines_router = _build_deadlines_router(
+    db=db,
+    current_user=current_user,
+    require_admin=require_admin,
+)
+api.include_router(_deadlines_router)
+
+
 # =========================================================================
 # Startup / shutdown
 # =========================================================================
@@ -202,6 +216,15 @@ async def startup():
     await _fg_ensure_indexes(db)
     await _sv_ensure_indexes(db)
     await _bonus_ensure_indexes(db)
+
+    # Global deadlines: indexes + one-shot backfill from legacy per-room fields
+    await _deadlines_ensure_indexes(db)
+    try:
+        stats = await _deadlines_backfill(db)
+        if stats["copied"]:
+            logger.info("deadlines backfill: %s", stats)
+    except Exception:
+        logger.exception("deadlines backfill failed")
 
     await seed_admin_if_missing(db)
     logger.info("RinoMagic API started")

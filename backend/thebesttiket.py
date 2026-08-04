@@ -44,6 +44,7 @@ from schedina_vision import (
     extract_events_from_image as vision_extract_events,
     is_available as vision_is_available,
 )
+from deadlines import get_deadline as _global_deadline_get
 
 logger = logging.getLogger("thebesttiket")
 
@@ -1058,6 +1059,17 @@ def build_router(
             {"room_id": room["id"], "revoked_at": None, "used_by_user_id": None},
         )
         deadline_at = room.get("deadline_at")
+        # Global deadline (shared with all games) has precedence over the
+        # legacy room-level deadline. If a global one is set for this
+        # (season, matchday) it overrides the per-room field entirely.
+        season = room.get("season") or "2026-27"
+        md = room.get("matchday")
+        deadline_source = "room"
+        if isinstance(md, int):
+            gdt = await _global_deadline_get(db, season, md)
+            if gdt is not None:
+                deadline_at = gdt.isoformat()
+                deadline_source = "global"
         submissions_locked = _is_deadline_passed(deadline_at)
         return {
             "id": room["id"],
@@ -1074,13 +1086,24 @@ def build_router(
             "invites_total": invites_total,
             "invites_available": invites_available,
             "deadline_at": deadline_at,
+            "deadline_source": deadline_source,
             "submissions_locked": submissions_locked,
             "settled": settled,
             "is_admin": is_admin_of_room,
         }
 
     async def _ensure_submissions_open(room: dict) -> None:
-        if _is_deadline_passed(room.get("deadline_at")):
+        # Prefer global deadline; fall back to legacy per-room deadline.
+        season = room.get("season") or "2026-27"
+        md = room.get("matchday")
+        deadline_iso: Optional[str] = None
+        if isinstance(md, int):
+            gdt = await _global_deadline_get(db, season, md)
+            if gdt is not None:
+                deadline_iso = gdt.isoformat()
+        if deadline_iso is None:
+            deadline_iso = room.get("deadline_at")
+        if _is_deadline_passed(deadline_iso):
             raise HTTPException(
                 status_code=403,
                 detail="Termine per l'inserimento delle schedine scaduto",

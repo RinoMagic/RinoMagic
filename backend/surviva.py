@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from bonus import ensure_bonus_draft
+from deadlines import is_matchday_locked as _global_deadline_passed
 
 logger = logging.getLogger("surviva")
 
@@ -725,6 +726,75 @@ def build_router(
         )]
         return {"picks": picks, "required": REQUIRED_PICKS_PER_MATCHDAY}
 
+    @router.get("/tournaments/{tid}/participants/{user_id}/picks")
+    async def participant_picks(
+        tid: str, user_id: str, user: dict = Depends(current_user),
+    ):
+        """Return the target participant's picks per matchday.
+
+        Visibility rule (3-TUTTI, cross-game): each matchday's picks are
+        included ONLY when the global deadline for that matchday has passed
+        (or when the matchday has been settled). Otherwise the entry is
+        returned with ``hidden: True`` and no pick data.
+
+        The caller sees own picks always (no gate for self).
+        """
+        # Caller must be part of the tournament (admin bypasses)
+        if user["role"] != "admin":
+            await _require_participant(tid, user["id"])
+        target = await db.sv_participants.find_one(
+            {"tournament_id": tid, "user_id": user_id}, {"_id": 0},
+        )
+        if not target:
+            raise HTTPException(status_code=404, detail="Partecipante non trovato")
+        t = await _get_tournament(tid)
+        season = t.get("season") or "2026-27"
+        is_self = user_id == user["id"]
+
+        matchdays = [
+            md async for md in db.sv_matchdays.find(
+                {"tournament_id": tid},
+                {"_id": 0, "id": 1, "matchday": 1, "status": 1, "fixtures": 1},
+            ).sort("matchday", 1)
+        ]
+        # Group picks by matchday_id for one query
+        picks_by_md: Dict[str, List[dict]] = {}
+        async for pk in db.sv_picks.find(
+            {"tournament_id": tid, "user_id": user_id}, {"_id": 0},
+        ):
+            picks_by_md.setdefault(pk["matchday_id"], []).append(pk)
+
+        out: List[dict] = []
+        for md in matchdays:
+            md_num = md["matchday"]
+            settled = md.get("status") == "settled"
+            deadline_passed = await _global_deadline_passed(db, season, md_num)
+            visible = is_self or settled or deadline_passed
+            entry: Dict[str, Any] = {
+                "matchday": md_num,
+                "matchday_id": md["id"],
+                "status": md.get("status", "open"),
+                "settled": settled,
+                "deadline_passed": deadline_passed,
+                "hidden": not visible,
+            }
+            if visible:
+                entry["picks"] = picks_by_md.get(md["id"], [])
+            out.append(entry)
+
+        # Snapshot participant state (lives, locked teams, elimination)
+        participant_view = {
+            "user_id": target["user_id"],
+            "display_name": target.get("display_name"),
+            "lives_left": target.get("lives_left", 0),
+            "eliminated_at": target.get("eliminated_at"),
+            "locked_teams": target.get("locked_teams") or [],
+        }
+        return {
+            "participant": participant_view,
+            "matchdays": out,
+        }
+
     @router.get("/tournaments/{tid}/matchdays/{md_id}/my-pick")
     async def my_pick(tid: str, md_id: str, user: dict = Depends(current_user)):
         """Legacy single-pick endpoint. Kept for compat: returns the first pick."""
@@ -768,6 +838,15 @@ def build_router(
             raise HTTPException(status_code=404, detail="Giornata non trovata")
         if _md_is_locked(md):
             raise HTTPException(status_code=403, detail="Giornata chiusa: pronostici bloccati")
+
+        # Global deadline gate (shared across all games).
+        t = await _get_tournament(tid)
+        season = t.get("season") or "2026-27"
+        if await _global_deadline_passed(db, season, md["matchday"]):
+            raise HTTPException(
+                status_code=403,
+                detail="Il timer di invio pronostici è scaduto per questa giornata.",
+            )
 
         fixtures_by_key = {
             (f["home_team"], f["away_team"]): f for f in md.get("fixtures", [])
