@@ -8,6 +8,7 @@
  * (no native-only Alerts, no gesture handlers).
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import * as React from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput,
   Modal, Platform, Dimensions,
@@ -271,11 +272,17 @@ export default function LineupEditor() {
     if (!picker) return [];
     // Show players matching the target role (except those already used in the
     // lineup — unless they are already sitting in this exact slot).
+    // Sort: team asc, then full_name asc — so the picker shows one team's
+    // players grouped together in the list.
     const currentId = slots[picker.target][picker.role][picker.index];
     return players
       .filter((p) => p.role === picker.role)
       .filter((p) => !pickedIds.has(p.id) || p.id === currentId)
-      .sort((a, b) => a.full_name.localeCompare(b.full_name, 'it'));
+      .sort((a, b) => {
+        const t = a.team.localeCompare(b.team, 'it');
+        if (t !== 0) return t;
+        return a.full_name.localeCompare(b.full_name, 'it');
+      });
   }, [picker, players, pickedIds, slots]);
 
   return (
@@ -580,23 +587,33 @@ function PickerModal({
           {filtered.length === 0 && (
             <Text style={styles.sheetEmpty}>Nessun giocatore trovato.</Text>
           )}
-          {filtered.map((p) => (
-            <Pressable
-              key={p.id}
-              onPress={() => onSelect(p)}
-              style={styles.sheetRow}
-              testID={`fg-pick-${p.id}`}
-            >
-              <View style={[styles.roleBadge, { backgroundColor: ROLE_COLOR[p.role] + '33' }]}>
-                <Text style={[styles.roleBadgeText, { color: ROLE_COLOR[p.role] }]}>{p.role}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.sheetRowName}>{p.full_name}</Text>
-                <Text style={styles.sheetRowTeam}>{p.team}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
-            </Pressable>
-          ))}
+          {filtered.map((p, idx) => {
+            const prev = idx > 0 ? filtered[idx - 1] : null;
+            const isFirstOfTeam = !prev || prev.team !== p.team;
+            return (
+              <React.Fragment key={p.id}>
+                {isFirstOfTeam && (
+                  <View style={styles.sheetTeamHeader}>
+                    <Text style={styles.sheetTeamHeaderText}>{p.team.toUpperCase()}</Text>
+                  </View>
+                )}
+                <Pressable
+                  onPress={() => onSelect(p)}
+                  style={styles.sheetRow}
+                  testID={`fg-pick-${p.id}`}
+                >
+                  <View style={[styles.roleBadge, { backgroundColor: ROLE_COLOR[p.role] + '33' }]}>
+                    <Text style={[styles.roleBadgeText, { color: ROLE_COLOR[p.role] }]}>{p.role}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.sheetRowName}>{p.full_name}</Text>
+                    <Text style={styles.sheetRowTeam}>{p.team}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={theme.colors.muted} />
+                </Pressable>
+              </React.Fragment>
+            );
+          })}
         </ScrollView>
       </View>
     </Modal>
@@ -794,6 +811,19 @@ const styles = StyleSheet.create({
   },
   sheetSearch: { flex: 1, color: theme.colors.onSurface, fontSize: 13, padding: 0 },
   sheetEmpty: { color: theme.colors.muted, fontStyle: 'italic', padding: 16, textAlign: 'center' },
+  sheetTeamHeader: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
+  },
+  sheetTeamHeaderText: {
+    color: theme.colors.muted,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
   sheetRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     padding: 10, borderRadius: theme.radius.sm,
