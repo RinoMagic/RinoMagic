@@ -203,19 +203,33 @@ export default function AdminHome() {
               </View>
             ))}
         </>}
-        {tab === 'users' && users.map((u) => (
-          <View key={u.id} style={[styles.row, u.blocked && { borderColor: theme.colors.error }]}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowName}>{u.username || u.email} {u.role === 'admin' && '(admin)'}</Text>
-              {u.blocked && <Text style={[styles.rowMeta, { color: theme.colors.error }]}>BLOCCATO</Text>}
+        {tab === 'users' && users.map((u) => {
+          const isSelf = u.id === me?.id;
+          const isAdmin = u.role === 'admin';
+          return (
+            <View key={u.id} style={[styles.row, u.blocked && { borderColor: theme.colors.error }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowName}>{u.username || u.email} {isAdmin && '(admin)'}</Text>
+                {u.blocked && <Text style={[styles.rowMeta, { color: theme.colors.error }]}>BLOCCATO</Text>}
+              </View>
+              {!isSelf && (
+                <>
+                  <Pressable onPress={() => resetPlayerPw(u)} hitSlop={8}>
+                    <Ionicons name="key" size={18} color={theme.colors.brand} />
+                  </Pressable>
+                  {!isAdmin && (
+                    <Pressable onPress={() => toggleBlock(u)} hitSlop={8}>
+                      <Ionicons name={u.blocked ? 'lock-open' : 'ban'} size={18} color={theme.colors.warning} />
+                    </Pressable>
+                  )}
+                  <Pressable onPress={() => deletePlayer(u)} hitSlop={8} testID={`user-delete-${u.id}`}>
+                    <Ionicons name="trash" size={18} color={theme.colors.error} />
+                  </Pressable>
+                </>
+              )}
             </View>
-            {u.role === 'player' && u.id !== me?.id && <>
-              <Pressable onPress={() => resetPlayerPw(u)} hitSlop={8}><Ionicons name="key" size={18} color={theme.colors.brand} /></Pressable>
-              <Pressable onPress={() => toggleBlock(u)} hitSlop={8}><Ionicons name={u.blocked ? 'lock-open' : 'ban'} size={18} color={theme.colors.warning} /></Pressable>
-              <Pressable onPress={() => deletePlayer(u)} hitSlop={8}><Ionicons name="trash" size={18} color={theme.colors.error} /></Pressable>
-            </>}
-          </View>
-        ))}
+          );
+        })}
       </ScrollView>
 
       <Modal transparent visible={createOpen} animationType="slide" onRequestClose={() => setCreateOpen(false)}>
