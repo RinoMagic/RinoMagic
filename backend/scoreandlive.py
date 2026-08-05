@@ -1724,6 +1724,24 @@ def build_router(
         locked = _md_summary_locked(md)
         first_kick = _md_first_kickoff(md)
 
+        # Privacy boost: when the pool of ALIVE participants shrinks, the
+        # aggregate pick counts become de-facto revealing (e.g. with only 3
+        # players left, "Lautaro: 2 picks" tells everyone what those 2
+        # players picked). We therefore hide candidates entirely while the
+        # matchday is still un-locked (before first kickoff). Once matches
+        # start, aggregate counts are irrelevant because individual picks
+        # are anyway visible.
+        active_count = await db.sal_participants.count_documents({
+            "tournament_id": tournament_id,
+            "eliminated_at_matchday": None,
+        })
+        PRIVACY_MIN_ACTIVE = 4  # hide summary when 4 or fewer alive players
+        privacy_boost = (
+            active_count <= PRIVACY_MIN_ACTIVE
+            and not locked
+            and md.get("status") != "settled"
+        )
+
         # Load ALL picks for this matchday in a single roundtrip
         picks_cur = db.sal_picks.find(
             {"tournament_id": tournament_id, "matchday_id": matchday_id},
@@ -1762,12 +1780,15 @@ def build_router(
             if not locked:
                 for c in candidates:
                     c["pickers"] = None
+            # Privacy boost: hide candidate details AND total when pool is small
+            if privacy_boost:
+                candidates = []
             fixtures_out.append({
                 "fixture_idx": i,
                 "home_team": fx.get("home_team"),
                 "away_team": fx.get("away_team"),
                 "kickoff_iso": fx.get("kickoff_iso"),
-                "total_picks": sum(c["count"] for c in candidates),
+                "total_picks": 0 if privacy_boost else sum(c["count"] for c in candidates),
                 "candidates": candidates,
             })
 
@@ -1776,6 +1797,8 @@ def build_router(
             "kickoff_first": first_kick,
             "locked": locked,
             "settled": md.get("status") == "settled",
+            "privacy_boost": privacy_boost,
+            "active_participants": active_count,
             "fixtures": fixtures_out,
         }
 

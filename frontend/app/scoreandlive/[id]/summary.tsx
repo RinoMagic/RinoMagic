@@ -38,6 +38,8 @@ type Summary = {
   kickoff_first: string | null;
   locked: boolean;
   settled: boolean;
+  privacy_boost?: boolean;
+  active_participants?: number;
   fixtures: SummaryFixture[];
 };
 
@@ -98,6 +100,16 @@ export default function SalSummary() {
                   : 'Le scelte individuali sono nascoste fino al calcio d\u2019inizio della prima partita. Solo aggregati.'}
               </Text>
             </View>
+            {data.privacy_boost && (
+              <View style={[styles.notice, { borderColor: '#F97316' + '77' }]}>
+                <Ionicons name="shield-checkmark" size={18} color="#F97316" />
+                <Text style={[styles.noticeText, { color: '#F97316' }]}>
+                  Fase finale del torneo: rimangono solo {data.active_participants} giocatori attivi.
+                  Le statistiche aggregate sono nascoste fino al calcio d&apos;inizio per non
+                  rivelare le scelte altrui.
+                </Text>
+              </View>
+            )}
             {data.fixtures.length === 0 && (
               <Text style={styles.muted}>Nessuna partita in questa giornata.</Text>
             )}
