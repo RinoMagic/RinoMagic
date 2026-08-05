@@ -19,6 +19,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#F97316';
 const SEASON = '2026-27';
@@ -91,10 +92,10 @@ export default function AdminDeadlines() {
 
   useEffect(() => { load(); }, [load]);
 
-  const saveOne = async (md: number) => {
+  const saveOne = async (md: number, override?: string | null) => {
     setSaving((s) => ({ ...s, [md]: true }));
     setFlash(null);
-    const raw = (drafts[md] || '').trim();
+    const raw = (override !== undefined ? (override ?? '') : (drafts[md] || '')).trim();
     try {
       const body = { deadline_at: raw || null };
       const r = await api<Row>(
@@ -103,7 +104,10 @@ export default function AdminDeadlines() {
       );
       setRows((rs) => rs.map((x) => x.matchday === md ? { ...x, ...r } : x));
       setDrafts((d) => ({ ...d, [md]: isoToLocalInput(r.deadline_at) }));
-      setFlash({ type: 'ok', text: `Giornata ${md} aggiornata` });
+      setFlash({
+        type: 'ok',
+        text: raw ? `Giornata ${md} aggiornata` : `Timer G${md} cancellato`,
+      });
     } catch (e: any) {
       setFlash({ type: 'err', text: `G${md}: ${e.message}` });
     } finally {
@@ -133,8 +137,14 @@ export default function AdminDeadlines() {
   };
 
   const clearOne = async (md: number) => {
+    const ok = await confirmDialog(
+      `Cancella timer G${md}`,
+      `Rimuovere completamente la deadline della giornata ${md}?\n\nLe sottomissioni saranno di nuovo aperte per tutti i giochi.`,
+      { destructive: true, confirmLabel: 'Cancella' },
+    );
+    if (!ok) return;
     setDrafts((d) => ({ ...d, [md]: '' }));
-    await saveOne(md);
+    await saveOne(md, null);
   };
 
   const openCount = rows.filter((r) => r.deadline_at && !r.locked).length;
