@@ -113,7 +113,7 @@ export default function Hub() {
       >
         <View>
           <Text style={styles.sectionTitle}>Scegli il gioco</Text>
-          <Text style={styles.sectionSub}>Sfida i tuoi amici in due giochi diversi con lo stesso account.</Text>
+          <Text style={styles.sectionSub}>Sfida i tuoi amici in 4+1 giochi diversi con lo stesso account.</Text>
         </View>
 
         <MatchdayCountdown
