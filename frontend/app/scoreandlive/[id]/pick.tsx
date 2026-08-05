@@ -115,13 +115,47 @@ export default function PickPage() {
             !query || p.full_name.toLowerCase().includes(query)
           );
           const selectedId = picks[f.idx];
+          // Find which team the selected scorer belongs to (for the header
+          // checkmark visual cue — so the player never confuses matches).
+          const selectedPlayer = selectedId
+            ? teamPool.find((p) => p.id === selectedId)
+            : undefined;
+          const homeChosen = !!selectedPlayer &&
+            selectedPlayer.team.toLowerCase() === f.home_team.toLowerCase();
+          const awayChosen = !!selectedPlayer &&
+            selectedPlayer.team.toLowerCase() === f.away_team.toLowerCase();
           return (
-            <View key={f.idx} style={styles.card}>
+            <View
+              key={f.idx}
+              style={[styles.card, selectedId ? styles.cardChosen : null]}
+            >
               <View style={styles.fixHeader}>
-                <Text style={styles.team}>{f.home_team}</Text>
+                <View style={styles.teamCell}>
+                  <Text style={[styles.team, homeChosen && styles.teamChosen]}>
+                    {f.home_team}
+                  </Text>
+                  {homeChosen && (
+                    <Ionicons name="checkmark-circle" size={16} color={COLOR} />
+                  )}
+                </View>
                 <Text style={styles.vs}>vs</Text>
-                <Text style={styles.team}>{f.away_team}</Text>
+                <View style={styles.teamCell}>
+                  <Text style={[styles.team, awayChosen && styles.teamChosen]}>
+                    {f.away_team}
+                  </Text>
+                  {awayChosen && (
+                    <Ionicons name="checkmark-circle" size={16} color={COLOR} />
+                  )}
+                </View>
               </View>
+              {selectedPlayer && (
+                <View style={styles.pickedInline}>
+                  <Ionicons name="football" size={13} color={COLOR} />
+                  <Text style={styles.pickedInlineText}>
+                    {selectedPlayer.full_name} · {selectedPlayer.team}
+                  </Text>
+                </View>
+              )}
               <TextInput
                 style={styles.input}
                 placeholder="Cerca calciatore..."
@@ -173,9 +207,40 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceSecondary, gap: theme.spacing.sm,
     borderWidth: 1, borderColor: theme.colors.border,
   },
+  cardChosen: {
+    borderColor: COLOR,
+    borderWidth: 1.5,
+  },
   fixHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing.md },
-  team: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15, flex: 1, textAlign: 'center' },
+  teamCell: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  team: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 15, textAlign: 'center' },
+  teamChosen: {
+    color: COLOR,
+  },
   vs: { color: theme.colors.muted, fontSize: 12 },
+  pickedInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: theme.radius.sm,
+    backgroundColor: COLOR + '18',
+    borderWidth: 1,
+    borderColor: COLOR + '55',
+    alignSelf: 'center',
+  },
+  pickedInlineText: {
+    color: COLOR,
+    fontSize: 11,
+    fontWeight: '700',
+  },
   blockedBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     padding: theme.spacing.sm, borderRadius: theme.radius.sm,
