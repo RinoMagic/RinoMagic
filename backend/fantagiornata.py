@@ -380,15 +380,49 @@ def build_router(
     @router.get("/leagues/{league_id}")
     async def get_league(league_id: str, user: dict = Depends(current_user)):
         lg = await _get_league(league_id)
+        season = lg.get("season") or "2026-27"
+        # Determine the "current" matchday: earliest deadline that hasn't
+        # passed yet, else the largest one that HAS passed (so we still show
+        # last-played status when admin hasn't settled yet).
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        future_dl = await db.matchday_deadlines.find_one(
+            {"season": season, "deadline_at": {"$gt": now_iso}},
+            {"_id": 0, "matchday": 1},
+            sort=[("matchday", 1)],
+        )
+        if future_dl:
+            current_md = future_dl["matchday"]
+        else:
+            past_dl = await db.matchday_deadlines.find_one(
+                {"season": season, "deadline_at": {"$lte": now_iso}},
+                {"_id": 0, "matchday": 1},
+                sort=[("matchday", -1)],
+            )
+            current_md = past_dl["matchday"] if past_dl else None
+
+        submitted_user_ids: set[str] = set()
+        if current_md is not None:
+            async for ln in db.fg_lineups.find(
+                {"league_id": league_id, "matchday": current_md},
+                {"_id": 0, "user_id": 1, "starters": 1},
+            ):
+                # Consider "submitted" only if the user has a complete lineup
+                # (11 starters). Partial drafts don't count.
+                if len(ln.get("starters") or []) == 11:
+                    submitted_user_ids.add(ln["user_id"])
+
         # Members info
         members: List[dict] = []
         async for m in db.fg_memberships.find({"league_id": league_id}, {"_id": 0}):
             members.append({
                 "user_id": m["user_id"], "nickname": m["nickname"],
                 "joined_at": m.get("joined_at"),
+                "has_submitted_current": m["user_id"] in submitted_user_ids,
             })
         base = await _league_dict(lg, user)
         base["members"] = members
+        base["current_matchday_number"] = current_md
         return base
 
     @router.delete("/leagues/{league_id}")

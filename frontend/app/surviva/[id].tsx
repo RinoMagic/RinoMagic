@@ -52,6 +52,7 @@ type LeaderboardRow = {
   locked_teams_count?: number;
   blocked_signs_count?: number; // legacy — kept for read compat
   eliminated: boolean; rank: number;
+  has_submitted_current?: boolean;
 };
 type SummaryFixture = {
   home_team: string; away_team: string;
@@ -859,6 +860,25 @@ function LeaderboardTab({
             {r.eliminated && (
               <Text style={styles.lbEliminated}>Eliminato</Text>
             )}
+            {!r.eliminated && (
+              <View style={styles.lbStatusRow}>
+                {r.has_submitted_current ? (
+                  <>
+                    <Ionicons name="checkmark-circle" size={11} color={theme.colors.success} />
+                    <Text style={[styles.lbStatusText, { color: theme.colors.success }]}>
+                      Giocata inserita
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Ionicons name="ellipse-outline" size={11} color={theme.colors.warning} />
+                    <Text style={[styles.lbStatusText, { color: theme.colors.warning }]}>
+                      In attesa di giocata
+                    </Text>
+                  </>
+                )}
+              </View>
+            )}
             {!r.eliminated && (r.locked_teams_count ?? 0) > 0 && (
               <Text style={styles.lbBlockedInfo}>
                 {r.locked_teams_count} squadr{r.locked_teams_count === 1 ? 'a' : 'e'} bloccat{r.locked_teams_count === 1 ? 'a' : 'e'}
@@ -1365,6 +1385,17 @@ const styles = StyleSheet.create({
   },
   lbName: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 14 },
   lbEliminated: { color: theme.colors.error, fontSize: 11, marginTop: 2 },
+  lbStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 3,
+  },
+  lbStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
   lbBlockedInfo: { color: theme.colors.muted, fontSize: 11, marginTop: 2 },
   livesBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,

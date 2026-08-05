@@ -18,8 +18,9 @@ const COLOR = '#A855F7';
 type LeagueDetail = {
   id: string; name: string; status: string; invite_code: string;
   current_matchday: number | null; members_count: number;
+  current_matchday_number: number | null;
   invites_available: number; invites_total: number; is_admin: boolean;
-  members: { user_id: string; nickname: string }[];
+  members: { user_id: string; nickname: string; has_submitted_current?: boolean }[];
 };
 
 type LeaderRow = { user_id: string; nickname: string; total: number; matchdays_played: number };
@@ -163,21 +164,49 @@ export default function LeaguePage() {
           ))}
         </View>
 
-        {lg.is_admin && lg.members && lg.members.length > 0 && (
+        {lg.members && lg.members.length > 0 && (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Membri iscritti ({lg.members.length})</Text>
-            <Text style={styles.muted}>Escludi qui i giocatori non ancora presenti in classifica.</Text>
+            <Text style={styles.cardTitle}>
+              Membri iscritti ({lg.members.length})
+              {lg.current_matchday_number !== null && lg.current_matchday_number !== undefined
+                ? ` · G${lg.current_matchday_number}`
+                : ''}
+            </Text>
+            {lg.is_admin && (
+              <Text style={styles.muted}>Puoi escludere i giocatori dal cestino a destra.</Text>
+            )}
             {lg.members.map((m) => (
               <View key={m.user_id} style={styles.row}>
-                <Text style={styles.nick}>{m.nickname}</Text>
-                <Pressable
-                  testID={`fg-kick-member-${m.user_id}`}
-                  onPress={() => kickMember(m)}
-                  hitSlop={6}
-                  style={styles.kickBtn}
-                >
-                  <Ionicons name="person-remove" size={14} color={theme.colors.error} />
-                </Pressable>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.nick}>{m.nickname}</Text>
+                  <View style={styles.pickStatusRow}>
+                    {m.has_submitted_current ? (
+                      <>
+                        <Ionicons name="checkmark-circle" size={12} color={theme.colors.success} />
+                        <Text style={[styles.pickStatusText, { color: theme.colors.success }]}>
+                          Formazione inserita
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Ionicons name="ellipse-outline" size={12} color={theme.colors.warning} />
+                        <Text style={[styles.pickStatusText, { color: theme.colors.warning }]}>
+                          In attesa di formazione
+                        </Text>
+                      </>
+                    )}
+                  </View>
+                </View>
+                {lg.is_admin && (
+                  <Pressable
+                    testID={`fg-kick-member-${m.user_id}`}
+                    onPress={() => kickMember(m)}
+                    hitSlop={6}
+                    style={styles.kickBtn}
+                  >
+                    <Ionicons name="person-remove" size={14} color={theme.colors.error} />
+                  </Pressable>
+                )}
               </View>
             ))}
           </View>
@@ -242,7 +271,18 @@ const styles = StyleSheet.create({
   ctaTextOutline: { fontWeight: '700', fontSize: 13 },
   row: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm, paddingVertical: 4 },
   rank: { color: theme.colors.muted, fontSize: 13, fontWeight: '700', width: 24 },
-  nick: { color: theme.colors.onSurface, fontSize: 14, flex: 1 },
+  nick: { color: theme.colors.onSurface, fontSize: 14 },
+  pickStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 3,
+  },
+  pickStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
   pts: { color: COLOR, fontWeight: '800', fontSize: 14 },
   kickBtn: {
     padding: 6,

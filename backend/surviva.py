@@ -1229,6 +1229,23 @@ def build_router(
     async def leaderboard(tid: str, user: dict = Depends(current_user)):
         t = await _get_tournament(tid)
         _ = t
+        # Find current open matchday (earliest still-open) to flag which
+        # participants have already submitted picks for it.
+        current_md = await db.sv_matchdays.find_one(
+            {"tournament_id": tid, "status": {"$ne": "settled"}},
+            {"_id": 0, "id": 1, "matchday_number": 1},
+            sort=[("matchday_number", 1)],
+        )
+        submitted_user_ids: set[str] = set()
+        if current_md:
+            async for pk in db.sv_picks.find(
+                {"tournament_id": tid, "matchday_id": current_md["id"]},
+                {"_id": 0, "user_id": 1, "picks": 1},
+            ):
+                # Only count as submitted if at least one pick present (v2
+                # allows partial submissions but empty pick set = not started)
+                if pk.get("picks"):
+                    submitted_user_ids.add(pk["user_id"])
         cursor = db.sv_participants.find({"tournament_id": tid}, {"_id": 0})
         rows = []
         async for p in cursor:
@@ -1240,6 +1257,7 @@ def build_router(
                 "blocked_signs_count": 0,  # legacy field (always 0 in v2)
                 "eliminated": p.get("eliminated_at") is not None,
                 "eliminated_at": p.get("eliminated_at"),
+                "has_submitted_current": p["user_id"] in submitted_user_ids,
             })
         # Sort: alive first (by lives desc, most locked teams desc = most
         # experienced player), then eliminated last.
