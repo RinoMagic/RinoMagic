@@ -773,10 +773,15 @@ def _is_staryes_by_color(image_bytes: bytes) -> Tuple[bool, str, Dict[str, float
             "tonalità di blu non corrispondente al blu Star Yes "
             f"(rilevato: {sig['navy_core_pct']:.0f}%, atteso ≥ 8%)"
         ), sig
-    if sig["white_text_pct"] < 2:
+    # White-text threshold is CONDITIONAL: if navy is very dominant (>40%),
+    # the palette is already unequivocally staryes — small amounts of white
+    # text can be crushed by JPEG re-compression (e.g. WhatsApp) so we relax
+    # to ≥ 0.3%. Otherwise the standard ≥ 2% rule still applies.
+    white_min = 0.3 if sig["navy_core_pct"] >= 40 else 2.0
+    if sig["white_text_pct"] < white_min:
         return False, (
             "testo bianco insufficiente "
-            f"(rilevato: {sig['white_text_pct']:.0f}%, atteso ≥ 2%)"
+            f"(rilevato: {sig['white_text_pct']:.1f}%, atteso ≥ {white_min}%)"
         ), sig
     return True, "ok", sig
 
