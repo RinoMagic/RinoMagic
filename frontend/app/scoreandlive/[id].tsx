@@ -13,7 +13,7 @@ import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#3B82F6';
 
-type Participant = { user_id: string; nickname: string; lives_remaining: number; eliminated_at_matchday: number | null; is_me?: boolean };
+type Participant = { user_id: string; nickname: string; lives_remaining: number; eliminated_at_matchday: number | null; is_me?: boolean; has_submitted_current?: boolean };
 type Matchday = { id: string; matchday_number: number; status: string; fixtures_count: number };
 type SalInvite = {
   id: string; code: string;
@@ -172,7 +172,30 @@ export default function TournamentPage() {
           <Text style={styles.cardTitle}>Partecipanti</Text>
           {t.participants.map((p) => (
             <View key={p.user_id} style={styles.row}>
-              <Text style={[styles.nick, p.is_me && { color: COLOR, fontWeight: '800' }]}>{p.nickname}{p.is_me ? ' (tu)' : ''}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.nick, p.is_me && { color: COLOR, fontWeight: '800' }]}>
+                  {p.nickname}{p.is_me ? ' (tu)' : ''}
+                </Text>
+                {p.eliminated_at_matchday === null && (
+                  <View style={styles.pickStatusRow}>
+                    {p.has_submitted_current ? (
+                      <>
+                        <Ionicons name="checkmark-circle" size={12} color={theme.colors.success} />
+                        <Text style={[styles.pickStatusText, { color: theme.colors.success }]}>
+                          Giocata inserita
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Ionicons name="ellipse-outline" size={12} color={theme.colors.warning} />
+                        <Text style={[styles.pickStatusText, { color: theme.colors.warning }]}>
+                          In attesa di giocata
+                        </Text>
+                      </>
+                    )}
+                  </View>
+                )}
+              </View>
               <Text style={styles.lives}>
                 {p.eliminated_at_matchday !== null
                   ? `💀 elim G${p.eliminated_at_matchday}`
@@ -240,8 +263,19 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.sm,
     backgroundColor: COLOR + '18',
   },
-  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
-  nick: { color: theme.colors.onSurface, fontSize: 14, flex: 1 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
+  nick: { color: theme.colors.onSurface, fontSize: 14 },
+  pickStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 3,
+  },
+  pickStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
   lives: { color: theme.colors.onSurfaceSecondary, fontSize: 13, fontWeight: '600' },
   kickBtn: {
     marginLeft: 8,

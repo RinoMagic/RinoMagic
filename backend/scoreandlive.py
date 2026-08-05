@@ -727,6 +727,20 @@ def build_router(
     @router.get("/tournaments/{tournament_id}")
     async def get_tournament(tournament_id: str, user: dict = Depends(current_user)):
         t = await _get_tournament(tournament_id)
+        # Find the current open matchday (earliest still-open) so we can flag
+        # which participants have already submitted their picks for it.
+        current_md = await db.sal_matchdays.find_one(
+            {"tournament_id": tournament_id, "status": "open"},
+            {"_id": 0, "id": 1, "matchday_number": 1},
+            sort=[("matchday_number", 1)],
+        )
+        submitted_user_ids: set[str] = set()
+        if current_md:
+            async for pk in db.sal_picks.find(
+                {"tournament_id": tournament_id, "matchday_id": current_md["id"]},
+                {"_id": 0, "user_id": 1},
+            ):
+                submitted_user_ids.add(pk["user_id"])
         participants: List[dict] = []
         async for p in db.sal_participants.find({"tournament_id": tournament_id}, {"_id": 0}):
             participants.append({
@@ -735,6 +749,9 @@ def build_router(
                 "lives_remaining": p["lives_remaining"],
                 "eliminated_at_matchday": p.get("eliminated_at_matchday"),
                 "is_me": p["user_id"] == user["id"],
+                # Visible to admin + all players: has this user submitted picks
+                # for the current open matchday? (False if no open matchday.)
+                "has_submitted_current": p["user_id"] in submitted_user_ids,
             })
         participants.sort(key=lambda x: (
             x["eliminated_at_matchday"] is not None,
