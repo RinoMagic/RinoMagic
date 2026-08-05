@@ -1233,8 +1233,8 @@ def build_router(
         # participants have already submitted picks for it.
         current_md = await db.sv_matchdays.find_one(
             {"tournament_id": tid, "status": {"$ne": "settled"}},
-            {"_id": 0, "id": 1, "matchday_number": 1},
-            sort=[("matchday_number", 1)],
+            {"_id": 0, "id": 1, "matchday": 1},
+            sort=[("matchday", 1)],
         )
         submitted_user_ids: set[str] = set()
         if current_md:

@@ -1,0 +1,34 @@
+{
+  "summary": "Backend-only regression testing for the 'has_submitted_current' fix reported by the user (FG members marked 'in attesa' despite having submitted a full lineup). Created /app/backend/tests/test_has_submitted_current.py with 8 tests covering all 5 review items across FantaGiornata, Survival and ScoreAndLive. ALL 8 tests PASS (100%) under pytest-xdist parallel scheduling. Verified: (1) GET /api/fg/leagues/{id} returns current_matchday_number=1 for league '1fef4127-...' — the fallback in fantagiornata.py:407-414 correctly derives the current md from fg_lineups when matchday_deadlines is empty; (2) all 4 members (verone.salvatore, danielecalabrese, carlocento91, andr97) now have has_submitted_current=True because each has a complete 11-starter lineup on matchday=1; (3) SV leaderboard /api/sv/tournaments/{tid}/leaderboard now uses the correct field name 'matchday' (see surviva.py:1237) — every row carries the flag and, given the seeded DB has no picks in the current open matchday (md=3), all rows are False as expected; (4) SAL /api/sal/tournaments/{tid} regression holds: only verone.salvatore and andr97 (the 2 users who submitted picks in md=1) have has_submitted_current=True, the other 2 participants (danielecalabrese, carlocento91) are False; (5) Edge case verified via a throw-away FG league (TEST_hsub_empty_league) created and torn down inside the test — empty league returns current_matchday_number=1 (fallback branch #4) and all members False. The 'partial draft' scenario (starters<11 not counting) is covered by code review only (fantagiornata.py:423 explicitly checks len(starters)==11) — not exercised through a live insert to avoid brittle Mongo write helpers, but the check is unambiguous.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_has_submitted_current.py",
+    "/app/test_reports/pytest/has_submitted_current_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "fantagiornata.py:383 — season fallback is hard-coded to '2026-27'. The existing 'fanta gionata 1 test' league does NOT have a season field, so it silently falls through to the hard-coded default. If a future league is created for a different season without setting `season`, the deadline lookup will target the wrong season. Consider making `season` mandatory at league creation or deriving it from a global config document.",
+    "fantagiornata.py:389 — the `from datetime import ...` is imported inside the endpoint function on every call. Move it to module-level imports for a minor perf/style win.",
+    "fantagiornata.py:407-414 — the fallback chain is correct and well-commented. Note that when a season eventually has BOTH deadlines AND lineups, the deadline branches take precedence; if a matchday's deadline hasn't been set but a lineup exists for a later matchday, users may still see the wrong 'current' md. Not a bug for the current seed, but worth documenting.",
+    "surviva.py:1234-1238 — matches the sv_matchdays schema (field is 'matchday', not 'matchday_number'). Contrast with scoreandlive.py:732-736 which correctly uses 'matchday_number'. The naming inconsistency between sv_matchdays and sal_matchdays is a schema smell that has already tripped up a fix once — consider standardizing both collections on `matchday_number` (with a one-shot migration) to prevent future regressions.",
+    "fantagiornata.py:423 — `len(ln.get('starters') or []) == 11` correctly excludes partial drafts. Good defensive coding."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_has_submitted_current.py (new)"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "skipped (backend-only request)"},
+  "seed_data_creation": "One throw-away FG league 'TEST_hsub_empty_league' is created and DELETEd within the TestFantaGiornataEdgeCases class fixture. All other tests read pre-existing seed data (FG league 1fef4127-..., SV tournament 19c83ae7-..., SAL tournament 98d8fa5b-...) without mutating it. DB left clean after run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_has_submitted_current.py is safe to rerun (idempotent, self-cleaning). It depends on 3 pre-existing DB fixtures whose IDs are hard-coded at the top of the file; if the DB is wiped, update FG_LEAGUE_ID / SV_TOURNAMENT_ID / SAL_TOURNAMENT_ID and the two user-ID sets accordingly. The season field of the FG league is empty in Mongo — the endpoint's `season = lg.get('season') or '2026-27'` fallback is what makes the current tests pass; changing that default in fantagiornata.py:383 without updating matchday_deadlines will break the has_submitted logic in production.",
+  "rca_of_issue": "Original bug RCA (already fixed by main agent, verified here): (1) `matchday_deadlines` was empty in the DB. (2) The old code set `current_md = None` when no deadlines existed. (3) The subsequent query `db.fg_lineups.find({'matchday': None})` matched zero documents. (4) `submitted_user_ids` stayed empty → every member's `has_submitted_current` was False. Fix (fantagiornata.py:407-414): when both future and past deadline lookups fail, fall back to the largest `matchday` found in `fg_lineups` for this league; if none, fall back to 1. Secondary bug (SV): the previous attempt used field name `matchday_number` for sv_matchdays, but sv_matchdays actually stores it as `matchday`. Fix (surviva.py:1236) uses the correct field. Both fixes verified via API responses matching expected DB state."
+}

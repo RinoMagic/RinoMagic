@@ -381,11 +381,14 @@ def build_router(
     async def get_league(league_id: str, user: dict = Depends(current_user)):
         lg = await _get_league(league_id)
         season = lg.get("season") or "2026-27"
-        # Determine the "current" matchday: earliest deadline that hasn't
-        # passed yet, else the largest one that HAS passed (so we still show
-        # last-played status when admin hasn't settled yet).
+        # Determine the "current" matchday. Order of preference:
+        # 1) Earliest deadline in ``matchday_deadlines`` that hasn't passed
+        # 2) Largest deadline that HAS passed (settle window open)
+        # 3) Largest matchday number found in fg_lineups for this league
+        # 4) Fallback to 1 (beginning of season)
         from datetime import datetime, timezone
         now_iso = datetime.now(timezone.utc).isoformat()
+        current_md: Optional[int] = None
         future_dl = await db.matchday_deadlines.find_one(
             {"season": season, "deadline_at": {"$gt": now_iso}},
             {"_id": 0, "matchday": 1},
@@ -399,18 +402,26 @@ def build_router(
                 {"_id": 0, "matchday": 1},
                 sort=[("matchday", -1)],
             )
-            current_md = past_dl["matchday"] if past_dl else None
+            if past_dl:
+                current_md = past_dl["matchday"]
+        if current_md is None:
+            # No deadlines configured yet: derive from actual lineup activity
+            latest_lineup = await db.fg_lineups.find_one(
+                {"league_id": league_id},
+                {"_id": 0, "matchday": 1},
+                sort=[("matchday", -1)],
+            )
+            current_md = latest_lineup["matchday"] if latest_lineup else 1
 
         submitted_user_ids: set[str] = set()
-        if current_md is not None:
-            async for ln in db.fg_lineups.find(
-                {"league_id": league_id, "matchday": current_md},
-                {"_id": 0, "user_id": 1, "starters": 1},
-            ):
-                # Consider "submitted" only if the user has a complete lineup
-                # (11 starters). Partial drafts don't count.
-                if len(ln.get("starters") or []) == 11:
-                    submitted_user_ids.add(ln["user_id"])
+        async for ln in db.fg_lineups.find(
+            {"league_id": league_id, "matchday": current_md},
+            {"_id": 0, "user_id": 1, "starters": 1},
+        ):
+            # Consider "submitted" only if the user has a complete lineup
+            # (11 starters). Partial drafts don't count.
+            if len(ln.get("starters") or []) == 11:
+                submitted_user_ids.add(ln["user_id"])
 
         # Members info
         members: List[dict] = []
