@@ -191,7 +191,7 @@ export default function AdminHome() {
                 <Pressable style={{ flex: 1 }} onPress={() => router.push(`/room/${r.id}`)}>
                   <Text style={styles.rowName}>{r.name}</Text>
                   <Text style={styles.rowMeta}>
-                    Giornata {r.matchday} · {r.members_count} partecipanti · {r.invites_available}/{r.invites_total} inviti
+                    Giornata {r.matchday} · Eventi {r.max_events} · {r.members_count} partecipanti · {r.invites_available}/{r.invites_total} inviti
                   </Text>
                 </Pressable>
                 <Pressable onPress={() => shareInvite(r)} hitSlop={8} testID={`share-${r.id}`}>

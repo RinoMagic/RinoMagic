@@ -91,7 +91,7 @@ export default function PlayerHome() {
             <Pressable key={r.id} style={[styles.row, { borderColor: r.color + '80' }]} onPress={() => router.push(`/room/${r.id}`)}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowName}>{r.name}</Text>
-                <Text style={styles.rowMeta}>Giornata {r.matchday} · {r.members_count} partecipanti</Text>
+                <Text style={styles.rowMeta}>Giornata {r.matchday} · Eventi {r.max_events} · {r.members_count} partecipanti</Text>
               </View>
               <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
             </Pressable>
