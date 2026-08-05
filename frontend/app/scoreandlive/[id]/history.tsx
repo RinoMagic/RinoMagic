@@ -154,7 +154,7 @@ export default function HistoryPage() {
                   <View style={styles.mdBody}>
                     {!md.picks_visible && (
                       <Text style={styles.muted}>
-                        I pick di questa giornata saranno visibili quando l&apos;admin la bloccherà.
+                        I pick di questa giornata saranno visibili allo scadere del timer (deadline) o quando l&apos;admin la bloccherà.
                       </Text>
                     )}
                     {md.picks_visible && md.picks.length === 0 && (
