@@ -93,6 +93,7 @@ export default function LineupEditor() {
   const [module_, setModule] = useState<string>('4-3-3');
   const [slots, setSlots] = useState<Slots>(() => emptySlots('4-3-3'));
   const [players, setPlayers] = useState<Player[]>([]);
+  const [opponents, setOpponents] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -112,6 +113,20 @@ export default function LineupEditor() {
     try {
       const list = await api<Player[]>(`/sal/players?limit=1000`);
       setPlayers(list);
+      // Load matchday fixtures to derive team->opponent map for the picker
+      try {
+        const cal = await api<{ fixtures: { home_team: string; away_team: string }[] }>(
+          `/sal/calendar?season=2026-27&matchday=${md}`,
+        );
+        const map: Record<string, string> = {};
+        (cal.fixtures || []).forEach((fx) => {
+          if (fx.home_team && fx.away_team) {
+            map[fx.home_team] = fx.away_team;
+            map[fx.away_team] = fx.home_team;
+          }
+        });
+        setOpponents(map);
+      } catch { setOpponents({}); }
       const existing = await api<{ starters?: string[]; bench?: string[]; module?: string | null }>(
         `/fg/leagues/${id}/lineup/${md}`,
       );
@@ -365,6 +380,7 @@ export default function LineupEditor() {
         role={picker?.role || 'P'}
         target={picker?.target || 'starters'}
         players={availableForPicker}
+        opponents={opponents}
         onSelect={selectPlayer}
         onClose={() => setPicker(null)}
       />
@@ -526,12 +542,13 @@ function Bench({
 // Bottom-sheet-ish modal picker (works on web + native)
 // ---------------------------------------------------------------------------
 function PickerModal({
-  visible, role, target, players, onSelect, onClose,
+  visible, role, target, players, opponents, onSelect, onClose,
 }: {
   visible: boolean;
   role: Role;
   target: 'starters' | 'bench';
   players: Player[];
+  opponents: Record<string, string>;
   onSelect: (p: Player) => void;
   onClose: () => void;
 }) {
@@ -595,6 +612,16 @@ function PickerModal({
                 {isFirstOfTeam && (
                   <View style={styles.sheetTeamHeader}>
                     <Text style={styles.sheetTeamHeaderText}>{p.team.toUpperCase()}</Text>
+                    {opponents[p.team] ? (
+                      <>
+                        <Text style={styles.sheetTeamVs}>vs</Text>
+                        <Text style={styles.sheetTeamHeaderOpp}>
+                          {opponents[p.team].toUpperCase()}
+                        </Text>
+                      </>
+                    ) : (
+                      <Text style={styles.sheetTeamRest}>riposa</Text>
+                    )}
                   </View>
                 )}
                 <Pressable
@@ -812,6 +839,9 @@ const styles = StyleSheet.create({
   sheetSearch: { flex: 1, color: theme.colors.onSurface, fontSize: 13, padding: 0 },
   sheetEmpty: { color: theme.colors.muted, fontStyle: 'italic', padding: 16, textAlign: 'center' },
   sheetTeamHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     paddingHorizontal: 16,
     paddingVertical: 6,
     backgroundColor: theme.colors.surfaceSecondary,
@@ -823,6 +853,23 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.8,
+  },
+  sheetTeamVs: {
+    color: theme.colors.muted,
+    fontSize: 10,
+    fontStyle: 'italic',
+  },
+  sheetTeamHeaderOpp: {
+    color: '#F97316',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  sheetTeamRest: {
+    color: theme.colors.error,
+    fontSize: 10,
+    fontStyle: 'italic',
+    fontWeight: '700',
   },
   sheetRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
