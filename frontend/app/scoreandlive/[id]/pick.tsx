@@ -130,7 +130,7 @@ export default function PickPage() {
                 onChangeText={(v) => setQ((s) => ({ ...s, [f.idx]: v }))}
               />
               <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled>
-                {filtered.slice(0, 30).map((p) => {
+                {filtered.slice(0, 100).map((p) => {
                   const isSelected = selectedId === p.id;
                   const isBlocked = blockedPlayerIds.has(p.id);
                   return (
