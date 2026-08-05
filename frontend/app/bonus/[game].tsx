@@ -8,7 +8,7 @@
  * The Admin config lives in /admin/bonus (Impostazioni → Gestione Bonus),
  * so this page is now player-focused.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
   TextInput, RefreshControl,
@@ -233,6 +233,119 @@ export default function BonusGame() {
 }
 
 // -------------------------------------------------------------------------
+// Player autocomplete (typeahead) for "primo marcatore"
+// -------------------------------------------------------------------------
+type PlayerSuggestion = {
+  id: string;
+  full_name: string;
+  team: string;
+  role: 'P' | 'D' | 'C' | 'A';
+};
+
+function PlayerAutocomplete({
+  value, onChange, color, editable, testIDPrefix,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  color: string;
+  editable: boolean;
+  testIDPrefix: string;
+}) {
+  const [suggestions, setSuggestions] = useState<PlayerSuggestion[]>([]);
+  const [showList, setShowList] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef<any>(null);
+  // Track whether the current value came from a selection so we don't
+  // immediately re-open the list right after picking.
+  const pickedRef = useRef(false);
+
+  // Debounced typeahead search
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (pickedRef.current) {
+      pickedRef.current = false;
+      setShowList(false);
+      setSuggestions([]);
+      return;
+    }
+    const q = value.trim();
+    if (q.length < 2) {
+      setSuggestions([]);
+      setShowList(false);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const list = await api<PlayerSuggestion[]>(
+          `/sal/players?q=${encodeURIComponent(q)}&limit=12`,
+        );
+        setSuggestions(list.filter((p) => p.role === 'A' || p.role === 'C') // strikers + midfielders
+          .concat(list.filter((p) => p.role === 'D' || p.role === 'P')));
+        setShowList(true);
+      } catch { setSuggestions([]); }
+      finally { setLoading(false); }
+    }, 250);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [value]);
+
+  const pick = (p: PlayerSuggestion) => {
+    pickedRef.current = true;
+    onChange(p.full_name);
+    setShowList(false);
+    setSuggestions([]);
+  };
+
+  return (
+    <View style={{ position: 'relative', zIndex: 10 }}>
+      <TextInput
+        style={[styles.scorerInput, { borderColor: color }]}
+        value={value}
+        onChangeText={(v) => { pickedRef.current = false; onChange(v); }}
+        placeholder="Inizia a scrivere il nome…"
+        placeholderTextColor={theme.colors.muted}
+        editable={editable}
+        autoCapitalize="words"
+        autoCorrect={false}
+        testID={testIDPrefix}
+      />
+      {showList && suggestions.length > 0 && (
+        <View style={styles.autocompleteBox}>
+          <ScrollView
+            style={{ maxHeight: 240 }}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+          >
+            {suggestions.map((p) => (
+              <Pressable
+                key={p.id}
+                onPress={() => pick(p)}
+                style={styles.autocompleteRow}
+                testID={`${testIDPrefix}-suggest-${p.id}`}
+              >
+                <View style={[styles.autocompleteRoleBadge, { backgroundColor: color + '33' }]}>
+                  <Text style={[styles.autocompleteRoleBadgeText, { color }]}>{p.role}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.autocompleteName}>{p.full_name}</Text>
+                  <Text style={styles.autocompleteTeam}>{p.team}</Text>
+                </View>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+      {loading && value.length >= 2 && suggestions.length === 0 && (
+        <Text style={styles.autocompleteHint}>Cercando…</Text>
+      )}
+      {!loading && value.length >= 2 && showList && suggestions.length === 0 && (
+        <Text style={styles.autocompleteHint}>Nessun giocatore trovato</Text>
+      )}
+    </View>
+  );
+}
+
+// -------------------------------------------------------------------------
 // Subscription pick card
 // -------------------------------------------------------------------------
 function SubscriptionCard({
@@ -348,14 +461,12 @@ function SubscriptionCard({
           </View>
         </View>
       ) : (
-        <TextInput
-          style={[styles.scorerInput, { borderColor: color }]}
-          value={scorer} onChangeText={setScorer}
-          placeholder="Es. Lautaro Martinez"
-          placeholderTextColor={theme.colors.muted}
+        <PlayerAutocomplete
+          value={scorer}
+          onChange={setScorer}
+          color={color}
           editable={canPlay}
-          autoCapitalize="words"
-          testID={`bonus-scorer-${subscription.id}`}
+          testIDPrefix={`bonus-scorer-${subscription.id}`}
         />
       )}
 
@@ -667,6 +778,60 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.md, borderWidth: 1.5,
     color: theme.colors.onSurface, fontSize: 16,
     paddingHorizontal: 14, paddingVertical: 14,
+  },
+  autocompleteBox: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    marginTop: 4,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    zIndex: 20,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+  },
+  autocompleteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
+  },
+  autocompleteRoleBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  autocompleteRoleBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  autocompleteName: {
+    color: theme.colors.onSurface,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  autocompleteTeam: {
+    color: theme.colors.muted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  autocompleteHint: {
+    color: theme.colors.muted,
+    fontSize: 11,
+    fontStyle: 'italic',
+    marginTop: 4,
+    paddingHorizontal: 8,
   },
   submitBtn: {
     paddingVertical: 13, borderRadius: theme.radius.md,
