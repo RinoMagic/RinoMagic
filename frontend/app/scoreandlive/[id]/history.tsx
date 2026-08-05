@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 
-const COLOR = '#22C55E';
+const COLOR = '#3B82F6';
 
 type Fixture = {
   idx: number; home_team: string; away_team: string;

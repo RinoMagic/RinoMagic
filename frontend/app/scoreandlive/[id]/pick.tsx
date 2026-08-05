@@ -12,7 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 
-const COLOR = '#10B981';
+const COLOR = '#3B82F6';
 
 type Fixture = { idx: number; home_team: string; away_team: string; postponed_before?: boolean };
 type Matchday = { id: string; matchday_number: number; status: string; fixtures: Fixture[]; my_picks?: { picks: { fixture_idx: number; player_id: string; player_name: string; team: string }[] } };

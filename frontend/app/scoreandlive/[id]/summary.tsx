@@ -16,7 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 
-const COLOR = '#10B981';
+const COLOR = '#3B82F6';
 
 type Candidate = {
   player_id: string;

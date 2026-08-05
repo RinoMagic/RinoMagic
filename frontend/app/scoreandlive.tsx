@@ -19,7 +19,7 @@ import { api, session } from '@/src/api';
 import { theme } from '@/src/theme';
 import { confirmDialog } from '@/src/utils/confirm';
 
-const COLOR = '#22C55E'; // ScoreAndLive green
+const COLOR = '#3B82F6'; // ScoreAndLive azzurro (hub)
 
 type T = {
   id: string; name: string; status: string; is_admin: boolean;

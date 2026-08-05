@@ -11,7 +11,7 @@ import { theme } from '@/src/theme';
 import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
 import { confirmDialog } from '@/src/utils/confirm';
 
-const COLOR = '#10B981';
+const COLOR = '#3B82F6';
 
 type Participant = { user_id: string; nickname: string; lives_remaining: number; eliminated_at_matchday: number | null; is_me?: boolean };
 type Matchday = { id: string; matchday_number: number; status: string; fixtures_count: number };
