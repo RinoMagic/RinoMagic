@@ -28,18 +28,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field, field_validator
 
 from deadlines import is_matchday_locked as _global_deadline_passed
+from matchday_facts import SERIE_A_TEAMS as _HISTORICAL_TEAMS
 from pymongo import ReturnDocument
 
 logger = logging.getLogger("scoreandlive")
 
-# Serie A 2025-26 team names — used to anchor the listone parser. Update this
-# set when new teams are promoted/relegated (kept explicit so we can adapt
-# quickly without changing the regex).
-SERIE_A_TEAMS = {
-    "Atalanta", "Bologna", "Cagliari", "Como", "Cremonese", "Fiorentina",
-    "Genoa", "Inter", "Juventus", "Lazio", "Lecce", "Milan", "Napoli",
-    "Parma", "Pisa", "Roma", "Sassuolo", "Torino", "Udinese", "Verona",
-}
+# Serie A team names used to anchor the listone parser. We include both the
+# current 2026-27 season teams and historical variants (last ~5 seasons)
+# from ``matchday_facts.SERIE_A_TEAMS`` so promotions/relegations don't break
+# the PDF import each new season. When a listone PDF uses "Hellas Verona"
+# instead of "Verona", we normalize it below via ``TEAM_ALIASES``.
+SERIE_A_TEAMS = set(_HISTORICAL_TEAMS)
+_TEAM_ALIASES = {"Hellas Verona": "Verona"}
+# Order: longest names first, so the regex prefers "Hellas Verona" over "Verona".
+_SORTED_TEAMS = sorted(SERIE_A_TEAMS, key=len, reverse=True)
 
 
 def _parse_calendar_pdf(pdf_bytes: bytes) -> List[dict]:
@@ -180,7 +182,7 @@ def _parse_listone_pdf(pdf_bytes: bytes) -> List[dict]:
 
     import io as _io
     line_re = re.compile(
-        r"^(\d+)\s+([PDCA])\s+(\S+)\s+(.+?)\s+(" + "|".join(SERIE_A_TEAMS) + r")\s+"
+        r"^(\d+)\s+([PDCA])\s+(\S+)\s+(.+?)\s+(" + "|".join(re.escape(t) for t in _SORTED_TEAMS) + r")\s+"
         r"(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s*$"
     )
     seen_ids: set[int] = set()
@@ -196,6 +198,7 @@ def _parse_listone_pdf(pdf_bytes: bytes) -> List[dict]:
                 if not m:
                     continue
                 fid, role, rm, name_field, team, qa, qi, _diff, _qam, _qim = m.groups()
+                team = _TEAM_ALIASES.get(team, team)  # normalize "Hellas Verona" -> "Verona"
                 fid_int = int(fid)
                 if fid_int in seen_ids:
                     continue  # de-dupe rows from the Mantra section
