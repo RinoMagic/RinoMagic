@@ -524,8 +524,27 @@ def build_router(
             filt["role"] = role
         if q:
             filt["full_name"] = {"$regex": q, "$options": "i"}
-        cursor = db.sal_players.find(filt, {"_id": 0}).sort("full_name", 1).limit(limit)
-        return [_player_dict(p) async for p in cursor]
+        # Order: role (P=1, D=2, C=3, A=4), then full_name asc.
+        pipeline = [
+            {"$match": filt},
+            {"$addFields": {
+                "_role_order": {
+                    "$switch": {
+                        "branches": [
+                            {"case": {"$eq": ["$role", "P"]}, "then": 1},
+                            {"case": {"$eq": ["$role", "D"]}, "then": 2},
+                            {"case": {"$eq": ["$role", "C"]}, "then": 3},
+                            {"case": {"$eq": ["$role", "A"]}, "then": 4},
+                        ],
+                        "default": 5,
+                    },
+                },
+            }},
+            {"$sort": {"_role_order": 1, "full_name": 1}},
+            {"$limit": limit},
+            {"$project": {"_id": 0, "_role_order": 0}},
+        ]
+        return [_player_dict(p) async for p in db.sal_players.aggregate(pipeline)]
 
     @router.get("/players/teams")
     async def list_teams(user: dict = Depends(current_user)):
