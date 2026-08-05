@@ -402,14 +402,14 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         cfg = await db.bonus_configs.find_one({"id": cid}, {"_id": 0})
         if not cfg:
             raise HTTPException(status_code=404, detail="Config non trovata")
-        if cfg.get("settled_at"):
-            raise HTTPException(status_code=400, detail="Bonus già liquidato: non eliminabile")
+        # Admin can always delete (open, closed, or settled): removes config
+        # and all associated bonus_picks for that (season, matchday, bonus_type).
         await db.bonus_configs.delete_one({"id": cid})
-        await db.bonus_picks.delete_many({
+        deleted = await db.bonus_picks.delete_many({
             "season": cfg["season"], "matchday": cfg["matchday"],
             "bonus_type": cfg["bonus_type"],
         })
-        return {"ok": True}
+        return {"ok": True, "deleted_picks": deleted.deleted_count}
 
     @router.post("/configs/{cid}/kick/{user_id}")
     async def kick_from_bonus(

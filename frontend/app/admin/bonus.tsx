@@ -317,9 +317,12 @@ function BonusSection({
 
   const deleteConfig = async () => {
     if (!config) return;
+    const settledWarn = config.status === 'settled'
+      ? '\n\n⚠️ Questo bonus è già stato LIQUIDATO: la cronologia dei pronostici sarà cancellata definitivamente.'
+      : '\n\nTutti i pronostici ricevuti saranno cancellati.';
     const ok = await confirmDialog(
       'Elimina bonus',
-      `Sicuro di eliminare il bonus "${c.label}" per la giornata ${matchday}? Tutti i pronostici invii saranno cancellati.`,
+      `Sicuro di eliminare il bonus "${c.label}" per la giornata ${matchday}?${settledWarn}`,
       { destructive: true, confirmLabel: 'Elimina' },
     );
     if (!ok) return;
@@ -586,18 +589,18 @@ function BonusSection({
               )}
             </>
           )}
-          {/* Delete (only unsettled) */}
-          {config.status !== 'settled' && (
-            <Pressable
-              disabled={busy}
-              onPress={deleteConfig}
-              style={styles.dangerBtn}
-              testID={`admin-bonus-delete-${type}`}
-            >
-              <Ionicons name="trash" size={15} color={theme.colors.error} />
-              <Text style={styles.dangerBtnText}>Elimina bonus giornata</Text>
-            </Pressable>
-          )}
+          {/* Delete: available in ALL states (open / locked / settled) */}
+          <Pressable
+            disabled={busy}
+            onPress={deleteConfig}
+            style={styles.dangerBtn}
+            testID={`admin-bonus-delete-${type}`}
+          >
+            <Ionicons name="trash" size={15} color={theme.colors.error} />
+            <Text style={styles.dangerBtnText}>
+              Elimina bonus giornata{config.status === 'settled' ? ' (liquidato)' : ''}
+            </Text>
+          </Pressable>
         </>
       )}
     </View>
