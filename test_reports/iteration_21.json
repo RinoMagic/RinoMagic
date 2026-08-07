@@ -1,0 +1,36 @@
+{
+  "summary": "Backend-only regression for ScoreAndLive v2.1 (dynamic picks, +1 life per hit, cap 15, +3 first_scorer bonus, elimination). Created /app/backend/tests/test_scoreandlive_v21.py with 14 pytest cases covering all 7 review-request scenarios end-to-end. RESULT: 14/14 PASS (100%). Verified: (T1) initial_lives=10 → expected_picks=10; submit 9 → 400 with exact message 'Devi inviare esattamente 10 pronostici (hai 10 vite): ne hai inviati 9.', submit 10 → 200. (T2) settle G5 with 4 hits/6 misses → lives = 10-6+4 = 8; GET G6 returns expected_picks_count=8, my_lives_remaining=8, max_lives=15, playable_fixtures_count=10. (T3) G6 submit 8 → 200, 7 → 400 'esattamente 8', 9 → 400 'esattamente 8'. (T4) initial_lives=13 + 6 hits & 4 misses → new_lives_raw=15, cap enforced → lives_remaining==15 (not 15 exceeded). (T5) initial_lives=2 + 0 hits/2 misses → lives=0, eliminated_at_matchday=5, subsequent G6 pick returns 400 'Sei stato eliminato dal torneo'. (T6a) first_scorer bonus: player at 5 lives → +3 → 8 lives. (T6b) player at 14 lives → +3 clamped by aggregation pipeline → 15 (NOT 17). (T7) cleanup deletes all created tournaments (including auto-spawned Round-2 chained tournaments detected via name-prefix sweep) and bonus configs, leaving DB in the same state (only the pre-existing 'torneo test 1' 98d8fa5b remains).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_scoreandlive_v21.py",
+    "/app/test_reports/pytest/scoreandlive_v21_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "scoreandlive.py:1476-1488 get_matchday — correctly returns expected_picks_count=min(lives, playable). Note: for participants who have been eliminated the endpoint still reports my_lives_remaining=0 and expected_picks_count=0 (matches spec since the submit endpoint blocks eliminated users up-front at line 1500).",
+    "scoreandlive.py:1520-1541 submit_picks — validation uses `min(lives_remaining, playable_ids)` and returns a well-formatted Italian error message with all three numbers (expected, lives, submitted). Duplicate-fixture and unplayable-fixture guards happen BEFORE the count check — good UX (user sees the more specific error first).",
+    "scoreandlive.py:1663-1668 settle_matchday — new_lives_raw = lives_remaining - lives_lost + len(hits); clamp is `max(0, min(15, new_lives_raw))`. Correct. Elimination flag set only when new_lives==0 AND not already eliminated (idempotent).",
+    "bonus.py:496-516 _grant_reward score branch — uses aggregation pipeline `[{ $set: { lives_remaining: { $min: [15, { $add: ['$lives_remaining', 3] }] } } }]` with pre-filter `lives_remaining: { $lt: 15 }`. The pre-filter is a nice optimisation but note: if a participant is EXACTLY at 15 the update is skipped and `participations_updated=0`, which is semantically correct (already at cap). Verified: TEST 6b confirms 14 → 15 clamp works.",
+    "scoreandlive.py:638-688 _close_tournament_and_advance auto-spawns a Round-2 tournament when 0/1 alive, inheriting initial_lives. TEST 5 (single-player elimination) triggers this — the auto-spawned tournament remains in DB after the parent is deleted. My test's cleanup sweeps by name-prefix (TEST_v21*) to catch these descendants; consider adding a cascade-delete or a periodic housekeeping task for the general case.",
+    "scoreandlive.py:1500-1501 submit_picks — check `eliminated_at_matchday is not None` is correct; the block happens before the deadline gate, so an eliminated user gets the semantic 400 (not a 403 timer error). Good.",
+    "bonus.py:711-747 submit picks — the endpoint enforces `_user_in_subscription` which for game='score' resolves only ALIVE participations (lives>0 AND eliminated_at_matchday==None). This aligns with the review's implicit expectation that eliminated players lose bonus access on that tournament."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_scoreandlive_v21.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "skipped (backend-only request)"},
+  "seed_data_creation": "During the run: creates 4 tournaments (TEST_v21_T1_*, TEST_v21_T4_*, TEST_v21_T5_*, TEST_v21_T6_*, TEST_v21_T6cap_*) + auto-spawned Round-2 from T5 elimination + 2 first_scorer bonus configs (season=2026-27 matchdays 5 and 6). ALL are torn down in TestCleanup (name-prefix sweep catches Round-2 descendants; each tournament deleted with force=true because they contain historical picks). Verified post-run DB state: only the pre-existing 'torneo test 1' remains in sal_tournaments. Safe to re-run repeatedly.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_scoreandlive_v21.py runs with `-n 0` (sequential) — cross-class state (pytest.tid_t1, pytest.picks_t1_g5, etc.) is used because tests intentionally build on the state of the previous class. If run with the repo default `-n 2 --dist loadscope` those attributes DO NOT propagate across workers and Test2/Test3 will fail. Endpoint `/api/sal/players` caps `limit` at 1000 (not 2000, which returns 422). `_tournament_dict` does NOT include `next_tournament_id` inline — use `/api/sal/tournaments/archive/list` OR a name-prefix sweep on `/api/sal/tournaments` to find auto-spawned Round-2 descendants for cleanup. `_grant_reward` for score requires the participant to still be alive (`eliminated_at_matchday: None` AND `lives_remaining < 15`); the pre-filter means a 15-lives player yields participations_updated=0 (semantically 'already capped'). Motor is used to seed lives=13 (T4) and lives=14 (T6b) — MONGO_URL & DB_NAME are read from env (defaults localhost:27017 / schedinabar).",
+  "rca_of_issue": "N/A — no bug found. All v2.1 rules are implemented correctly on both the SAL side (scoreandlive.py) and the bonus side (bonus.py aggregation-pipeline update with $min cap)."
+}
