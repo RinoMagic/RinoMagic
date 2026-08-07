@@ -513,21 +513,23 @@ function SubscriptionCard({
 // -------------------------------------------------------------------------
 function MatchdayCard({ data, color }: { data: Available; color: string }) {
   const c = data.config!;
+  const hasBigMatch = data.bonus_type === 'exact_score' && c.big_match;
   return (
     <View style={[styles.matchCard, { borderColor: color }]}>
-      <View style={styles.matchRow}>
-        <Text style={styles.matchLabel}>Giornata</Text>
-        <Text style={[styles.matchMd, { color }]}>#{c.matchday}</Text>
-      </View>
-      {data.bonus_type === 'exact_score' && c.big_match && (
+      {hasBigMatch ? (
         <>
-          <Text style={styles.bigMatchTitle}>BIG MATCH</Text>
+          <Text style={styles.bigMatchTitle}>BIG MATCH · G{c.matchday}</Text>
           <View style={styles.teamsRow}>
-            <Text style={styles.teamName}>{c.big_match.home_team}</Text>
+            <Text style={styles.teamName}>{c.big_match!.home_team}</Text>
             <Text style={[styles.vs, { color }]}>VS</Text>
-            <Text style={styles.teamName}>{c.big_match.away_team}</Text>
+            <Text style={styles.teamName}>{c.big_match!.away_team}</Text>
           </View>
         </>
+      ) : (
+        <View style={styles.matchRow}>
+          <Text style={styles.matchLabel}>Giornata</Text>
+          <Text style={[styles.matchMd, { color }]}>#{c.matchday}</Text>
+        </View>
       )}
       {data.bonus_type === 'first_scorer' && (
         <Text style={styles.firstScorerTitle}>Indovina il PRIMO MARCATORE della giornata</Text>
