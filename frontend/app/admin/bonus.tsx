@@ -414,7 +414,12 @@ function BonusSection({
                   Nessuna partita disponibile. Carica il calendario da ScoreAndLive.
                 </Text>
               ) : (
-                <View style={styles.fxList}>
+                <ScrollView
+                  style={styles.fxList}
+                  contentContainerStyle={styles.fxListContent}
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator
+                >
                   {fixtures.map((fx) => {
                     const key = `${fx.home_team}|${fx.away_team}`;
                     const active = selectedFx === key;
@@ -432,7 +437,12 @@ function BonusSection({
                       </Pressable>
                     );
                   })}
-                </View>
+                </ScrollView>
+              )}
+              {fixtures.length > 0 && (
+                <Text style={styles.fxCountHint}>
+                  {fixtures.length} partite disponibili{fixtures.length > 5 ? ' — scorri per vederle tutte' : ''}
+                </Text>
               )}
             </>
           ) : (
@@ -699,9 +709,19 @@ const styles = StyleSheet.create({
   statusPillText: { fontSize: 11, fontWeight: '800' },
 
   fxList: {
-    maxHeight: 220,
+    maxHeight: 420,
     borderWidth: 1, borderColor: theme.colors.border,
     borderRadius: theme.radius.sm, backgroundColor: theme.colors.surface,
+  },
+  fxListContent: {
+    paddingVertical: 2,
+  },
+  fxCountHint: {
+    color: theme.colors.onSurfaceSecondary,
+    fontSize: 11,
+    marginTop: 6,
+    marginBottom: 4,
+    textAlign: 'center',
   },
   fxItem: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
