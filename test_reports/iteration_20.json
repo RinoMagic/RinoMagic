@@ -1,0 +1,40 @@
+{
+  "summary": "Backend-only regression test for the multi-admin auto-enrollment feature. Created /app/backend/tests/test_multi_admin_enrollment.py with 14 pytest tests covering all 6 review-request scenarios end-to-end. RESULT: 14/14 PASS (100%). Verified both directions of the feature: (A) Forward path — admin1 creates a new Room, SV tournament, SAL tournament and FG league; admin2 (already promoted) shows up as a member/participant with is_admin=true on every one of them. (B) Retroactive path — POST /api/auth/admin/promote for admin2 returned `{\"ok\": true, \"enrolled\": {\"tiket\": 2, \"surviva\": 1, \"scoreandlive\": 1, \"fantagiornata\": 1}}` demonstrating admin2 was auto-enrolled into 5 pre-existing open objects. Confirmed admin2 can POST /invites on all four new objects (rooms, sv, sal, fg) — all 200 OK, no 403. Re-promoting admin2 correctly returns 400 'Utente già admin'. DELETE /api/auth/users/{admin2_id} cascade-deletes admin2 from all 4 collections (verified via /members and /participants sub-endpoints). Test data (4 new objects + admin2 user) is torn down at the end of the run so the DB is left in the same state. IMPORTANT DEVIATION FROM REVIEW REQUEST: The requested test email `testadmin2@rinomagic.local` is REJECTED by the backend with HTTP 422 because Pydantic's EmailStr (email-validator library) refuses reserved TLDs `.local`, `.test`, `.example`, `.invalid`, `.localhost` per RFC 6761. I switched the test to `testadmin2@rinomagic.io` which passes validation. The auto-enrollment logic itself works perfectly — this is purely an input-validation edge case main agent may want to acknowledge in docs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/auth/admin/promote",
+        "issue": "Pydantic EmailStr rejects reserved TLDs (.local, .test, .example, .invalid, .localhost) with HTTP 422. The review-request-suggested email 'testadmin2@rinomagic.local' fails validation. Not a code bug — expected behaviour per RFC 6761 — but worth documenting for QA/integration teams so they don't waste cycles on .local addresses. Test uses .io instead."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_multi_admin_enrollment.py",
+    "/app/test_reports/pytest/multi_admin_enrollment_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "auth.py:225-296 _enroll_admin_everywhere — correctly idempotent: each block checks for an existing membership/participant before inserting. Slot allocation for rooms (line 246 `next_slot = max(existing_slots) + 1`) is safe as long as concurrent promotions are rare. In a high-concurrency scenario two simultaneous /admin/promote calls into the same room could race and produce duplicate slots (the unique index — if any — would then reject one). Consider a Mongo `$inc` counter or a unique-slot index for hardening.",
+    "auth.py:238,254,270,285 — the filter `{\"status\": {\"$ne\": \"finished\"}}` (SV/SAL) and `{\"status\": {\"$ne\": \"closed\"}}` (rooms/FG) will match objects with NO `status` field at all (Mongo $ne is true for missing fields). This is likely intentional (legacy docs without status default to 'open'), but if any archive/dry-run collections are ever renamed into these tables the enrollment would silently over-reach. Consider `{\"status\": {\"$nin\": [\"finished\", \"closed\"]}}` OR positive filter `{\"status\": \"open\"}` for explicitness.",
+    "thebesttiket.py:1321-1345, surviva.py:461-476, scoreandlive.py:700-713, fantagiornata.py:358-368 — create endpoints correctly enroll ALL admins at creation time. The rooms slot logic (thebesttiket.py:1332 `for idx, adm in enumerate(ordered, start=1)`) gives the creator slot 1 deterministically. Good.",
+    "auth.py:305-319 admin_promote — re-promoting an existing admin returns 400 'Utente già admin' (verified). Promoting an existing PLAYER correctly upgrades to admin (line 311-316) and calls _enroll_admin_everywhere (line 318). Both paths return the enrolled counters.",
+    "auth.py:225 _enroll_admin_everywhere is scoped to a single event loop iteration but uses async for over 4 separate cursors serially. For a growing app this could become O(rooms + sv + sal + fg) latency on every promotion. Not a bug — just a scale-out consideration for later.",
+    "Email validation: consider adding an environment override or a custom AfterValidator on AdminPromoteIn.email if internal .local addresses need to be supported for staging/QA. Currently forces callers to use public-TLD emails only."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_multi_admin_enrollment.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "skipped (backend-only request)"},
+  "seed_data_creation": "During the run: creates 1 new admin user 'testadmin2@rinomagic.io' + 4 test objects (Room 'TEST_MultiAdmin Test Room', SV 'TEST_MultiAdmin SV', SAL 'TEST_MultiAdmin SAL', FG 'TEST_MultiAdmin FG'). ALL of them are torn down in test_13 (admin2 DELETE with cascade) and test_14 (DELETE the 4 objects as admin1). Safe to re-run repeatedly. Pre-run cleanup in test_01 also removes any leftover admin2 from a previously interrupted run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_multi_admin_enrollment.py is idempotent and self-cleaning. It uses ADMIN2_EMAIL='testadmin2@rinomagic.io' (NOT .local — Pydantic rejects reserved TLDs with 422). Depends only on admin1 seed 'verone.salvatore@libero.it' being present and having at least 0+ open objects (counters will just be zero if none). The room-detail endpoint /api/rooms/{id} does NOT return `memberships` inline — use /api/rooms/{id}/members instead. Same for /api/sv/tournaments/{id} — use /api/sv/tournaments/{id}/participants. SAL and FG DO return participants/members inline in the detail response.",
+  "rca_of_issue": "N/A — no bug found. Feature works end-to-end. The only surprise for whoever wrote the review request is that /api/rooms/{id} and /api/sv/tournaments/{id} do not return memberships/participants inline; the correct endpoints are /api/rooms/{id}/members and /api/sv/tournaments/{id}/participants respectively (SAL and FG DO return them inline). The test now uses the correct endpoints. Separately, `.local` TLD is rejected by Pydantic EmailStr per RFC 6761, so `testadmin2@rinomagic.local` gets a 422 that has nothing to do with the multi-admin logic. Switched to a public-TLD email and everything passes."
+}
