@@ -279,9 +279,6 @@ export default function SettleMatchday() {
           )}
         </View>
 
-        {/* Step 1b — Pre-round exclusions */}
-        <ExclusionBlock matchday={parseInt(matchday, 10) || 1} />
-
         {/* Step 2 — PDF upload */}
         <View style={styles.card}>
           <Text style={styles.cardLabel}>2 · PDF VOTI GIORNATA</Text>

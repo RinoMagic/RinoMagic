@@ -1504,7 +1504,10 @@ def build_router(
                     "fixtures.home_team": home,
                     "fixtures.away_team": away,
                 },
-                {"$set": {"fixtures.$[e].excluded": excluded}},
+                {"$set": {
+                    "fixtures.$[e].excluded": excluded,
+                    "fixtures.$[e].postponed_before": excluded,
+                }},
                 array_filters=[{"e.home_team": home, "e.away_team": away}],
             )
             propagated["sv"] = r.modified_count
@@ -1518,7 +1521,10 @@ def build_router(
                     "fixtures.home_team": home,
                     "fixtures.away_team": away,
                 },
-                {"$set": {"fixtures.$[e].excluded": excluded}},
+                {"$set": {
+                    "fixtures.$[e].excluded": excluded,
+                    "fixtures.$[e].postponed_before": excluded,
+                }},
                 array_filters=[{"e.home_team": home, "e.away_team": away}],
             )
             propagated["sal"] = r.modified_count

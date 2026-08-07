@@ -119,6 +119,20 @@ export default function Settings() {
               <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
             </Pressable>
             <Pressable
+              testID="settings-admin-exclusions"
+              onPress={() => router.push('/admin/exclusions')}
+              style={styles.adminRow}
+            >
+              <View style={[styles.adminIcon, { backgroundColor: '#EF4444' }]}>
+                <Ionicons name="ban" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowText}>Escludi Partite</Text>
+                <Text style={styles.rowSub}>Escludi partite pre-turno · gestione rinvii · sparisce da tutti i giochi</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+            </Pressable>
+            <Pressable
               testID="settings-admin-deadlines"
               onPress={() => router.push('/admin/deadlines')}
               style={styles.adminRow}
