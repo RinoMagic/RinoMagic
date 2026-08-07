@@ -287,18 +287,34 @@ export default function LineupEditor() {
     if (!picker) return [];
     // Show players matching the target role (except those already used in the
     // lineup — unless they are already sitting in this exact slot).
-    // Sort: team asc, then full_name asc — so the picker shows one team's
-    // players grouped together in the list.
+    // Grouping: pair the two teams of the same fixture together so a user
+    // clicking on the "Atalanta vs Sassuolo" match sees BOTH sides' players
+    // one after the other (previously we only sorted by team alphabetically,
+    // which pushed the away team far down the list).
     const currentId = slots[picker.target][picker.role][picker.index];
+    // Build a canonical fixture key per team: use the lexicographically
+    // smaller team name to make both sides of the same match sort together.
+    const fixtureKey = (team: string): string => {
+      const opp = opponents[team];
+      if (!opp) return `zz-${team}`; // teams not playing sort at the end
+      return team.localeCompare(opp, 'it') <= 0
+        ? `${team}||${opp}`
+        : `${opp}||${team}`;
+    };
     return players
       .filter((p) => p.role === picker.role)
       .filter((p) => !pickedIds.has(p.id) || p.id === currentId)
       .sort((a, b) => {
-        const t = a.team.localeCompare(b.team, 'it');
-        if (t !== 0) return t;
+        // Primary: same-fixture pair together (canonical key)
+        const fa = fixtureKey(a.team);
+        const fb = fixtureKey(b.team);
+        if (fa !== fb) return fa.localeCompare(fb, 'it');
+        // Secondary: within a fixture, home team first (kickoff order)
+        if (a.team !== b.team) return a.team.localeCompare(b.team, 'it');
+        // Tertiary: alphabetical by name
         return a.full_name.localeCompare(b.full_name, 'it');
       });
-  }, [picker, players, pickedIds, slots]);
+  }, [picker, players, pickedIds, slots, opponents]);
 
   return (
     <View style={styles.wrap}>
@@ -606,21 +622,39 @@ function PickerModal({
           )}
           {filtered.map((p, idx) => {
             const prev = idx > 0 ? filtered[idx - 1] : null;
-            const isFirstOfTeam = !prev || prev.team !== p.team;
+            // Show a fixture header when moving to a different match. Two
+            // players are in the same fixture if their teams are opponents.
+            const sameFixture = prev
+              && (prev.team === p.team
+                  || opponents[prev.team] === p.team
+                  || opponents[p.team] === prev.team);
+            const isFirstOfFixture = !sameFixture;
+            const opp = opponents[p.team];
+            // For the header, always show HOME_TEAM vs AWAY_TEAM based on
+            // the canonical order (team lexicographically first is "home").
+            let headerHome = p.team;
+            let headerAway = opp;
+            if (opp && opp.localeCompare(p.team, 'it') < 0) {
+              headerHome = opp;
+              headerAway = p.team;
+            }
             return (
               <React.Fragment key={p.id}>
-                {isFirstOfTeam && (
+                {isFirstOfFixture && (
                   <View style={styles.sheetTeamHeader}>
-                    <Text style={styles.sheetTeamHeaderText}>{p.team.toUpperCase()}</Text>
-                    {opponents[p.team] ? (
+                    {opp ? (
                       <>
+                        <Text style={styles.sheetTeamHeaderText}>{headerHome.toUpperCase()}</Text>
                         <Text style={styles.sheetTeamVs}>vs</Text>
                         <Text style={styles.sheetTeamHeaderOpp}>
-                          {opponents[p.team].toUpperCase()}
+                          {headerAway!.toUpperCase()}
                         </Text>
                       </>
                     ) : (
-                      <Text style={styles.sheetTeamRest}>riposa</Text>
+                      <>
+                        <Text style={styles.sheetTeamHeaderText}>{p.team.toUpperCase()}</Text>
+                        <Text style={styles.sheetTeamRest}>riposa</Text>
+                      </>
                     )}
                   </View>
                 )}
