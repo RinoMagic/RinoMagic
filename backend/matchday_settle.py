@@ -44,6 +44,13 @@ class SettleInput(BaseModel):
     # Each item is {home_team, away_team, home_score, away_score}. This is
     # merged over the PDF-derived fixtures before settlement.
     fixture_overrides: Optional[List[Dict[str, Any]]] = None
+    # Postponed / cancelled matches — for each item {home_team, away_team}
+    # the following priority rules apply and OVERRIDE the PDF data:
+    #   • Tiket: fixture quota forced to 1.00 (both_scored=False, no result)
+    #   • Survival: users who picked this match get their life SAVED
+    #   • Score: users who picked this match get their life SAVED
+    #   • Fanta: every player of the two teams gets a 6.0 "6 politico"
+    postponed_matches: Optional[List[Dict[str, Any]]] = None
 
 
 # =========================================================================
@@ -81,6 +88,7 @@ def _norm(s: str) -> str:
 async def _fixtures_with_scores(
     db, matchday: int, season: str,
     overrides: Optional[List[Dict[str, Any]]] = None,
+    postponed: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Return the matchday fixtures from ``sal_calendar`` with their final
     score derived from ``matchday_facts``. Postponed / unreported matches
@@ -90,6 +98,11 @@ async def _fixtures_with_scores(
     home_score, away_score}`` REPLACES the auto-derived score for that
     fixture (matched case-insensitively). This lets the admin fill in
     missing/wrong data before commit.
+
+    If ``postponed`` is provided (list of ``{home_team, away_team}``), the
+    matching fixtures are forcibly marked as ``postponed=True`` with no
+    score — the per-game commit logic then applies the priority rules
+    (Tiket quota 1.00, Survival/Score life saved, Fanta 6 politico).
     """
     per_team = await _per_team_goals(db, matchday)
     per_team_norm = {_norm(k): v for k, v in per_team.items()}
@@ -103,25 +116,39 @@ async def _fixtures_with_scores(
             }
         except (KeyError, TypeError, ValueError):
             continue
+    post_set = set()
+    for p in (postponed or []):
+        try:
+            post_set.add((_norm(p["home_team"]), _norm(p["away_team"])))
+        except (KeyError, TypeError):
+            continue
     fixtures = []
     async for fx in db.sal_calendar.find(
         {"season": season, "matchday": matchday},
-        {"_id": 0, "home_team": 1, "away_team": 1, "kickoff_iso": 1},
+        {"_id": 0, "home_team": 1, "away_team": 1, "kickoff_iso": 1,
+         "excluded": 1},
     ):
         home = fx["home_team"]
         away = fx["away_team"]
-        ov = ov_map.get((_norm(home), _norm(away)))
-        if ov:
-            home_score = ov["home_score"]
-            away_score = ov["away_score"]
-            manual = True
-        else:
-            h = per_team_norm.get(_norm(home))
-            a = per_team_norm.get(_norm(away))
-            home_score = h["scored"] if h else None
-            away_score = a["scored"] if a else None
+        is_postponed = (_norm(home), _norm(away)) in post_set
+        if is_postponed:
+            home_score = None
+            away_score = None
             manual = False
-        played = home_score is not None and away_score is not None
+        else:
+            ov = ov_map.get((_norm(home), _norm(away)))
+            if ov:
+                home_score = ov["home_score"]
+                away_score = ov["away_score"]
+                manual = True
+            else:
+                h = per_team_norm.get(_norm(home))
+                a = per_team_norm.get(_norm(away))
+                home_score = h["scored"] if h else None
+                away_score = a["scored"] if a else None
+                manual = False
+        played = (home_score is not None and away_score is not None
+                  and not is_postponed)
         fixtures.append({
             "home_team": home,
             "away_team": away,
@@ -129,6 +156,8 @@ async def _fixtures_with_scores(
             "away_score": away_score,
             "played": played,
             "manual": manual,
+            "postponed": is_postponed,
+            "excluded": bool(fx.get("excluded", False)),
         })
     return fixtures
 
@@ -252,7 +281,9 @@ def build_router(*, db, require_admin) -> APIRouter:
                 ),
             )
 
-        fixtures = await _fixtures_with_scores(db, matchday, season, body.fixture_overrides)
+        fixtures = await _fixtures_with_scores(
+            db, matchday, season, body.fixture_overrides, body.postponed_matches,
+        )
         played = [fx for fx in fixtures if fx["played"]]
         postponed = [fx for fx in fixtures if not fx["played"]]
         scorers = await _list_scorers(db, matchday)
@@ -335,7 +366,9 @@ def build_router(*, db, require_admin) -> APIRouter:
                 ),
             )
 
-        fixtures = await _fixtures_with_scores(db, matchday, season, body.fixture_overrides)
+        fixtures = await _fixtures_with_scores(
+            db, matchday, season, body.fixture_overrides, body.postponed_matches,
+        )
         scorers_map = await _scorers_by_fixture(db, matchday, fixtures)
 
         # Build an internal HTTP client that uses the caller's admin JWT.

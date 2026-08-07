@@ -1171,7 +1171,8 @@ def build_router(
         provided = list(data.fixtures or [])
         if not provided:
             cal_rows = [r async for r in db.sal_calendar.find(
-                {"season": season, "matchday": data.matchday_number}, {"_id": 0}
+                {"season": season, "matchday": data.matchday_number,
+                 "excluded": {"$ne": True}}, {"_id": 0}
             ).sort("home_team", 1)]
             if not cal_rows:
                 raise HTTPException(
@@ -1459,6 +1460,86 @@ def build_router(
         if not r:
             raise HTTPException(status_code=404, detail="Partita non trovata")
         return r
+
+    @router.patch("/calendar/fixture/{fixture_id}/exclude")
+    async def toggle_exclude_fixture(
+        fixture_id: str,
+        payload: Dict[str, Any],
+        user: dict = Depends(require_admin),
+    ):
+        """Toggle the ``excluded`` flag on a season fixture.
+
+        When a match is excluded (pre-round admin action), it becomes
+        non-selectable by users in every game (Survival, Score, Fanta,
+        Tiket) and hidden from bonus Big Match dropdowns.
+
+        The flag is also propagated to any *open* (non-settled) matchday /
+        room snapshots that contain the fixture so already-created games
+        pick up the change immediately.
+
+        Body: ``{"excluded": true}`` or ``{"excluded": false}``.
+        """
+        excluded = bool(payload.get("excluded", True))
+        fx = await db.sal_calendar.find_one_and_update(
+            {"id": fixture_id},
+            {"$set": {"excluded": excluded}},
+            projection={"_id": 0},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not fx:
+            raise HTTPException(status_code=404, detail="Partita non trovata")
+        # Propagate to open snapshots — Survival, Score and Tiket store
+        # a copy of the fixture arrays inside their per-matchday/per-room
+        # documents. Update anywhere the home/away pair matches.
+        home = fx["home_team"]
+        away = fx["away_team"]
+        season = fx.get("season")
+        md = fx.get("matchday")
+        propagated = {"sv": 0, "sal": 0, "tiket": 0}
+        try:
+            r = await db.sv_matchdays.update_many(
+                {
+                    "matchday": md,
+                    "status": {"$ne": "settled"},
+                    "fixtures.home_team": home,
+                    "fixtures.away_team": away,
+                },
+                {"$set": {"fixtures.$[e].excluded": excluded}},
+                array_filters=[{"e.home_team": home, "e.away_team": away}],
+            )
+            propagated["sv"] = r.modified_count
+        except Exception:
+            pass
+        try:
+            r = await db.sal_matchdays.update_many(
+                {
+                    "matchday_number": md,
+                    "status": {"$ne": "settled"},
+                    "fixtures.home_team": home,
+                    "fixtures.away_team": away,
+                },
+                {"$set": {"fixtures.$[e].excluded": excluded}},
+                array_filters=[{"e.home_team": home, "e.away_team": away}],
+            )
+            propagated["sal"] = r.modified_count
+        except Exception:
+            pass
+        try:
+            r = await db.rooms.update_many(
+                {
+                    "matchday": md,
+                    "status": {"$ne": "settled"},
+                    "fixtures.home_team": home,
+                    "fixtures.away_team": away,
+                },
+                {"$set": {"fixtures.$[e].excluded": excluded}},
+                array_filters=[{"e.home_team": home, "e.away_team": away}],
+            )
+            propagated["tiket"] = r.modified_count
+        except Exception:
+            pass
+        return {"fixture": fx, "excluded": excluded, "propagated": propagated}
+
 
     @router.get("/tournaments/{tournament_id}/matchdays/{matchday_id}")
     async def get_matchday(tournament_id: str, matchday_id: str, user: dict = Depends(current_user)):

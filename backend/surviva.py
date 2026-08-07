@@ -267,9 +267,13 @@ def build_router(
         return t
 
     async def _fixtures_for_matchday(season: str, matchday: int) -> List[dict]:
-        """Read the fixtures list from the shared ``sal_calendar`` collection."""
+        """Read the fixtures list from the shared ``sal_calendar`` collection.
+
+        Fixtures with ``excluded=True`` (admin excluded pre-round) are
+        skipped so users can never select them.
+        """
         cursor = db.sal_calendar.find(
-            {"season": season, "matchday": matchday},
+            {"season": season, "matchday": matchday, "excluded": {"$ne": True}},
             {"_id": 0, "home_team": 1, "away_team": 1, "kickoff_iso": 1},
         )
         return [f async for f in cursor]

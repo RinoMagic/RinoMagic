@@ -36,6 +36,16 @@ type Fixture = {
   home_score: number | null;
   away_score: number | null;
   played: boolean;
+  postponed?: boolean;
+  excluded?: boolean;
+};
+type CalFixture = {
+  id: string;
+  matchday: number;
+  home_team: string;
+  away_team: string;
+  kickoff_iso?: string | null;
+  excluded?: boolean;
 };
 type Affected = {
   survival_tournaments: number;
@@ -97,6 +107,8 @@ export default function SettleMatchday() {
   const [saveLog, setSaveLog] = useState<any | null>(null);
   // Manual overrides: keyed by "Home||Away" → {home_score, away_score}
   const [overrides, setOverrides] = useState<Record<string, { home_score: string; away_score: string }>>({});
+  // Postponed matches keyed by "Home||Away" — applied at settle time.
+  const [postponed, setPostponed] = useState<Record<string, boolean>>({});
 
   const loadState = async (md: number) => {
     try {
@@ -147,6 +159,14 @@ export default function SettleMatchday() {
       });
   };
 
+  const _buildPostponed = () =>
+    Object.entries(postponed)
+      .filter(([, v]) => v)
+      .map(([k]) => {
+        const [home_team, away_team] = k.split('||');
+        return { home_team, away_team };
+      });
+
   const doCalculate = async () => {
     setCalculating(true); setPreview(null); setSaveLog(null);
     try {
@@ -158,6 +178,7 @@ export default function SettleMatchday() {
           first_scorer_player_name: firstScorer?.player_name,
           first_scorer_team: firstScorer?.team,
           fixture_overrides: _buildOverrides(),
+          postponed_matches: _buildPostponed(),
         },
       });
       setPreview(p);
@@ -180,6 +201,7 @@ export default function SettleMatchday() {
           first_scorer_player_name: firstScorer?.player_name,
           first_scorer_team: firstScorer?.team,
           fixture_overrides: _buildOverrides(),
+          postponed_matches: _buildPostponed(),
         },
       });
       setSaveLog(r);
@@ -257,6 +279,9 @@ export default function SettleMatchday() {
           )}
         </View>
 
+        {/* Step 1b — Pre-round exclusions */}
+        <ExclusionBlock matchday={parseInt(matchday, 10) || 1} />
+
         {/* Step 2 — PDF upload */}
         <View style={styles.card}>
           <Text style={styles.cardLabel}>2 · PDF VOTI GIORNATA</Text>
@@ -323,6 +348,8 @@ export default function SettleMatchday() {
             setOverride={(k, side, val) => setOverrides(o => ({
               ...o, [k]: { ...(o[k] || { home_score: '', away_score: '' }), [side]: val },
             }))}
+            postponed={postponed}
+            togglePostponed={(k) => setPostponed(p => ({ ...p, [k]: !p[k] }))}
             onRecalc={doCalculate}
             recalculating={calculating}
             onSave={doCommit}
@@ -413,12 +440,14 @@ function FirstScorerPicker({ matchday, value, onChange }: {
 
 
 function PreviewBlock({
-  preview, overrides, setOverride, onRecalc, recalculating,
-  onSave, onCancel, saving,
+  preview, overrides, setOverride, postponed, togglePostponed,
+  onRecalc, recalculating, onSave, onCancel, saving,
 }: {
   preview: Preview;
   overrides: Record<string, { home_score: string; away_score: string }>;
   setOverride: (key: string, side: 'home_score' | 'away_score', val: string) => void;
+  postponed: Record<string, boolean>;
+  togglePostponed: (key: string) => void;
   onRecalc: () => void;
   recalculating: boolean;
   onSave: () => void;
@@ -440,7 +469,7 @@ function PreviewBlock({
         </View>
       )}
 
-      <Text style={styles.sectionH}>Partite (modifica se manca un risultato o è sbagliato)</Text>
+      <Text style={styles.sectionH}>Partite (segna rinviate ✕ o correggi risultato)</Text>
       <View style={{ gap: 4 }}>
         {preview.fixtures.list.map((f, i) => {
           const k = `${f.home_team}||${f.away_team}`;
@@ -449,38 +478,55 @@ function PreviewBlock({
             away_score: f.away_score !== null ? String(f.away_score) : '',
           };
           const isManual = (f as any).manual || (!f.played && (ov.home_score !== '' || ov.away_score !== ''));
+          const isPost = !!postponed[k];
           return (
             <View
               key={i}
               style={[
                 styles.fxRow,
-                !f.played && { borderWidth: 1, borderColor: '#F59E0B55' },
-                isManual && { borderWidth: 1, borderColor: '#3B82F655' },
+                !f.played && !isPost && { borderWidth: 1, borderColor: '#F59E0B55' },
+                isManual && !isPost && { borderWidth: 1, borderColor: '#3B82F655' },
+                isPost && { borderWidth: 1, borderColor: '#EF4444AA', backgroundColor: '#FEE2E230' },
               ]}
             >
-              <Text style={styles.fxTeam}>{f.home_team}</Text>
-              <View style={styles.scoreInputRow}>
-                <TextInput
-                  style={styles.scoreInput}
-                  keyboardType="numeric"
-                  value={ov.home_score}
-                  onChangeText={(v) => setOverride(k, 'home_score', v.replace(/[^0-9]/g, ''))}
-                  placeholder="-"
-                  placeholderTextColor={theme.colors.muted}
-                  maxLength={2}
+              <Pressable
+                onPress={() => togglePostponed(k)}
+                style={[styles.postToggle, isPost && { backgroundColor: '#EF4444', borderColor: '#EF4444' }]}
+                testID={`mds-postpone-${i}`}
+              >
+                <Ionicons
+                  name={isPost ? 'close-circle' : 'close-circle-outline'}
+                  size={16}
+                  color={isPost ? '#fff' : theme.colors.muted}
                 />
-                <Text style={styles.scoreDash}>–</Text>
-                <TextInput
-                  style={styles.scoreInput}
-                  keyboardType="numeric"
-                  value={ov.away_score}
-                  onChangeText={(v) => setOverride(k, 'away_score', v.replace(/[^0-9]/g, ''))}
-                  placeholder="-"
-                  placeholderTextColor={theme.colors.muted}
-                  maxLength={2}
-                />
-              </View>
-              <Text style={styles.fxTeam}>{f.away_team}</Text>
+              </Pressable>
+              <Text style={[styles.fxTeam, isPost && { color: theme.colors.muted, textDecorationLine: 'line-through' }]}>{f.home_team}</Text>
+              {isPost ? (
+                <Text style={styles.fxPostLabel}>RINVIATA</Text>
+              ) : (
+                <View style={styles.scoreInputRow}>
+                  <TextInput
+                    style={styles.scoreInput}
+                    keyboardType="numeric"
+                    value={ov.home_score}
+                    onChangeText={(v) => setOverride(k, 'home_score', v.replace(/[^0-9]/g, ''))}
+                    placeholder="-"
+                    placeholderTextColor={theme.colors.muted}
+                    maxLength={2}
+                  />
+                  <Text style={styles.scoreDash}>–</Text>
+                  <TextInput
+                    style={styles.scoreInput}
+                    keyboardType="numeric"
+                    value={ov.away_score}
+                    onChangeText={(v) => setOverride(k, 'away_score', v.replace(/[^0-9]/g, ''))}
+                    placeholder="-"
+                    placeholderTextColor={theme.colors.muted}
+                    maxLength={2}
+                  />
+                </View>
+              )}
+              <Text style={[styles.fxTeam, isPost && { color: theme.colors.muted, textDecorationLine: 'line-through' }]}>{f.away_team}</Text>
             </View>
           );
         })}
@@ -562,6 +608,128 @@ function ImpactCell({ label, val }: { label: string; val: number }) {
     </View>
   );
 }
+
+
+function ExclusionBlock({ matchday }: { matchday: number }) {
+  const [fixtures, setFixtures] = useState<CalFixture[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await api<{ fixtures: CalFixture[] }>(
+        `/sal/calendar?matchday=${matchday}&season=2026-27`,
+      );
+      setFixtures(r.fixtures || []);
+    } catch { /* silent */ } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, [matchday]);
+
+  const toggleExcluded = async (fx: CalFixture) => {
+    setSavingId(fx.id);
+    try {
+      const next = !fx.excluded;
+      await api(`/sal/calendar/fixture/${fx.id}/exclude`, {
+        method: 'PATCH', body: { excluded: next },
+      });
+      setFixtures(list => list.map(f =>
+        f.id === fx.id ? { ...f, excluded: next } : f,
+      ));
+    } catch (e: any) {
+      alert(e.message);
+    } finally { setSavingId(null); }
+  };
+
+  const excludedCount = fixtures.filter(f => f.excluded).length;
+
+  return (
+    <View style={styles.card}>
+      <Pressable
+        onPress={() => setExpanded(x => !x)}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+        testID="mds-exclusion-toggle"
+      >
+        <Ionicons name="ban" size={16} color="#EF4444" />
+        <Text style={styles.cardLabel}>Escludi partite pre-turno</Text>
+        <View style={{ flex: 1 }} />
+        {excludedCount > 0 && (
+          <View style={styles.excCountBadge}>
+            <Text style={styles.excCountText}>{excludedCount} escl.</Text>
+          </View>
+        )}
+        <Ionicons
+          name={expanded ? 'chevron-up' : 'chevron-down'}
+          size={18}
+          color={theme.colors.muted}
+        />
+      </Pressable>
+      {expanded && (
+        <>
+          <Text style={styles.help}>
+            Le partite escluse non saranno selezionabili in nessun gioco.
+            Usa questa opzione PRIMA che il turno inizi (es. per rinvii annunciati).
+          </Text>
+          {loading && <ActivityIndicator color={COLOR} />}
+          {!loading && fixtures.length === 0 && (
+            <Text style={styles.muted}>Nessuna partita in calendario per la giornata {matchday}.</Text>
+          )}
+          {fixtures.map((fx) => (
+            <View
+              key={fx.id}
+              style={[
+                styles.exclusionRow,
+                fx.excluded && { backgroundColor: '#FEE2E230', borderColor: '#EF4444AA' },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.exclusionTeams,
+                  fx.excluded && { color: theme.colors.muted, textDecorationLine: 'line-through' },
+                ]}
+              >
+                {fx.home_team} vs {fx.away_team}
+              </Text>
+              <Pressable
+                onPress={() => toggleExcluded(fx)}
+                disabled={savingId === fx.id}
+                style={[
+                  styles.exclusionBtn,
+                  fx.excluded
+                    ? { backgroundColor: '#EF4444' }
+                    : { backgroundColor: theme.colors.surfaceSecondary, borderWidth: 1, borderColor: theme.colors.border },
+                ]}
+                testID={`mds-exclude-${fx.home_team}`}
+              >
+                {savingId === fx.id ? (
+                  <ActivityIndicator color={fx.excluded ? '#fff' : COLOR} size="small" />
+                ) : (
+                  <>
+                    <Ionicons
+                      name={fx.excluded ? 'close-circle' : 'radio-button-off'}
+                      size={14}
+                      color={fx.excluded ? '#fff' : theme.colors.text}
+                    />
+                    <Text
+                      style={[
+                        styles.exclusionBtnText,
+                        { color: fx.excluded ? '#fff' : theme.colors.text },
+                      ]}
+                    >
+                      {fx.excluded ? 'ESCLUSA' : 'Escludi'}
+                    </Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          ))}
+        </>
+      )}
+    </View>
+  );
+}
+
 
 
 function SaveLogBlock({ log }: { log: any }) {
@@ -725,4 +893,32 @@ const styles = StyleSheet.create({
   logRow: { flexDirection: 'row', gap: 6, paddingVertical: 2 },
   logDot: { fontSize: 14, lineHeight: 16 },
   logText: { color: theme.colors.text, fontSize: 11, flex: 1 },
+  excCountBadge: {
+    backgroundColor: '#EF4444', paddingHorizontal: 8, paddingVertical: 2,
+    borderRadius: 10,
+  },
+  excCountText: { color: '#fff', fontSize: 10, fontWeight: '900' },
+  exclusionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderWidth: 1, borderColor: theme.colors.border,
+  },
+  exclusionTeams: { color: theme.colors.text, fontSize: 13, fontWeight: '700', flex: 1 },
+  exclusionBtn: {
+    flexDirection: 'row', gap: 4, alignItems: 'center',
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6,
+    minWidth: 90, justifyContent: 'center',
+  },
+  exclusionBtnText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
+  postToggle: {
+    width: 28, height: 28, borderRadius: 14,
+    borderWidth: 1, borderColor: theme.colors.border,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: theme.colors.surfaceSecondary,
+  },
+  fxPostLabel: {
+    color: '#EF4444', fontSize: 11, fontWeight: '900',
+    letterSpacing: 0.5, flex: 0.7, textAlign: 'center',
+  },
 });

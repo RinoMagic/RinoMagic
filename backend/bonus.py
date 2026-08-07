@@ -251,7 +251,8 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
     async def _matchday_fixtures(season: str, matchday: int) -> List[dict]:
         out = []
         async for fx in db.sal_calendar.find(
-            {"season": season, "matchday": matchday}, {"_id": 0},
+            {"season": season, "matchday": matchday,
+             "excluded": {"$ne": True}}, {"_id": 0},
         ):
             out.append({
                 "home_team": fx.get("home_team"),
