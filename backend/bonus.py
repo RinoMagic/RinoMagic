@@ -317,6 +317,7 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             if not body.big_match:
                 raise HTTPException(status_code=400, detail="Big Match richiesto per bonus 'exact_score'")
             # Verify the big match is in the season calendar for that matchday
+            # and is not excluded pre-round.
             fx = await db.sal_calendar.find_one({
                 "season": body.season, "matchday": body.matchday,
                 "home_team": body.big_match.home_team, "away_team": body.big_match.away_team,
@@ -325,6 +326,11 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
                 raise HTTPException(
                     status_code=400,
                     detail="Big Match non presente nel calendario di questa giornata",
+                )
+            if fx.get("excluded"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Big Match escluso dall'admin pre-turno: scegli un'altra partita",
                 )
             kickoff = fx.get("kickoff_iso") or body.big_match.kickoff_iso
             big_match = {
@@ -1043,9 +1049,11 @@ async def ensure_bonus_draft(
                 md += 1
                 continue
             return existing  # already exists (draft or complete)
-        # Verify the calendar has fixtures for this matchday
+        # Verify the calendar has fixtures for this matchday (excluded
+        # ones don't count — a fully-excluded matchday should be skipped).
         has_fixtures = await db.sal_calendar.count_documents({
             "season": season, "matchday": md,
+            "excluded": {"$ne": True},
         })
         if not has_fixtures:
             md += 1
@@ -1057,7 +1065,8 @@ async def ensure_bonus_draft(
             # lacks kickoff dates — we still create the config)
             earliest = await db.sal_calendar.find_one(
                 {"season": season, "matchday": md,
-                 "kickoff_iso": {"$ne": None}},
+                 "kickoff_iso": {"$ne": None},
+                 "excluded": {"$ne": True}},
                 {"_id": 0, "kickoff_iso": 1},
                 sort=[("kickoff_iso", 1)],
             )

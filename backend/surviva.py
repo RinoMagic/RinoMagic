@@ -1106,6 +1106,7 @@ def build_router(
                 remaining = await db.sal_calendar.count_documents({
                     "season": t.get("season"),
                     "matchday": {"$gte": next_start},
+                    "excluded": {"$ne": True},
                 })
                 if remaining > 0:
                     base = t.get("name") or "Torneo"

@@ -611,7 +611,8 @@ def build_router(
         md_docs = []
         for md_num in range(start_matchday, 39):
             cal_rows = [r async for r in db.sal_calendar.find(
-                {"season": season, "matchday": md_num}, {"_id": 0}
+                {"season": season, "matchday": md_num,
+                 "excluded": {"$ne": True}}, {"_id": 0}
             ).sort("home_team", 1)]
             if not cal_rows:
                 continue
@@ -660,7 +661,8 @@ def build_router(
         if next_start > 38:
             return None
         remaining = await db.sal_calendar.count_documents(
-            {"season": t.get("season"), "matchday": {"$gte": next_start}}
+            {"season": t.get("season"), "matchday": {"$gte": next_start},
+             "excluded": {"$ne": True}}
         )
         if remaining == 0:
             return None
