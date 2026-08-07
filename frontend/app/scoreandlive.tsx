@@ -86,7 +86,24 @@ export default function ScoreAndLiveHome() {
     try {
       await api(`/sal/tournaments/${t.id}`, { method: 'DELETE' });
       await load();
-    } catch (e: any) { alert(e.message || 'Errore eliminazione'); }
+    } catch (e: any) {
+      const msg = e?.message || '';
+      // Backend returns 409 when the tournament has historical picks; ask
+      // for a second confirmation and retry with force=true.
+      if (msg.includes('giocate storiche') || msg.includes('force=true')) {
+        if (!await confirmDialog(
+          'Conferma DEFINITIVA',
+          `Il torneo "${t.name}" contiene giocate storiche. Eliminandolo perderai per sempre lo storico. Procedere?`,
+          { destructive: true, confirmLabel: 'ELIMINA per sempre' },
+        )) return;
+        try {
+          await api(`/sal/tournaments/${t.id}?force=true`, { method: 'DELETE' });
+          await load();
+        } catch (e2: any) { alert(e2?.message || 'Errore eliminazione'); }
+      } else {
+        alert(msg || 'Errore eliminazione');
+      }
+    }
   };
 
   const deleteArchived = async (a: Archived) => {
