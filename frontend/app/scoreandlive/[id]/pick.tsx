@@ -15,7 +15,14 @@ import { theme } from '@/src/theme';
 const COLOR = '#3B82F6';
 
 type Fixture = { idx: number; home_team: string; away_team: string; postponed_before?: boolean };
-type Matchday = { id: string; matchday_number: number; status: string; fixtures: Fixture[]; my_picks?: { picks: { fixture_idx: number; player_id: string; player_name: string; team: string }[] } };
+type Matchday = {
+  id: string; matchday_number: number; status: string; fixtures: Fixture[];
+  my_picks?: { picks: { fixture_idx: number; player_id: string; player_name: string; team: string }[] };
+  my_lives_remaining?: number;
+  expected_picks_count?: number;
+  max_lives?: number;
+  playable_fixtures_count?: number;
+};
 type Player = { id: string; full_name: string; team: string; role: string };
 type BlockedPlayer = { player_id: string; full_name: string; team: string };
 
@@ -65,9 +72,13 @@ export default function PickPage() {
     if (missing.length) return alert(`Manca il pick per ${missing.length} partita/e`);
     setSaving(true);
     try {
+      // Only submit fixtures that HAVE a pick — skipped matches don't count.
+      const filledPicks = playable
+        .filter((f) => picks[f.idx])
+        .map((f) => ({ fixture_idx: f.idx, player_id: picks[f.idx] }));
       await api(`/sal/tournaments/${id}/matchdays/${matchday_id}/picks`, {
         method: 'POST',
-        body: { picks: playable.map((f) => ({ fixture_idx: f.idx, player_id: picks[f.idx] })) },
+        body: { picks: filledPicks },
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -77,6 +88,10 @@ export default function PickPage() {
   if (!md) return <View style={styles.center}><ActivityIndicator color={COLOR} /></View>;
 
   const playable = md.fixtures.filter((f) => !f.postponed_before);
+  const filledCount = Object.values(picks).filter((v) => !!v).length;
+  const expected = md.expected_picks_count ?? playable.length;
+  const lives = md.my_lives_remaining ?? 0;
+  const canSubmit = filledCount === expected && !saving;
 
   return (
     <View style={styles.wrap}>
@@ -87,15 +102,37 @@ export default function PickPage() {
           </Pressable>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>Marcatori · G{md.matchday_number}</Text>
-            <Text style={styles.subtitle}>{Object.keys(picks).length}/{playable.length} scelti</Text>
+            <Text
+              style={[
+                styles.subtitle,
+                canSubmit && { color: theme.colors.success },
+                filledCount > expected && { color: theme.colors.error },
+              ]}
+            >
+              {filledCount}/{expected} pronostici · ❤️ {lives} vite
+            </Text>
           </View>
-          <Pressable onPress={submit} hitSlop={12} disabled={saving} testID="sal-pick-submit">
+          <Pressable
+            onPress={submit}
+            hitSlop={12}
+            disabled={!canSubmit}
+            style={!canSubmit && { opacity: 0.35 }}
+            testID="sal-pick-submit"
+          >
             <Ionicons name={saved ? 'checkmark-circle' : 'send'} size={26} color={saved ? theme.colors.success : COLOR} />
           </Pressable>
         </View>
       </SafeAreaView>
 
       <ScrollView contentContainerStyle={{ padding: theme.spacing.md, gap: theme.spacing.lg, paddingBottom: 80 }}>
+        <View style={styles.ruleBanner}>
+          <Ionicons name="information-circle" size={16} color={COLOR} />
+          <Text style={styles.ruleBannerText}>
+            <Text style={{ fontWeight: '800' }}>Devi scegliere {expected} pronostici su {playable.length} partite.</Text>
+            {'\n'}Hai <Text style={{ fontWeight: '800', color: COLOR }}>{lives} vite</Text>: puoi giocare tante partite quante ne hai (max {playable.length}).
+            {'\n'}<Text style={{ fontStyle: 'italic', color: theme.colors.muted }}>+1 vita per ogni marcatore azzeccato (cap 15). Le partite non selezionate non incidono.</Text>
+          </Text>
+        </View>
         {blockedPlayers.length > 0 && (
           <View style={styles.blockedBanner}>
             <Ionicons name="lock-closed" size={14} color={theme.colors.muted} />
@@ -155,6 +192,20 @@ export default function PickPage() {
                     {selectedPlayer.full_name} · {selectedPlayer.team}
                   </Text>
                 </View>
+              )}
+              {selectedId && (
+                <Pressable
+                  onPress={() => setPicks((s) => {
+                    const next = { ...s };
+                    delete next[f.idx];
+                    return next;
+                  })}
+                  style={styles.clearPickBtn}
+                  hitSlop={6}
+                  testID={`sal-clear-pick-${f.idx}`}
+                >
+                  <Text style={styles.clearPickBtnText}>SALTA QUESTA PARTITA</Text>
+                </Pressable>
               )}
               <TextInput
                 style={styles.input}
@@ -249,6 +300,24 @@ const styles = StyleSheet.create({
   },
   blockedBannerText: {
     color: theme.colors.muted, fontSize: 11, flex: 1, fontStyle: 'italic',
+  },
+  ruleBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    padding: theme.spacing.sm, borderRadius: theme.radius.sm,
+    backgroundColor: COLOR + '10',
+    borderWidth: 1, borderColor: COLOR + '55',
+  },
+  ruleBannerText: {
+    color: theme.colors.onSurface, fontSize: 12, flex: 1, lineHeight: 17,
+  },
+  clearPickBtn: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 8, paddingVertical: 4, marginTop: 4,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: theme.colors.border,
+  },
+  clearPickBtnText: {
+    color: theme.colors.muted, fontSize: 10, fontWeight: '700',
   },
   input: {
     color: theme.colors.onSurface, backgroundColor: theme.colors.surface,

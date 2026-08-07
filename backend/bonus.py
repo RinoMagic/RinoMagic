@@ -494,11 +494,23 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             details["participations_updated"] = int(r.modified_count)
             return details
         if game == "score":
+            # v2.1: +3 lives per first_scorer bonus win (was +1). Cap at 15.
             r = await db.sal_participants.update_one(
-                {"tournament_id": sub_id, "user_id": uid, "eliminated_at_matchday": None},
-                {"$inc": {"lives_remaining": 1}},
+                {
+                    "tournament_id": sub_id, "user_id": uid,
+                    "eliminated_at_matchday": None,
+                    "lives_remaining": {"$lt": 15},
+                },
+                [
+                    {"$set": {
+                        "lives_remaining": {
+                            "$min": [15, {"$add": ["$lives_remaining", 3]}],
+                        },
+                    }},
+                ],
             )
             details["kind"] = "extra_life"
+            details["lives_awarded"] = 3
             details["tournament_id"] = sub_id
             details["participations_updated"] = int(r.modified_count)
             return details

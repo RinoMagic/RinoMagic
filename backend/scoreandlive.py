@@ -1469,7 +1469,23 @@ def build_router(
             {"tournament_id": tournament_id, "matchday_id": matchday_id, "user_id": user["id"]},
             {"_id": 0},
         )
-        return {**md, "my_picks": my_picks}
+        # v2.1 dynamic-picks: expose how many picks the user must send this
+        # matchday (= min(lives, playable_fixtures)). Frontend uses this to
+        # gate the submit button.
+        part = await _participant(tournament_id, user["id"])
+        my_lives = int(part.get("lives_remaining", 0) or 0) if part else 0
+        playable_count = sum(
+            1 for f in md.get("fixtures", []) or [] if not f.get("postponed_before")
+        )
+        expected_picks_count = min(my_lives, playable_count) if part else 0
+        return {
+            **md,
+            "my_picks": my_picks,
+            "my_lives_remaining": my_lives,
+            "expected_picks_count": expected_picks_count,
+            "max_lives": 15,
+            "playable_fixtures_count": playable_count,
+        }
 
     # --- Picks ----------------------------------------------------------
 
@@ -1501,6 +1517,13 @@ def build_router(
         playable = [f for f in md["fixtures"] if not f.get("postponed_before")]
         playable_ids = {f["idx"] for f in playable}
 
+        # v2.1 dynamic-picks rule: number of required picks = min(lives_left, playable).
+        # Player chooses freely which N matches to play. All others are simply
+        # skipped (no life lost for un-picked matches).
+        MAX_LIVES = 15  # cap enforced also in settle_matchday
+        lives = int(part.get("lives_remaining", 0) or 0)
+        expected_picks = min(lives, len(playable_ids))
+
         seen_ids: set[int] = set()
         for p in data.picks:
             if p.fixture_idx not in playable_ids:
@@ -1508,9 +1531,14 @@ def build_router(
             if p.fixture_idx in seen_ids:
                 raise HTTPException(status_code=400, detail="Pick duplicato per la stessa partita")
             seen_ids.add(p.fixture_idx)
-        missing = playable_ids - seen_ids
-        if missing:
-            raise HTTPException(status_code=400, detail=f"Manca il pick per {len(missing)} partita/e")
+        if len(seen_ids) != expected_picks:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Devi inviare esattamente {expected_picks} pronostici "
+                    f"(hai {lives} vite): ne hai inviati {len(seen_ids)}."
+                ),
+            )
 
         t = await _get_tournament(tournament_id)
         # v2 rule: block ONLY the specific players a user has previously hit
@@ -1632,7 +1660,9 @@ def build_router(
                 else:
                     misses.append(p)
                     lives_lost += 1
-            new_lives = max(0, part["lives_remaining"] - lives_lost)
+            new_lives_raw = part["lives_remaining"] - lives_lost + len(hits)
+            # v2.1: +1 vita per hit, cap max 15 vite (MAX_LIVES).
+            new_lives = max(0, min(15, new_lives_raw))
             set_fields = {"lives_remaining": new_lives}
             if new_lives == 0 and part.get("eliminated_at_matchday") is None:
                 set_fields["eliminated_at_matchday"] = md["matchday_number"]
@@ -1642,7 +1672,10 @@ def build_router(
             )
             await db.sal_picks.update_one(
                 {"tournament_id": tournament_id, "matchday_id": matchday_id, "user_id": user_id},
-                {"$set": {"hits": hits, "misses": misses, "lives_lost": lives_lost}},
+                {"$set": {
+                    "hits": hits, "misses": misses,
+                    "lives_lost": lives_lost, "lives_gained": len(hits),
+                }},
             )
 
         await db.sal_tournaments.update_one(
