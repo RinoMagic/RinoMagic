@@ -1315,14 +1315,34 @@ def build_router(
         # Storing ``invite_id: null`` on multiple admin auto-enrollments
         # would collide on the unique index (sparse skips MISSING keys, not
         # explicit ``null`` values).
-        await db.memberships.insert_one({
-            "id": str(uuid.uuid4()),
-            "room_id": room_id,
-            "user_id": user["id"],
-            "slot": 1,
-            "display_name": display_name(user),
-            "joined_at": now,
-        })
+        #
+        # Multi-admin support: enroll ALL admins (creator gets slot 1, then
+        # the others in id order) so every admin can play from the start.
+        admin_users = [u async for u in db.users.find(
+            {"role": "admin"}, {"_id": 0, "id": 1, "username": 1, "email": 1},
+        )]
+        # Put creator first; sort the rest by id for a stable slot order.
+        others = sorted(
+            [a for a in admin_users if a["id"] != user["id"]],
+            key=lambda a: a["id"],
+        )
+        # Include the creator explicitly (they might be missing from the query
+        # in weird edge cases; also we want to guarantee slot 1).
+        ordered = [user] + others
+        for idx, adm in enumerate(ordered, start=1):
+            existing = await db.memberships.find_one({
+                "room_id": room_id, "user_id": adm["id"],
+            })
+            if existing:
+                continue
+            await db.memberships.insert_one({
+                "id": str(uuid.uuid4()),
+                "room_id": room_id,
+                "user_id": adm["id"],
+                "slot": idx,
+                "display_name": display_name(adm),
+                "joined_at": now,
+            })
         # Auto-create the exact_score bonus draft for this room's matchday
         try:
             from bonus import ensure_bonus_draft

@@ -222,6 +222,79 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
         )
         return {"ok": True}
 
+    async def _enroll_admin_everywhere(admin_user: dict) -> dict:
+        """When a user becomes an admin, auto-enroll them into every open
+        room/tournament/league across all games. Idempotent — existing
+        enrollments are preserved. Returns counters for reporting.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        uid = admin_user["id"]
+        # Use username OR email as display name
+        nickname = (admin_user.get("username")
+                    or (admin_user.get("email") or "").split("@")[0]
+                    or "admin")
+        counters = {"tiket": 0, "surviva": 0, "scoreandlive": 0, "fantagiornata": 0}
+        # TheBestTiket rooms
+        async for r in db.rooms.find(
+            {"status": {"$ne": "closed"}}, {"_id": 0, "id": 1},
+        ):
+            if not await db.memberships.find_one({"room_id": r["id"], "user_id": uid}):
+                # Assign next available slot (unique per room)
+                existing_slots = [m.get("slot", 0) async for m in db.memberships.find(
+                    {"room_id": r["id"]}, {"_id": 0, "slot": 1},
+                )]
+                next_slot = (max(existing_slots) if existing_slots else 0) + 1
+                await db.memberships.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "room_id": r["id"], "user_id": uid,
+                    "slot": next_slot, "display_name": nickname, "joined_at": now,
+                })
+                counters["tiket"] += 1
+        # Survival tournaments
+        async for t in db.sv_tournaments.find(
+            {"status": {"$ne": "finished"}},
+            {"_id": 0, "id": 1, "initial_lives": 1},
+        ):
+            if not await db.sv_participants.find_one({
+                "tournament_id": t["id"], "user_id": uid,
+            }):
+                await db.sv_participants.insert_one({
+                    "tournament_id": t["id"], "user_id": uid,
+                    "nickname": nickname,
+                    "lives_left": t.get("initial_lives", 10),
+                    "locked_teams": [], "blocked_signs": [],
+                    "eliminated_at": None, "joined_at": now,
+                })
+                counters["surviva"] += 1
+        # ScoreAndLive tournaments
+        async for t in db.sal_tournaments.find(
+            {"status": {"$ne": "finished"}},
+            {"_id": 0, "id": 1, "initial_lives": 1},
+        ):
+            if not await db.sal_participants.find_one({
+                "tournament_id": t["id"], "user_id": uid,
+            }):
+                await db.sal_participants.insert_one({
+                    "tournament_id": t["id"], "user_id": uid,
+                    "nickname": nickname,
+                    "lives_remaining": t.get("initial_lives", 10),
+                    "eliminated_at_matchday": None, "joined_at": now,
+                })
+                counters["scoreandlive"] += 1
+        # FantaGiornata leagues
+        async for lg in db.fg_leagues.find(
+            {"status": {"$ne": "closed"}}, {"_id": 0, "id": 1},
+        ):
+            if not await db.fg_memberships.find_one({
+                "league_id": lg["id"], "user_id": uid,
+            }):
+                await db.fg_memberships.insert_one({
+                    "league_id": lg["id"], "user_id": uid,
+                    "nickname": nickname, "joined_at": now,
+                })
+                counters["fantagiornata"] += 1
+        return counters
+
     @router.post("/admin/promote")
     async def admin_promote(
         data: AdminPromoteIn,
@@ -241,7 +314,9 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
                           "password_hash": hash_password(data.temp_password),
                           "must_change_password": True}},
             )
-            return {"ok": True, "user_id": existing["id"]}
+            promoted = await db.users.find_one({"id": existing["id"]}, {"_id": 0})
+            enrolled = await _enroll_admin_everywhere(promoted)
+            return {"ok": True, "user_id": existing["id"], "enrolled": enrolled}
         # Create brand-new admin account
         new_user = {
             "id": str(uuid.uuid4()),
@@ -253,7 +328,8 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(new_user)
-        return {"ok": True, "user_id": new_user["id"]}
+        enrolled = await _enroll_admin_everywhere(new_user)
+        return {"ok": True, "user_id": new_user["id"], "enrolled": enrolled}
 
     # ---------- PLAYER ROUTES ----------
     @router.post("/player/register")

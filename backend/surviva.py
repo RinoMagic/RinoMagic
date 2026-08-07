@@ -457,17 +457,26 @@ def build_router(
             initial_lives=data.initial_lives,
             start_matchday=data.start_matchday,
         )
-        # Auto-join the creating admin as participant
-        await db.sv_participants.insert_one({
-            "tournament_id": doc["id"],
-            "user_id": user["id"],
-            "nickname": display_name(user),
-            "lives_left": data.initial_lives,
-            "locked_teams": [],
-            "blocked_signs": [],  # legacy field (v1), always empty in v2
-            "eliminated_at": None,
-            "joined_at": _now(),
-        })
+        # Auto-enrol ALL current admins as participants (multi-admin support).
+        admin_users = [u async for u in db.users.find(
+            {"role": "admin"}, {"_id": 0, "id": 1, "username": 1, "email": 1},
+        )]
+        for adm in admin_users:
+            existing = await db.sv_participants.find_one({
+                "tournament_id": doc["id"], "user_id": adm["id"],
+            })
+            if existing:
+                continue
+            await db.sv_participants.insert_one({
+                "tournament_id": doc["id"],
+                "user_id": adm["id"],
+                "nickname": display_name(adm),
+                "lives_left": data.initial_lives,
+                "locked_teams": [],
+                "blocked_signs": [],  # legacy field (v1), always empty in v2
+                "eliminated_at": None,
+                "joined_at": _now(),
+            })
         return await _tournament_dict(doc, user)
 
     @router.get("/tournaments")

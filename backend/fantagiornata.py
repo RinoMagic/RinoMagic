@@ -354,11 +354,20 @@ def build_router(
             "created_at": now, "invite_code": code,
         }
         await db.fg_leagues.insert_one(doc)
-        # Admin is auto-enrolled
-        await db.fg_memberships.insert_one({
-            "league_id": lg_id, "user_id": user["id"],
-            "nickname": display_name(user), "joined_at": now,
-        })
+        # Auto-enrol ALL current admins as league members (multi-admin support).
+        admin_users = [u async for u in db.users.find(
+            {"role": "admin"}, {"_id": 0, "id": 1, "username": 1, "email": 1},
+        )]
+        for adm in admin_users:
+            existing = await db.fg_memberships.find_one({
+                "league_id": lg_id, "user_id": adm["id"],
+            })
+            if existing:
+                continue
+            await db.fg_memberships.insert_one({
+                "league_id": lg_id, "user_id": adm["id"],
+                "nickname": display_name(adm), "joined_at": now,
+            })
         # Create the first single-use invite
         await db.fg_invites.insert_one({
             "id": str(uuid.uuid4()), "league_id": lg_id, "code": code,

@@ -694,15 +694,26 @@ def build_router(
             initial_lives=data.initial_lives,
             start_matchday=data.start_matchday, season=data.season,
         )
-        # Enrol the admin as first participant so they can play too.
-        await db.sal_participants.insert_one({
-            "tournament_id": doc["id"],
-            "user_id": user["id"],
-            "nickname": display_name(user),
-            "lives_remaining": data.initial_lives,
-            "eliminated_at_matchday": None,
-            "joined_at": _now(),
-        })
+        # Enrol ALL current admins as participants (every admin plays every
+        # tournament automatically). Multi-admin support: each admin has full
+        # control regardless of who created the tournament.
+        admin_users = [u async for u in db.users.find(
+            {"role": "admin"}, {"_id": 0, "id": 1, "username": 1, "email": 1},
+        )]
+        for adm in admin_users:
+            existing = await db.sal_participants.find_one({
+                "tournament_id": doc["id"], "user_id": adm["id"],
+            })
+            if existing:
+                continue
+            await db.sal_participants.insert_one({
+                "tournament_id": doc["id"],
+                "user_id": adm["id"],
+                "nickname": display_name(adm),
+                "lives_remaining": data.initial_lives,
+                "eliminated_at_matchday": None,
+                "joined_at": _now(),
+            })
         # Auto-create the first_scorer bonus draft for this matchday
         try:
             from bonus import ensure_bonus_draft
