@@ -397,11 +397,24 @@ def build_router(*, db, require_admin) -> APIRouter:
                     log.append({"game": "survival", "tournament": t["name"],
                                 "skipped": True, "reason": "già liquidato"})
                     continue
-                results = [{
-                    "home_team": fx["home_team"], "away_team": fx["away_team"],
-                    "home_score": fx["home_score"] or 0,
-                    "away_score": fx["away_score"] or 0,
-                } for fx in fixtures if fx["played"]]
+                # Postponed fixtures are included with ``postponed=True`` so
+                # picks on those matches remain PENDING (no life lost /
+                # gained). This is Survival's built-in life-save behaviour.
+                results = []
+                for fx in fixtures:
+                    if fx.get("postponed"):
+                        results.append({
+                            "home_team": fx["home_team"],
+                            "away_team": fx["away_team"],
+                            "postponed": True,
+                        })
+                    elif fx["played"]:
+                        results.append({
+                            "home_team": fx["home_team"],
+                            "away_team": fx["away_team"],
+                            "home_score": fx["home_score"] or 0,
+                            "away_score": fx["away_score"] or 0,
+                        })
                 r = await client.post(
                     f"{api}/sv/tournaments/{t['id']}/matchdays/{md_doc['id']}/settle",
                     json={"results": results},
@@ -423,10 +436,20 @@ def build_router(*, db, require_admin) -> APIRouter:
                     log.append({"game": "score", "tournament": t["name"],
                                 "skipped": True, "reason": "già liquidato o assente"})
                     continue
-                # scorers per fixture idx: match by team names
+                # Build a set of postponed fixture keys (home||away)
+                postponed_keys = {
+                    f"{fx['home_team']}||{fx['away_team']}"
+                    for fx in fixtures if fx.get("postponed")
+                }
+                # Map postponed keys to the tournament's per-md fixture idx
+                # so Score's settle receives ``postponed_during`` correctly.
+                postponed_during: List[int] = []
                 sco = []
                 for fx in md_doc.get("fixtures", []):
                     key = f"{fx['home_team']}||{fx['away_team']}"
+                    if key in postponed_keys:
+                        postponed_during.append(fx["idx"])
+                        continue  # skip scorers for postponed
                     for s in scorers_map.get(key, []):
                         sco.append({
                             "fixture_idx": fx["idx"],
@@ -435,26 +458,45 @@ def build_router(*, db, require_admin) -> APIRouter:
                         })
                 r = await client.post(
                     f"{api}/sal/tournaments/{t['id']}/matchdays/{md_doc['id']}/settle",
-                    json={"scorers": sco},
+                    json={"scorers": sco, "postponed_during": postponed_during},
                 )
                 log.append({"game": "score", "tournament": t["name"],
                             "status": r.status_code,
                             "detail": r.json() if r.status_code == 200 else r.text[:200]})
 
             # ---- Tiket rooms -----------------------------------------
+            # Tiket has no ``/settle`` endpoint — settlement happens by
+            # writing fixture scores into ``fixtures`` collection. For
+            # postponed matches we still write a placeholder with
+            # ``postponed=True`` and ``both_scored=False`` so the schedina
+            # ranking treats predictions on it as neutral (quota 1.00).
             async for room in db.rooms.find(
                 {"matchday": matchday, "status": {"$ne": "settled"}},
                 {"_id": 0, "id": 1, "name": 1},
             ):
-                room_fx = [{
-                    "home_team": fx["home_team"], "away_team": fx["away_team"],
-                    "home_score": fx["home_score"] or 0,
-                    "away_score": fx["away_score"] or 0,
-                    "both_scored": (fx["home_score"] or 0) > 0
-                                   and (fx["away_score"] or 0) > 0,
-                } for fx in fixtures if fx["played"]]
+                room_fx = []
+                for fx in fixtures:
+                    if fx.get("excluded"):
+                        continue  # Excluded pre-round → do not create schedina event
+                    if fx.get("postponed"):
+                        room_fx.append({
+                            "home_team": fx["home_team"],
+                            "away_team": fx["away_team"],
+                            "home_score": 0, "away_score": 0,
+                            "both_scored": False,
+                            "postponed": True,
+                        })
+                    elif fx["played"]:
+                        room_fx.append({
+                            "home_team": fx["home_team"],
+                            "away_team": fx["away_team"],
+                            "home_score": fx["home_score"] or 0,
+                            "away_score": fx["away_score"] or 0,
+                            "both_scored": (fx["home_score"] or 0) > 0
+                                           and (fx["away_score"] or 0) > 0,
+                        })
                 r = await client.post(
-                    f"{api}/rooms/{room['id']}/settle",
+                    f"{api}/rooms/{room['id']}/fixtures",
                     json={"fixtures": room_fx},
                 )
                 log.append({"game": "tiket", "room": room["name"],

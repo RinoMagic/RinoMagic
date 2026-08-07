@@ -953,6 +953,10 @@ class FixtureIn(BaseModel):
     home_score: int = Field(ge=0)
     away_score: int = Field(ge=0)
     both_scored: Optional[bool] = None
+    # When True, the match was postponed / cancelled and the fixture is
+    # scored neutrally: every user's prediction is treated as WIN with
+    # contribution 1.00 to the schedina ranking (no gain, no loss).
+    postponed: Optional[bool] = False
 
 
 class FixturesIn(BaseModel):
@@ -2029,10 +2033,12 @@ def build_router(
                 "home_score": f.home_score,
                 "away_score": f.away_score,
                 "both_scored": both,
+                "postponed": bool(f.postponed),
             })
         if docs:
             await db.fixtures.insert_many(docs)
-        return {"ok": True, "count": len(docs)}
+        return {"ok": True, "count": len(docs),
+                "postponed_count": sum(1 for d in docs if d["postponed"])}
 
     @router.get("/rooms/{room_id}/fixtures")
     async def get_fixtures(room_id: str, user: dict = Depends(current_user)):
@@ -2216,6 +2222,7 @@ def build_router(
                     "prediction": e["prediction"],
                     "odd": e["odd"],
                     "won": False,
+                    "postponed": False,
                     "matched_fixture": None,
                     "score": None,
                 }
@@ -2224,7 +2231,15 @@ def build_router(
                     if fx:
                         info["matched_fixture"] = f"{fx['home_team']} vs {fx['away_team']}"
                         info["score"] = f"{fx['home_score']}-{fx['away_score']}"
-                        if _evaluate_prediction(e["prediction"], fx):
+                        if fx.get("postponed"):
+                            # Postponed match → prediction is auto-won with
+                            # quota 1.00 (neutral contribution to the schedina).
+                            info["won"] = True
+                            info["postponed"] = True
+                            info["score"] = "RINV."
+                            product *= 1.0
+                            won_count += 1
+                        elif _evaluate_prediction(e["prediction"], fx):
                             info["won"] = True
                             product *= e["odd"]
                             won_count += 1

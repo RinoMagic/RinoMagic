@@ -140,20 +140,20 @@ export default function ExclusionsScreen() {
             key={fx.id}
             style={[
               styles.row,
-              fx.excluded && { backgroundColor: '#FEE2E220', borderColor: COLOR },
+              fx.excluded && { backgroundColor: '#7F1D1D', borderColor: COLOR },
             ]}
           >
             <View style={{ flex: 1 }}>
               <Text
                 style={[
                   styles.rowTeams,
-                  fx.excluded && { color: theme.colors.muted, textDecorationLine: 'line-through' },
+                  fx.excluded && { color: '#FEE2E2', textDecorationLine: 'line-through' },
                 ]}
               >
                 {fx.home_team} vs {fx.away_team}
               </Text>
               {fx.kickoff_iso && (
-                <Text style={styles.rowKickoff}>
+                <Text style={[styles.rowKickoff, fx.excluded && { color: '#FCA5A5' }]}>
                   {new Date(fx.kickoff_iso).toLocaleString('it-IT', {
                     weekday: 'short', day: '2-digit', month: 'short',
                     hour: '2-digit', minute: '2-digit',
