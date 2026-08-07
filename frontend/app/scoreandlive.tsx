@@ -46,7 +46,7 @@ export default function ScoreAndLiveHome() {
   // Admin: create tournament modal state
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
-  const [newLives, setNewLives] = useState('3');
+  const [newLives, setNewLives] = useState('10');
   const [newSeason, setNewSeason] = useState('2026-27');
   const [newStartMd, setNewStartMd] = useState('1');
   const [creating, setCreating] = useState(false);
@@ -125,7 +125,7 @@ export default function ScoreAndLiveHome() {
 
   const doCreate = async () => {
     const name = newName.trim();
-    const lives = parseInt(newLives || '3', 10);
+    const lives = parseInt(newLives || '10', 10);
     const startMd = parseInt(newStartMd || '1', 10);
     if (!name) return alert('Inserisci un nome per il torneo');
     if (isNaN(lives) || lives < 1 || lives > 10) {
@@ -147,7 +147,7 @@ export default function ScoreAndLiveHome() {
       });
       setCreateOpen(false);
       setNewName('');
-      setNewLives('3');
+      setNewLives('10');
       setNewStartMd('1');
       await load();
     } catch (e: any) {
