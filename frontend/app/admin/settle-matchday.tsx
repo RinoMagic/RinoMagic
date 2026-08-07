@@ -12,7 +12,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
-  TextInput, Platform,
+  TextInput, Platform, Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -37,14 +37,6 @@ type Fixture = {
   away_score: number | null;
   played: boolean;
   postponed?: boolean;
-  excluded?: boolean;
-};
-type CalFixture = {
-  id: string;
-  matchday: number;
-  home_team: string;
-  away_team: string;
-  kickoff_iso?: string | null;
   excluded?: boolean;
 };
 type Affected = {
@@ -455,6 +447,17 @@ function PreviewBlock({
     <View style={styles.card}>
       <Text style={styles.previewTitle}>ANTEPRIMA GIORNATA {preview.matchday}</Text>
 
+      {/* Privacy banner — clarifies nothing is public yet */}
+      <View style={styles.privacyBanner}>
+        <Ionicons name="lock-closed" size={16} color="#3B82F6" />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.privacyTitle}>Anteprima privata</Text>
+          <Text style={styles.privacyText}>
+            Solo tu vedi questi risultati. Nulla è visibile agli utenti finché non premi &laquo;Conferma e Pubblica&raquo;.
+          </Text>
+        </View>
+      </View>
+
       {preview.warnings.length > 0 && (
         <View style={styles.warnBox}>
           {preview.warnings.map((w, i) => (
@@ -580,16 +583,38 @@ function PreviewBlock({
           disabled={saving}
           style={[styles.cancelBtn, saving && { opacity: 0.5 }]}
         >
-          <Text style={styles.cancelBtnText}>ANNULLA</Text>
+          <Text style={styles.cancelBtnText}>ANNULLA ANTEPRIMA</Text>
         </Pressable>
         <Pressable
           testID="mds-save"
-          onPress={onSave}
+          onPress={() => {
+            const msg = `Confermi la pubblicazione della Giornata ${preview.matchday}?\n\n`
+              + `• ${preview.affected.survival_tournaments} tornei Survival\n`
+              + `• ${preview.affected.score_tournaments} tornei Score\n`
+              + `• ${preview.affected.tiket_rooms} stanze Tiket\n`
+              + `• ${preview.affected.fanta_leagues} leghe Fanta\n`
+              + `• ${preview.affected.bonus_configs_open} bonus\n\n`
+              + `Dopo la pubblicazione i risultati saranno visibili a TUTTI gli utenti.`;
+            if (typeof window !== 'undefined' && window.confirm) {
+              if (window.confirm(msg)) onSave();
+            } else if (Platform.OS !== 'web') {
+              Alert.alert(
+                'Conferma e Pubblica',
+                msg,
+                [
+                  { text: 'Annulla', style: 'cancel' },
+                  { text: 'PUBBLICA', style: 'destructive', onPress: onSave },
+                ],
+              );
+            } else {
+              onSave();
+            }
+          }}
           disabled={saving}
           style={[styles.saveBtn, saving && { opacity: 0.5 }]}
         >
           {saving ? <ActivityIndicator color="#fff" />
-            : <><Ionicons name="save" size={16} color="#fff" /><Text style={styles.saveBtnText}>SALVA</Text></>}
+            : <><Ionicons name="checkmark-done" size={16} color="#fff" /><Text style={styles.saveBtnText}>CONFERMA E PUBBLICA</Text></>}
         </Pressable>
       </View>
     </View>
@@ -606,126 +631,6 @@ function ImpactCell({ label, val }: { label: string; val: number }) {
   );
 }
 
-
-function ExclusionBlock({ matchday }: { matchday: number }) {
-  const [fixtures, setFixtures] = useState<CalFixture[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const [savingId, setSavingId] = useState<string | null>(null);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const r = await api<{ fixtures: CalFixture[] }>(
-        `/sal/calendar?matchday=${matchday}&season=2026-27`,
-      );
-      setFixtures(r.fixtures || []);
-    } catch { /* silent */ } finally { setLoading(false); }
-  };
-  useEffect(() => { load(); }, [matchday]);
-
-  const toggleExcluded = async (fx: CalFixture) => {
-    setSavingId(fx.id);
-    try {
-      const next = !fx.excluded;
-      await api(`/sal/calendar/fixture/${fx.id}/exclude`, {
-        method: 'PATCH', body: { excluded: next },
-      });
-      setFixtures(list => list.map(f =>
-        f.id === fx.id ? { ...f, excluded: next } : f,
-      ));
-    } catch (e: any) {
-      alert(e.message);
-    } finally { setSavingId(null); }
-  };
-
-  const excludedCount = fixtures.filter(f => f.excluded).length;
-
-  return (
-    <View style={styles.card}>
-      <Pressable
-        onPress={() => setExpanded(x => !x)}
-        style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
-        testID="mds-exclusion-toggle"
-      >
-        <Ionicons name="ban" size={16} color="#EF4444" />
-        <Text style={styles.cardLabel}>Escludi partite pre-turno</Text>
-        <View style={{ flex: 1 }} />
-        {excludedCount > 0 && (
-          <View style={styles.excCountBadge}>
-            <Text style={styles.excCountText}>{excludedCount} escl.</Text>
-          </View>
-        )}
-        <Ionicons
-          name={expanded ? 'chevron-up' : 'chevron-down'}
-          size={18}
-          color={theme.colors.muted}
-        />
-      </Pressable>
-      {expanded && (
-        <>
-          <Text style={styles.help}>
-            Le partite escluse non saranno selezionabili in nessun gioco.
-            Usa questa opzione PRIMA che il turno inizi (es. per rinvii annunciati).
-          </Text>
-          {loading && <ActivityIndicator color={COLOR} />}
-          {!loading && fixtures.length === 0 && (
-            <Text style={styles.muted}>Nessuna partita in calendario per la giornata {matchday}.</Text>
-          )}
-          {fixtures.map((fx) => (
-            <View
-              key={fx.id}
-              style={[
-                styles.exclusionRow,
-                fx.excluded && { backgroundColor: '#FEE2E230', borderColor: '#EF4444AA' },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.exclusionTeams,
-                  fx.excluded && { color: theme.colors.muted, textDecorationLine: 'line-through' },
-                ]}
-              >
-                {fx.home_team} vs {fx.away_team}
-              </Text>
-              <Pressable
-                onPress={() => toggleExcluded(fx)}
-                disabled={savingId === fx.id}
-                style={[
-                  styles.exclusionBtn,
-                  fx.excluded
-                    ? { backgroundColor: '#EF4444' }
-                    : { backgroundColor: theme.colors.surfaceSecondary, borderWidth: 1, borderColor: theme.colors.border },
-                ]}
-                testID={`mds-exclude-${fx.home_team}`}
-              >
-                {savingId === fx.id ? (
-                  <ActivityIndicator color={fx.excluded ? '#fff' : COLOR} size="small" />
-                ) : (
-                  <>
-                    <Ionicons
-                      name={fx.excluded ? 'close-circle' : 'radio-button-off'}
-                      size={14}
-                      color={fx.excluded ? '#fff' : theme.colors.text}
-                    />
-                    <Text
-                      style={[
-                        styles.exclusionBtnText,
-                        { color: fx.excluded ? '#fff' : theme.colors.text },
-                      ]}
-                    >
-                      {fx.excluded ? 'ESCLUSA' : 'Escludi'}
-                    </Text>
-                  </>
-                )}
-              </Pressable>
-            </View>
-          ))}
-        </>
-      )}
-    </View>
-  );
-}
 
 
 
@@ -918,4 +823,13 @@ const styles = StyleSheet.create({
     color: '#EF4444', fontSize: 11, fontWeight: '900',
     letterSpacing: 0.5, flex: 0.7, textAlign: 'center',
   },
+  privacyBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    padding: 12, borderRadius: 10,
+    backgroundColor: '#1E3A8A',
+    borderWidth: 1, borderColor: '#3B82F6',
+    marginBottom: 8,
+  },
+  privacyTitle: { color: '#DBEAFE', fontSize: 13, fontWeight: '900', marginBottom: 2 },
+  privacyText: { color: '#BFDBFE', fontSize: 11, lineHeight: 15 },
 });
