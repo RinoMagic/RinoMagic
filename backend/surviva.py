@@ -985,6 +985,94 @@ def build_router(
     # Settlement + auto-progression
     # ------------------------------------------------------------------
 
+    async def _auto_fill_default_picks(tid: str, md: dict) -> Dict[str, int]:
+        """Auto-generate default picks for participants who submitted fewer
+        than ``REQUIRED_PICKS_PER_MATCHDAY`` picks for this matchday.
+
+        Rules for the default pick:
+          • Iterate fixtures of the matchday in their natural order.
+          • Skip fixtures already picked by the user, and skip
+            excluded / postponed_before fixtures.
+          • Choose the sign that respects team blocks:
+              - "1" (home team) if home team is NOT locked
+              - "2" (away team) if home is locked but away is NOT
+              - "X" (draw) if BOTH teams are locked (concession)
+          • Fill picks until the user reaches ``REQUIRED_PICKS_PER_MATCHDAY``.
+
+        Returns a dict ``{"users_filled": int, "picks_created": int}``.
+
+        Called at the start of settle so that inactive users are still
+        penalised (losing a life if the default pick loses) instead of
+        silently keeping all their lives.
+        """
+        picks_created = 0
+        users_filled = 0
+        fixtures = list(md.get("fixtures", []))
+        if not fixtures:
+            return {"users_filled": 0, "picks_created": 0}
+        participants = [p async for p in db.sv_participants.find(
+            {"tournament_id": tid, "eliminated_at": None},
+            {"_id": 0},
+        )]
+        for p in participants:
+            uid = p["user_id"]
+            existing = [pk async for pk in db.sv_picks.find(
+                {"tournament_id": tid, "matchday_id": md["id"], "user_id": uid},
+                {"_id": 0, "home_team": 1, "away_team": 1},
+            )]
+            needed = REQUIRED_PICKS_PER_MATCHDAY - len(existing)
+            if needed <= 0:
+                continue
+            picked_keys = {(pk["home_team"], pk["away_team"]) for pk in existing}
+            locked_teams = set(p.get("locked_teams") or [])
+            nickname = p.get("nickname") or (
+                (await db.users.find_one({"id": uid}, {"_id": 0, "nickname": 1}))
+                or {}
+            ).get("nickname", "")
+            new_docs = []
+            for fx in fixtures:
+                if needed <= 0:
+                    break
+                key = (fx.get("home_team"), fx.get("away_team"))
+                if key in picked_keys:
+                    continue
+                if fx.get("excluded") or fx.get("postponed_before"):
+                    continue
+                home = fx["home_team"]
+                away = fx["away_team"]
+                # Choose sign respecting team locks
+                if home not in locked_teams:
+                    pick_sign = "1"
+                    concession = False
+                elif away not in locked_teams:
+                    pick_sign = "2"
+                    concession = False
+                else:
+                    pick_sign = "X"
+                    concession = True
+                new_docs.append({
+                    "tournament_id": tid,
+                    "matchday_id": md["id"],
+                    "matchday": md["matchday"],
+                    "user_id": uid,
+                    "nickname": nickname,
+                    "home_team": home,
+                    "away_team": away,
+                    "fixture_key": f"{home}||{away}",
+                    "pick": pick_sign,
+                    "concession": concession,
+                    "correct": None,
+                    "lost_life": None,
+                    "created_at": _now(),
+                    "auto_generated": True,
+                })
+                needed -= 1
+            if new_docs:
+                await db.sv_picks.insert_many(new_docs)
+                picks_created += len(new_docs)
+                users_filled += 1
+        return {"users_filled": users_filled, "picks_created": picks_created}
+
     @router.post("/tournaments/{tid}/matchdays/{md_id}/settle")
     async def settle_matchday(
         tid: str, md_id: str, data: MatchdaySettle,
@@ -994,6 +1082,12 @@ def build_router(
         md = await db.sv_matchdays.find_one({"id": md_id, "tournament_id": tid}, {"_id": 0})
         if not md:
             raise HTTPException(status_code=404, detail="Giornata non trovata")
+
+        # STEP 0 — Auto-generate default picks for inactive players.
+        # Anyone who didn't submit the required number of picks receives
+        # default picks (first-fixture-first, sign chosen respecting their
+        # team blocks) so they can lose lives instead of freeriding.
+        auto_stats = await _auto_fill_default_picks(tid, md)
 
         # Build a lookup: (home,away) → {home_score, away_score, postponed}
         results_by_key: Dict[Tuple[str, str], dict] = {}
@@ -1140,6 +1234,7 @@ def build_router(
             "ok": True,
             "matchday": md["matchday"],
             "stats": stats,
+            "auto_filled": auto_stats,
             "eliminated_now": eliminated_now,
             "next_matchday": None if finished else int(next_md["matchday"]),
             "tournament_finished": finished,
