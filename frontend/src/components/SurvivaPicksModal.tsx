@@ -148,9 +148,14 @@ export function SurvivaPicksModal({
                         ]}>
                           <Text style={styles.pickSignText}>{p.pick}</Text>
                         </View>
-                        <View style={{ width: 24, alignItems: 'center' }}>
+                        <View style={{ width: 24, alignItems: 'center', justifyContent: 'center' }}>
                           {outcome === 'ok' && <Ionicons name="checkmark-circle" size={18} color={theme.colors.success} />}
-                          {outcome === 'ko' && <Ionicons name="close-circle" size={18} color={theme.colors.error} />}
+                          {outcome === 'ko' && (
+                            <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center' }}>
+                              <Ionicons name="heart" size={20} color={theme.colors.error} />
+                              <Ionicons name="close" size={12} color="#fff" style={{ position: 'absolute' }} />
+                            </View>
+                          )}
                           {outcome === 'na' && <Ionicons name="time" size={16} color={theme.colors.muted} />}
                         </View>
                       </View>
