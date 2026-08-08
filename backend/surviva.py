@@ -786,10 +786,13 @@ def build_router(
         returned with ``hidden: True`` and no pick data.
 
         The caller sees own picks always (no gate for self).
+
+        Anyone logged in can view — eliminated participants and past
+        players must still be able to consult the classifica and pick
+        history of any tournament they took part in.
         """
-        # Caller must be part of the tournament (admin bypasses)
-        if user["role"] != "admin":
-            await _require_participant(tid, user["id"])
+        # No participant check: eliminated / past participants must be
+        # able to see the classifica and everyone's history.
         target = await db.sv_participants.find_one(
             {"tournament_id": tid, "user_id": user_id}, {"_id": 0},
         )
@@ -1296,8 +1299,12 @@ def build_router(
           l'identità dei giocatori.
         - Dopo il calcio d'inizio: sblocca anche la lista delle singole
           scelte per ogni utente.
+
+        Anyone logged in can view — eliminated participants and past
+        players must still be able to consult past matchdays.
         """
-        await _require_participant(tid, user["id"])
+        # No participant check: eliminated users must be able to see the
+        # per-matchday summary of tournaments they took part in.
         md = await db.sv_matchdays.find_one({"id": md_id, "tournament_id": tid}, {"_id": 0})
         if not md:
             raise HTTPException(status_code=404, detail="Giornata non trovata")
