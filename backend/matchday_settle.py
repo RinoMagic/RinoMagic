@@ -240,10 +240,21 @@ def build_router(*, db, require_admin) -> APIRouter:
         tiket_rooms = await db.rooms.count_documents({
             "matchday": matchday, "status": {"$ne": "settled"},
         })
-        fanta_leagues = await db.fg_leagues.count_documents({
-            "current_matchday": matchday,
-            "status": {"$ne": "closed"},
-        })
+        # Fanta leagues to settle: a league is "affected" if it has at
+        # least one lineup for the given matchday and is still open.
+        # ``current_matchday`` on the league doc is often not kept in sync
+        # (users may save lineups without updating that field), so we go
+        # through ``fg_lineups`` for the ground truth.
+        fanta_league_ids = await db.fg_lineups.distinct(
+            "league_id", {"matchday": matchday},
+        )
+        if fanta_league_ids:
+            fanta_leagues = await db.fg_leagues.count_documents({
+                "id": {"$in": fanta_league_ids},
+                "status": {"$ne": "closed"},
+            })
+        else:
+            fanta_leagues = 0
         bonus_open = await db.bonus_configs.count_documents({
             "season": season, "matchday": matchday, "settled_at": None,
         })
@@ -504,8 +515,13 @@ def build_router(*, db, require_admin) -> APIRouter:
                             "detail": r.json() if r.status_code == 200 else r.text[:200]})
 
             # ---- Fanta leagues ---------------------------------------
+            # Same rule as _count_affected: a league needs settling if it
+            # has any lineup for this matchday and is still open.
+            fanta_league_ids = await db.fg_lineups.distinct(
+                "league_id", {"matchday": matchday},
+            )
             async for lg in db.fg_leagues.find(
-                {"current_matchday": matchday,
+                {"id": {"$in": fanta_league_ids or []},
                  "status": {"$ne": "closed"}},
                 {"_id": 0, "id": 1, "name": 1},
             ):
