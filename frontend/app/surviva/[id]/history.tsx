@@ -1,8 +1,14 @@
 /*
  * Surviva 2.0 — tournament history (archived / finished tournament view).
  *
- * Read-only view of a finished tournament. Shows the final leaderboard and
- * every settled matchday summary (aggregated + detailed picks per fixture).
+ * Read-only view of a finished tournament. Uses the same visual language
+ * as the "Test bigmach" leaderboard experience:
+ *   • Winner card
+ *   • Final leaderboard — each row tappable → opens the same participant
+ *     picks modal as the live tournament view (SurvivaPicksModal)
+ *   • Riassunto giornate — one card per settled matchday with aggregated
+ *     pick counts per fixture (majority sign highlighted); expanded state
+ *     shows detailed picks grouped by sign.
  */
 import { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator } from 'react-native';
@@ -11,6 +17,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { theme } from '@/src/theme';
+import { SurvivaPicksModal, SurvivaLeaderboardRow } from '@/src/components/SurvivaPicksModal';
 
 const COLOR = '#EF4444';
 
@@ -24,10 +31,6 @@ type Matchday = {
   fixtures: { home_team: string; away_team: string }[];
   settled: boolean;
 };
-type LeaderboardRow = {
-  user_id: string; nickname: string; lives_left: number;
-  blocked_signs_count: number; eliminated: boolean; rank: number;
-};
 type SummaryFixture = {
   home_team: string; away_team: string;
   counts: { '1': number; X: number; '2': number };
@@ -39,10 +42,11 @@ export default function SurvivaHistory() {
   const router = useRouter();
   const [t, setT] = useState<T | null>(null);
   const [mds, setMds] = useState<Matchday[]>([]);
-  const [lb, setLb] = useState<LeaderboardRow[]>([]);
+  const [lb, setLb] = useState<SurvivaLeaderboardRow[]>([]);
   const [summaries, setSummaries] = useState<Record<string, { fixtures: SummaryFixture[] }>>({});
   const [loading, setLoading] = useState(true);
   const [expandedMd, setExpandedMd] = useState<string | null>(null);
+  const [selectedRow, setSelectedRow] = useState<SurvivaLeaderboardRow | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -50,7 +54,7 @@ export default function SurvivaHistory() {
       const [tour, allMds, board] = await Promise.all([
         api<T>(`/sv/tournaments/${id}`),
         api<Matchday[]>(`/sv/tournaments/${id}/matchdays`),
-        api<LeaderboardRow[]>(`/sv/tournaments/${id}/leaderboard`),
+        api<SurvivaLeaderboardRow[]>(`/sv/tournaments/${id}/leaderboard`),
       ]);
       setT(tour);
       setMds(allMds.filter((m) => m.settled));
@@ -115,7 +119,16 @@ export default function SurvivaHistory() {
 
         <Text style={styles.section}>Classifica finale</Text>
         {lb.map((r) => (
-          <View key={r.user_id} style={[styles.lbRow, r.eliminated && { opacity: 0.55 }]}>
+          <Pressable
+            key={r.user_id}
+            onPress={() => setSelectedRow(r)}
+            testID={`sv-history-lb-${r.user_id}`}
+            style={({ pressed }) => [
+              styles.lbRow,
+              r.eliminated && { opacity: 0.55 },
+              pressed && { backgroundColor: theme.colors.surfaceTertiary },
+            ]}
+          >
             <Text style={styles.lbRank}>#{r.rank}</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.lbName}>{r.nickname}</Text>
@@ -125,10 +138,16 @@ export default function SurvivaHistory() {
               <Ionicons name="heart" size={12} color={COLOR} />
               <Text style={styles.livesBadgeText}>{r.lives_left}</Text>
             </View>
-          </View>
+            <Ionicons
+              name="chevron-forward"
+              size={16}
+              color={theme.colors.muted}
+              style={{ marginLeft: 4 }}
+            />
+          </Pressable>
         ))}
 
-        <Text style={styles.section}>Giornate ({mds.length})</Text>
+        <Text style={styles.section}>Riassunto giornate ({mds.length})</Text>
         {mds.length === 0 && (
           <Text style={styles.muted}>Nessuna giornata giocata.</Text>
         )}
@@ -136,57 +155,124 @@ export default function SurvivaHistory() {
           const isOpen = expandedMd === md.id;
           const sum = summaries[md.id];
           return (
-            <View key={md.id} style={styles.mdCard}>
-              <Pressable onPress={() => toggleMd(md)} style={styles.mdHeader}>
-                <Ionicons name={isOpen ? 'chevron-down' : 'chevron-forward'} size={18} color={theme.colors.muted} />
-                <Text style={styles.mdTitle}>Giornata {md.matchday}</Text>
-                <Text style={styles.mdMeta}>{md.fixtures.length} partite</Text>
+            <View key={md.id} style={styles.mdBlock}>
+              <Pressable onPress={() => toggleMd(md)} style={styles.mdBlockHeader}>
+                <Text style={styles.mdBlockTitle}>Giornata {md.matchday}</Text>
+                <View style={styles.mdHeaderRight}>
+                  <View style={[styles.mdBlockBadge, { backgroundColor: theme.colors.success + '22' }]}>
+                    <Text style={[styles.mdBlockBadgeText, { color: theme.colors.success }]}>Calcolata</Text>
+                  </View>
+                  <Ionicons
+                    name={isOpen ? 'chevron-up' : 'chevron-down'}
+                    size={16}
+                    color={theme.colors.muted}
+                  />
+                </View>
               </Pressable>
+
+              {isOpen && !sum && <ActivityIndicator color={COLOR} style={{ margin: 12 }} />}
+
+              {isOpen && sum && sum.fixtures.length === 0 && (
+                <Text style={styles.muted}>Nessuna partita in questa giornata.</Text>
+              )}
+
               {isOpen && sum && sum.fixtures.map((fx, i) => {
                 const total = fx.counts['1'] + fx.counts['X'] + fx.counts['2'];
+                const picksBySign: Record<'1' | 'X' | '2', { nickname: string; correct?: boolean | null }[]> = {
+                  '1': [], 'X': [], '2': [],
+                };
+                if (fx.picks) {
+                  fx.picks.forEach(p => {
+                    const s = (p.pick as '1' | 'X' | '2');
+                    if (picksBySign[s]) picksBySign[s].push({ nickname: p.nickname, correct: p.correct });
+                  });
+                }
+                const winnerSign = ['1', 'X', '2'].reduce<'1' | 'X' | '2'>(
+                  (best, cur) => fx.counts[cur as '1' | 'X' | '2']
+                    > fx.counts[best] ? (cur as '1' | 'X' | '2') : best,
+                  '1',
+                );
+                const labelFor = (s: '1' | 'X' | '2'): string =>
+                  s === '1' ? fx.home_team : s === '2' ? fx.away_team : 'Pareggio';
                 return (
-                  <View key={i} style={styles.mdFixture}>
-                    <View style={styles.fxTeams}>
-                      <Text style={styles.fxTeam}>{fx.home_team}</Text>
-                      <Text style={styles.fxVs}>vs</Text>
-                      <Text style={styles.fxTeam}>{fx.away_team}</Text>
+                  <View key={i} style={styles.summaryFxWrap}>
+                    <View style={styles.summaryFxRow}>
+                      <Text style={styles.pickTeams} numberOfLines={1}>
+                        {fx.home_team} - {fx.away_team}
+                      </Text>
+                      <View style={styles.summaryCountsRow}>
+                        {(['1', 'X', '2'] as const).map((s) => {
+                          const isWinner = total > 0 && fx.counts[s] > 0 && s === winnerSign;
+                          return (
+                            <View
+                              key={s}
+                              style={[
+                                styles.summaryCountPill,
+                                isWinner && {
+                                  backgroundColor: COLOR + '22',
+                                  borderColor: COLOR,
+                                },
+                              ]}
+                            >
+                              <Text style={[
+                                styles.summaryCountSign,
+                                isWinner && { color: COLOR },
+                              ]}>{s}</Text>
+                              <Text style={[
+                                styles.summaryCountValue,
+                                isWinner && { color: COLOR },
+                              ]}>{fx.counts[s]}</Text>
+                            </View>
+                          );
+                        })}
+                      </View>
                     </View>
-                    <View style={styles.summaryRow}>
-                      {(['1', 'X', '2'] as const).map((s) => (
-                        <View key={s} style={styles.summaryCell}>
-                          <Text style={styles.summarySign}>{s}</Text>
-                          <Text style={styles.summaryCount}>{fx.counts[s]}</Text>
-                          <Text style={styles.summaryPct}>
-                            {total > 0 ? `${Math.round((fx.counts[s] / total) * 100)}%` : '—'}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
-                    {fx.picks && fx.picks.length > 0 && (
-                      <View style={styles.picksList}>
-                        {fx.picks.map((p, k) => (
-                          <View
-                            key={k}
-                            style={[
-                              styles.pickChip,
-                              p.correct === true && { backgroundColor: '#22C55E22', borderColor: '#22C55E' },
-                              p.correct === false && { backgroundColor: '#EF444422', borderColor: '#EF4444' },
-                            ]}
-                          >
-                            <Text style={styles.pickChipSign}>{p.pick}</Text>
-                            <Text style={styles.pickChipName}>{p.nickname}</Text>
-                          </View>
-                        ))}
+
+                    {total > 0 && (
+                      <View style={styles.picksGrouped}>
+                        {(['1', 'X', '2'] as const).map((s) => {
+                          const list = picksBySign[s];
+                          if (list.length === 0) return null;
+                          return (
+                            <View key={s} style={styles.picksGroupRow}>
+                              <View style={styles.picksGroupSign}>
+                                <Text style={styles.picksGroupSignText}>{s}</Text>
+                              </View>
+                              <Text style={styles.picksGroupLabel} numberOfLines={1}>
+                                {labelFor(s)}
+                              </Text>
+                              <View style={styles.picksGroupNames}>
+                                {list.map((n, k) => (
+                                  <View
+                                    key={k}
+                                    style={[
+                                      styles.pickChip,
+                                      n.correct === true && { backgroundColor: theme.colors.success + '22', borderColor: theme.colors.success },
+                                      n.correct === false && { backgroundColor: theme.colors.error + '22', borderColor: theme.colors.error },
+                                    ]}
+                                  >
+                                    <Text style={styles.pickChipName}>{n.nickname}</Text>
+                                  </View>
+                                ))}
+                              </View>
+                            </View>
+                          );
+                        })}
                       </View>
                     )}
                   </View>
                 );
               })}
-              {isOpen && !sum && <ActivityIndicator color={COLOR} style={{ margin: 12 }} />}
             </View>
           );
         })}
       </ScrollView>
+
+      <SurvivaPicksModal
+        tid={id!}
+        row={selectedRow}
+        onClose={() => setSelectedRow(null)}
+      />
     </View>
   );
 }
@@ -213,6 +299,8 @@ const styles = StyleSheet.create({
   winnerLabel: { color: COLOR, fontSize: 11, fontWeight: '800', textTransform: 'uppercase' },
   winnerName: { color: theme.colors.onSurface, fontSize: 18, fontWeight: '900', marginTop: 2 },
   winnerLives: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
+
+  // Leaderboard (clickable rows — same look as [id].tsx)
   lbRow: {
     flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
     padding: theme.spacing.md,
@@ -220,48 +308,83 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.md, borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  lbRank: { color: COLOR, fontWeight: '900', fontSize: 14, minWidth: 30 },
+  lbRank: { color: COLOR, fontWeight: '900', fontSize: 16, minWidth: 32 },
   lbName: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 14 },
   lbEliminated: { color: theme.colors.error, fontSize: 11, marginTop: 2 },
   livesBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: COLOR + '18',
     borderRadius: theme.radius.pill,
-    paddingHorizontal: 8, paddingVertical: 3,
+    paddingHorizontal: 10, paddingVertical: 4,
   },
-  livesBadgeText: { color: COLOR, fontWeight: '900', fontSize: 13 },
-  mdCard: {
+  livesBadgeText: { color: COLOR, fontWeight: '900', fontSize: 14 },
+
+  // Matchday summary card (same visual language as pick modal)
+  mdBlock: {
     backgroundColor: theme.colors.surfaceSecondary,
     borderRadius: theme.radius.md,
-    borderWidth: 1, borderColor: theme.colors.border,
-    gap: theme.spacing.sm,
-  },
-  mdHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-  },
-  mdTitle: { color: theme.colors.onSurface, fontWeight: '800', flex: 1 },
-  mdMeta: { color: theme.colors.muted, fontSize: 11 },
-  mdFixture: {
-    padding: theme.spacing.md,
-    borderTopWidth: 1, borderTopColor: theme.colors.border,
-    gap: theme.spacing.sm,
-  },
-  fxTeams: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  fxTeam: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 13, flex: 1 },
-  fxVs: { color: theme.colors.muted, fontSize: 10 },
-  summaryRow: { flexDirection: 'row', gap: theme.spacing.sm },
-  summaryCell: {
-    flex: 1, alignItems: 'center',
     padding: theme.spacing.sm,
-    backgroundColor: theme.colors.surface,
+    borderWidth: 1, borderColor: theme.colors.border,
+    gap: 6,
+  },
+  mdBlockHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  },
+  mdHeaderRight: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+  },
+  mdBlockTitle: { color: theme.colors.onSurface, fontSize: 13, fontWeight: '800' },
+  mdBlockBadge: {
+    paddingHorizontal: 8, paddingVertical: 2,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surfaceTertiary,
+  },
+  mdBlockBadgeText: { color: theme.colors.muted, fontSize: 10, fontWeight: '800' },
+
+  // Fixture row inside matchday card
+  summaryFxWrap: {
+    paddingVertical: 6,
+    borderTopWidth: 1, borderTopColor: theme.colors.border,
+  },
+  summaryFxRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+  },
+  pickTeams: { flex: 1, color: theme.colors.onSurface, fontSize: 12 },
+  summaryCountsRow: { flexDirection: 'row', gap: 4 },
+  summaryCountPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    minWidth: 44,
+    paddingHorizontal: 6, paddingVertical: 3,
     borderRadius: theme.radius.sm,
     borderWidth: 1, borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    justifyContent: 'center',
   },
-  summarySign: { color: COLOR, fontWeight: '800', fontSize: 13 },
-  summaryCount: { color: theme.colors.onSurface, fontWeight: '900', fontSize: 18, marginTop: 2 },
-  summaryPct: { color: theme.colors.muted, fontSize: 10, marginTop: 2 },
-  picksList: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+  summaryCountSign: { color: theme.colors.muted, fontWeight: '900', fontSize: 11 },
+  summaryCountValue: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 12 },
+
+  // Grouped picks (post-kickoff / settled)
+  picksGrouped: {
+    marginTop: 6, gap: 6,
+    paddingTop: 6,
+    borderTopWidth: 1, borderTopColor: theme.colors.border,
+  },
+  picksGroupRow: {
+    flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6,
+  },
+  picksGroupSign: {
+    minWidth: 22, paddingHorizontal: 6, paddingVertical: 1,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: theme.colors.border,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: theme.colors.surface,
+  },
+  picksGroupSignText: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 11 },
+  picksGroupLabel: {
+    color: theme.colors.muted, fontSize: 11, fontWeight: '800',
+    minWidth: 80,
+  },
+  picksGroupNames: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, flex: 1 },
   pickChip: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: theme.colors.surface,
@@ -269,6 +392,5 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: theme.colors.border,
     paddingHorizontal: 8, paddingVertical: 3,
   },
-  pickChipSign: { color: COLOR, fontWeight: '900', fontSize: 12 },
   pickChipName: { color: theme.colors.onSurface, fontSize: 11 },
 });

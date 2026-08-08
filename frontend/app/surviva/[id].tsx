@@ -15,10 +15,9 @@
  *   • Classifica — participants leaderboard (lives + status)
  *   • Riassunto — aggregated picks (private pre-kickoff, detailed after)
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
-  useWindowDimensions, Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -27,6 +26,7 @@ import { api } from '@/src/api';
 import { theme } from '@/src/theme';
 import { confirmDialog } from '@/src/utils/confirm';
 import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
+import { SurvivaPicksModal } from '@/src/components/SurvivaPicksModal';
 
 const COLOR = '#EF4444';
 const REQUIRED_PICKS = 3;
@@ -394,7 +394,7 @@ export default function SurvivaTournament() {
         )}
       </ScrollView>
 
-      <ParticipantPicksModal
+      <SurvivaPicksModal
         tid={id!}
         row={selectedLbRow}
         onClose={() => setSelectedLbRow(null)}
@@ -914,146 +914,7 @@ function LeaderboardTab({
   );
 }
 
-// --- Participant picks modal ---------------------------------------------
-
-type ParticipantPickRow = {
-  matchday: number;
-  matchday_id: string;
-  status: string;
-  settled: boolean;
-  deadline_passed: boolean;
-  hidden: boolean;
-  picks?: {
-    home_team: string;
-    away_team: string;
-    pick: '1' | 'X' | '2';
-    correct?: boolean | null;
-    concession?: boolean;
-    is_lock?: boolean;
-  }[];
-};
-type ParticipantPicksResp = {
-  participant: {
-    user_id: string;
-    display_name: string | null;
-    lives_left: number;
-    eliminated_at: string | null;
-    locked_teams: string[];
-  };
-  matchdays: ParticipantPickRow[];
-};
-
-function ParticipantPicksModal({
-  tid, row, onClose,
-}: {
-  tid: string;
-  row: LeaderboardRow | null;
-  onClose: () => void;
-}) {
-  const [data, setData] = useState<ParticipantPicksResp | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!row) return;
-    let alive = true;
-    setData(null); setErr(null);
-    api<ParticipantPicksResp>(
-      `/sv/tournaments/${tid}/participants/${row.user_id}/picks`,
-    )
-      .then((r) => { if (alive) setData(r); })
-      .catch((e: any) => { if (alive) setErr(e.message || 'Errore'); });
-    return () => { alive = false; };
-  }, [tid, row]);
-
-  return (
-    <Modal
-      visible={!!row}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
-          <View style={styles.modalHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.modalTitle}>
-                {row?.nickname ?? ''}
-              </Text>
-              <Text style={styles.modalSub}>
-                {row ? `#${row.rank} · ${row.lives_left} ${row.lives_left === 1 ? 'vita' : 'vite'}${row.eliminated ? ' · Eliminato' : ''}` : ''}
-              </Text>
-            </View>
-            <Pressable onPress={onClose} hitSlop={10} testID="sv-modal-close">
-              <Ionicons name="close" size={24} color={theme.colors.onSurface} />
-            </Pressable>
-          </View>
-
-          <ScrollView style={{ maxHeight: 520 }}
-            contentContainerStyle={{ padding: theme.spacing.md, gap: theme.spacing.sm }}
-          >
-            {err && (
-              <View style={[styles.notice, { borderColor: theme.colors.error + '55' }]}>
-                <Ionicons name="alert-circle" size={16} color={theme.colors.error} />
-                <Text style={[styles.noticeText, { color: theme.colors.error }]}>{err}</Text>
-              </View>
-            )}
-            {!data && !err && <ActivityIndicator color={COLOR} />}
-            {data && data.matchdays.length === 0 && (
-              <Text style={styles.muted}>Nessuna giornata giocata.</Text>
-            )}
-            {data && data.matchdays.map((md) => (
-              <View key={md.matchday_id} style={styles.mdBlock}>
-                <View style={styles.mdBlockHeader}>
-                  <Text style={styles.mdBlockTitle}>Giornata {md.matchday}</Text>
-                  <View style={styles.mdBlockBadge}>
-                    <Text style={styles.mdBlockBadgeText}>
-                      {md.settled ? 'Calcolata' : md.deadline_passed ? 'Chiusa' : 'Aperta'}
-                    </Text>
-                  </View>
-                </View>
-                {md.hidden ? (
-                  <View style={styles.hiddenBox}>
-                    <Ionicons name="eye-off" size={14} color={theme.colors.muted} />
-                    <Text style={styles.hiddenText}>
-                      Pronostici nascosti finché il timer non scade
-                    </Text>
-                  </View>
-                ) : (md.picks && md.picks.length > 0) ? (
-                  md.picks.map((p, i) => {
-                    const outcome = md.settled
-                      ? (p.correct === true ? 'ok' : p.correct === false ? 'ko' : 'na')
-                      : 'na';
-                    return (
-                      <View key={i} style={styles.pickRow}>
-                        <Text style={styles.pickTeams} numberOfLines={1}>
-                          {p.home_team} - {p.away_team}
-                        </Text>
-                        <View style={[
-                          styles.pickSign,
-                          outcome === 'ok' && { backgroundColor: theme.colors.success + '22', borderColor: theme.colors.success },
-                          outcome === 'ko' && { backgroundColor: theme.colors.error + '22', borderColor: theme.colors.error },
-                        ]}>
-                          <Text style={styles.pickSignText}>{p.pick}</Text>
-                        </View>
-                        <View style={{ width: 24, alignItems: 'center' }}>
-                          {outcome === 'ok' && <Ionicons name="checkmark-circle" size={18} color={theme.colors.success} />}
-                          {outcome === 'ko' && <Ionicons name="close-circle" size={18} color={theme.colors.error} />}
-                          {outcome === 'na' && <Ionicons name="time" size={16} color={theme.colors.muted} />}
-                        </View>
-                      </View>
-                    );
-                  })
-                ) : (
-                  <Text style={styles.muted}>Nessuna scelta inviata.</Text>
-                )}
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
+// --- Summary tab ---------------------------------------------------------
 
 function SummaryTab({
   md, summary, hasPicked, joined,
@@ -1063,11 +924,13 @@ function SummaryTab({
   hasPicked: boolean;
   joined: boolean;
 }) {
-  const { width } = useWindowDimensions();
-  // Compact layout on phones (≤ 480 px viewport)
-  const compact = width < 480;
   if (!md) return <Text style={styles.muted}>Nessuna giornata in corso.</Text>;
   if (!summary) return <ActivityIndicator color={COLOR} />;
+
+  const badgeLabel = summary.locked
+    ? (md.settled ? 'Calcolata' : 'Chiusa')
+    : 'Aperta';
+
   return (
     <>
       <View style={styles.notice}>
@@ -1086,107 +949,112 @@ function SummaryTab({
           </Text>
         </View>
       )}
-      {summary.fixtures.map((fx, i) => {
-        const total = fx.counts['1'] + fx.counts['X'] + fx.counts['2'];
-        const maxCount = Math.max(fx.counts['1'], fx.counts['X'], fx.counts['2'], 1);
-        // Group individual picks by sign for the locked (post-kickoff) view
-        const picksBySign: Record<'1' | 'X' | '2', string[]> = { '1': [], 'X': [], '2': [] };
-        if (summary.locked && fx.picks) {
-          fx.picks.forEach(p => {
-            const s = (p.pick as '1' | 'X' | '2');
-            if (picksBySign[s]) picksBySign[s].push(p.nickname);
-          });
-        }
-        const labelFor = (s: '1' | 'X' | '2'): string =>
-          s === '1' ? fx.home_team : s === '2' ? fx.away_team : 'Pareggio';
-        const winner = ['1', 'X', '2'].reduce<'1' | 'X' | '2'>(
-          (best, cur) => fx.counts[cur as '1' | 'X' | '2']
-            > fx.counts[best] ? (cur as '1' | 'X' | '2') : best,
-          '1',
-        );
-        return (
-          <View key={i} style={styles.fxCard}>
-            {/* Match header — small, unobtrusive */}
-            <View style={styles.smHeader}>
-              <Text style={styles.smHeaderText}>
-                {fx.home_team} — {fx.away_team}
-              </Text>
-              <Text style={styles.smHeaderTotal}>
-                {total} pronostic{total === 1 ? 'o' : 'i'}
-              </Text>
-            </View>
-            {/* Three aligned columns: home / draw / away */}
-            <View style={[styles.summaryGrid, compact && styles.summaryGridCompact]}>
-              {(['1', 'X', '2'] as const).map((s) => {
-                const count = fx.counts[s];
-                const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-                const barPct = maxCount > 0 ? (count / maxCount) * 100 : 0;
-                const isWinner = total > 0 && count > 0 && s === winner;
-                return (
-                  <View
-                    key={s}
-                    style={[
-                      styles.summaryCol,
-                      compact && styles.summaryColCompact,
-                      isWinner && styles.summaryColLead,
-                    ]}
-                  >
-                    <View style={[styles.summarySignPill, compact && styles.summarySignPillCompact]}>
-                      <Text style={[styles.summarySignPillText, compact && { fontSize: 12 }]}>{s}</Text>
-                    </View>
-                    <Text
-                      style={[styles.summaryColTeam, compact && styles.summaryColTeamCompact]}
-                      numberOfLines={2}
-                      adjustsFontSizeToFit={compact}
-                      minimumFontScale={0.75}
-                    >
-                      {labelFor(s)}
-                    </Text>
-                    <Text style={[styles.summaryColCount, compact && styles.summaryColCountCompact]}>
-                      {count}
-                    </Text>
-                    <View style={styles.summaryBarTrack}>
-                      <View
-                        style={[
-                          styles.summaryBarFill,
-                          { width: `${barPct}%` },
-                          isWinner && { backgroundColor: COLOR },
-                        ]}
-                      />
-                    </View>
-                    <Text style={styles.summaryColPct}>{total > 0 ? `${pct}%` : '—'}</Text>
-                  </View>
-                );
-              })}
-            </View>
-            {/* After kickoff: show who picked what, grouped by sign */}
-            {summary.locked && total > 0 && (
-              <View style={styles.picksGrouped}>
-                {(['1', 'X', '2'] as const).map((s) => {
-                  const list = picksBySign[s];
-                  if (list.length === 0) return null;
-                  return (
-                    <View key={s} style={styles.picksGroupRow}>
-                      <Text style={styles.picksGroupLabel}>
-                        {labelFor(s)}:
-                      </Text>
-                      <View style={styles.picksGroupNames}>
-                        {list.map((n, k) => (
-                          <View key={k} style={styles.pickChip}>
-                            <Text style={styles.pickChipName}>{n}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-          </View>
-        );
-      })}
+
       {summary.fixtures.length === 0 && (
         <Text style={styles.muted}>Nessuna partita in questa giornata.</Text>
+      )}
+
+      {summary.fixtures.length > 0 && (
+        <View style={styles.mdBlock}>
+          <View style={styles.mdBlockHeader}>
+            <Text style={styles.mdBlockTitle}>Giornata {md.matchday}</Text>
+            <View style={[
+              styles.mdBlockBadge,
+              md.settled && { backgroundColor: theme.colors.success + '22' },
+            ]}>
+              <Text style={[
+                styles.mdBlockBadgeText,
+                md.settled && { color: theme.colors.success },
+              ]}>
+                {badgeLabel}
+              </Text>
+            </View>
+          </View>
+
+          {summary.fixtures.map((fx, i) => {
+            const total = fx.counts['1'] + fx.counts['X'] + fx.counts['2'];
+            const picksBySign: Record<'1' | 'X' | '2', string[]> = { '1': [], 'X': [], '2': [] };
+            if (summary.locked && fx.picks) {
+              fx.picks.forEach(p => {
+                const s = (p.pick as '1' | 'X' | '2');
+                if (picksBySign[s]) picksBySign[s].push(p.nickname);
+              });
+            }
+            const winner = ['1', 'X', '2'].reduce<'1' | 'X' | '2'>(
+              (best, cur) => fx.counts[cur as '1' | 'X' | '2']
+                > fx.counts[best] ? (cur as '1' | 'X' | '2') : best,
+              '1',
+            );
+            const labelFor = (s: '1' | 'X' | '2'): string =>
+              s === '1' ? fx.home_team : s === '2' ? fx.away_team : 'Pareggio';
+
+            return (
+              <View key={i} style={styles.summaryFxWrap}>
+                <View style={styles.summaryFxRow}>
+                  <Text style={styles.pickTeams} numberOfLines={1}>
+                    {fx.home_team} - {fx.away_team}
+                  </Text>
+                  <View style={styles.summaryCountsRow}>
+                    {(['1', 'X', '2'] as const).map((s) => {
+                      const isWinner = total > 0 && fx.counts[s] > 0 && s === winner;
+                      return (
+                        <View
+                          key={s}
+                          style={[
+                            styles.summaryCountPill,
+                            isWinner && {
+                              backgroundColor: COLOR + '22',
+                              borderColor: COLOR,
+                            },
+                          ]}
+                        >
+                          <Text style={[
+                            styles.summaryCountSign,
+                            isWinner && { color: COLOR },
+                          ]}>
+                            {s}
+                          </Text>
+                          <Text style={[
+                            styles.summaryCountValue,
+                            isWinner && { color: COLOR },
+                          ]}>
+                            {fx.counts[s]}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                {summary.locked && total > 0 && (
+                  <View style={styles.picksGrouped}>
+                    {(['1', 'X', '2'] as const).map((s) => {
+                      const list = picksBySign[s];
+                      if (list.length === 0) return null;
+                      return (
+                        <View key={s} style={styles.picksGroupRow}>
+                          <View style={styles.picksGroupSign}>
+                            <Text style={styles.picksGroupSignText}>{s}</Text>
+                          </View>
+                          <Text style={styles.picksGroupLabel} numberOfLines={1}>
+                            {labelFor(s)}
+                          </Text>
+                          <View style={styles.picksGroupNames}>
+                            {list.map((n, k) => (
+                              <View key={k} style={styles.pickChip}>
+                                <Text style={styles.pickChipName}>{n}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
       )}
     </>
   );
@@ -1517,6 +1385,41 @@ const styles = StyleSheet.create({
   },
   pickChipSign: { color: COLOR, fontWeight: '900', fontSize: 12 },
   pickChipName: { color: theme.colors.onSurface, fontSize: 11 },
+
+  // Summary tab — testbigmach-style aggregated view
+  summaryFxWrap: {
+    paddingVertical: 6,
+    borderTopWidth: 1, borderTopColor: theme.colors.border,
+  },
+  summaryFxRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+  },
+  summaryCountsRow: {
+    flexDirection: 'row', gap: 4,
+  },
+  summaryCountPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    minWidth: 44,
+    paddingHorizontal: 6, paddingVertical: 3,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    justifyContent: 'center',
+  },
+  summaryCountSign: {
+    color: theme.colors.muted, fontWeight: '900', fontSize: 11,
+  },
+  summaryCountValue: {
+    color: theme.colors.onSurface, fontWeight: '800', fontSize: 12,
+  },
+  picksGroupSign: {
+    minWidth: 22, paddingHorizontal: 6, paddingVertical: 1,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: theme.colors.border,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: theme.colors.surface,
+  },
+  picksGroupSignText: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 11 },
 
   // Participant picks modal
   modalBackdrop: {
