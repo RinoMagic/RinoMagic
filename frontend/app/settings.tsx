@@ -133,6 +133,20 @@ export default function Settings() {
               <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
             </Pressable>
             <Pressable
+              testID="settings-admin-calendar"
+              onPress={() => router.push('/calendar-admin')}
+              style={styles.adminRow}
+            >
+              <View style={[styles.adminIcon, { backgroundColor: '#0EA5E9' }]}>
+                <Ionicons name="calendar" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowText}>Calendario Serie A</Text>
+                <Text style={styles.rowSub}>Carica il PDF del calendario o inserisci le partite manualmente</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.muted} />
+            </Pressable>
+            <Pressable
               testID="settings-admin-deadlines"
               onPress={() => router.push('/admin/deadlines')}
               style={styles.adminRow}

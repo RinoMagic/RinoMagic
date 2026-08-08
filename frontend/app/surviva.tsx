@@ -156,14 +156,9 @@ export default function SurvivaHome() {
             <Text style={styles.subtitle}>3 vite, 1 pronostico a giornata</Text>
           </View>
           {isAdmin && (
-            <>
-              <Pressable onPress={() => router.push('/calendar-admin')} hitSlop={12}>
-                <Ionicons name="calendar" size={22} color={COLOR} />
-              </Pressable>
-              <Pressable onPress={() => setCreateOpen(true)} hitSlop={12} testID="sv-create">
-                <Ionicons name="add-circle" size={26} color={COLOR} />
-              </Pressable>
-            </>
+            <Pressable onPress={() => setCreateOpen(true)} hitSlop={12} testID="sv-create">
+              <Ionicons name="add-circle" size={26} color={COLOR} />
+            </Pressable>
           )}
         </View>
       </SafeAreaView>
