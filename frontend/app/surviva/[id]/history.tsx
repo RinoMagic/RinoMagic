@@ -135,16 +135,20 @@ export default function SurvivaHistory() {
               {r.eliminated && <Text style={styles.lbEliminated}>Eliminato</Text>}
             </View>
             <View style={styles.lbBadgesCol}>
-              <View style={styles.livesBadge}>
+              <View style={[styles.livesBadge, styles.livesBadgeSmall]}>
+                <Ionicons name="heart-outline" size={10} color={theme.colors.muted} />
+                <Text style={styles.livesBadgeSmallText}>
+                  {((r as any).pick_lives ?? 0) >= 0 ? ((r as any).pick_lives ?? 0) : `${(r as any).pick_lives}`}
+                </Text>
+              </View>
+              <View style={styles.bonusBadge}>
+                <Ionicons name="gift" size={11} color="#F59E0B" />
+                <Text style={styles.bonusBadgeText}>+{(r as any).bonus_wins ?? 0}</Text>
+              </View>
+              <View style={[styles.livesBadge, styles.livesBadgeTotal]}>
                 <Ionicons name="heart" size={12} color={COLOR} />
                 <Text style={styles.livesBadgeText}>{r.lives_left}</Text>
               </View>
-              {((r as any).bonus_wins ?? 0) > 0 && (
-                <View style={styles.bonusBadge}>
-                  <Ionicons name="gift" size={11} color="#F59E0B" />
-                  <Text style={styles.bonusBadgeText}>+{(r as any).bonus_wins}</Text>
-                </View>
-              )}
             </View>
             <Ionicons
               name="chevron-forward"
@@ -326,6 +330,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 4,
   },
   livesBadgeText: { color: COLOR, fontWeight: '900', fontSize: 14 },
+  livesBadgeSmall: {
+    backgroundColor: theme.colors.surfaceTertiary,
+    borderWidth: 1, borderColor: theme.colors.border,
+    paddingHorizontal: 6, paddingVertical: 2,
+  },
+  livesBadgeSmallText: {
+    color: theme.colors.muted, fontWeight: '900', fontSize: 11,
+  },
+  livesBadgeTotal: {
+    borderWidth: 1, borderColor: COLOR + '55',
+  },
   lbBadgesCol: { alignItems: 'flex-end', gap: 4 },
   bonusBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 3,

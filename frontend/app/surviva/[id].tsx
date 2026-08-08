@@ -54,6 +54,7 @@ type LeaderboardRow = {
   eliminated: boolean; rank: number;
   has_submitted_current?: boolean;
   bonus_wins?: number;
+  pick_lives?: number;
 };
 type SummaryFixture = {
   home_team: string; away_team: string;
@@ -887,16 +888,23 @@ function LeaderboardTab({
             )}
           </View>
           <View style={styles.lbBadgesCol}>
-            <View style={styles.livesBadge}>
+            {/* Pick-only lives (may be negative if the player was already eliminated) */}
+            <View style={[styles.livesBadge, styles.livesBadgeSmall]}>
+              <Ionicons name="heart-outline" size={11} color={theme.colors.muted} />
+              <Text style={styles.livesBadgeSmallText}>
+                {(r.pick_lives ?? 0) >= 0 ? (r.pick_lives ?? 0) : `${r.pick_lives}`}
+              </Text>
+            </View>
+            {/* Bonus wins */}
+            <View style={styles.bonusBadge} testID={`sv-lb-bonus-${r.user_id}`}>
+              <Ionicons name="gift" size={11} color="#F59E0B" />
+              <Text style={styles.bonusBadgeText}>+{r.bonus_wins ?? 0}</Text>
+            </View>
+            {/* Total (actual) lives */}
+            <View style={[styles.livesBadge, styles.livesBadgeTotal]}>
               <Ionicons name="heart" size={14} color={COLOR} />
               <Text style={styles.livesBadgeText}>{r.lives_left}</Text>
             </View>
-            {(r.bonus_wins ?? 0) > 0 && (
-              <View style={styles.bonusBadge} testID={`sv-lb-bonus-${r.user_id}`}>
-                <Ionicons name="gift" size={11} color="#F59E0B" />
-                <Text style={styles.bonusBadgeText}>+{r.bonus_wins}</Text>
-              </View>
-            )}
           </View>
           {isAdmin && (
             <Pressable
@@ -1281,6 +1289,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 4,
   },
   livesBadgeText: { color: COLOR, fontWeight: '900', fontSize: 14 },
+  livesBadgeSmall: {
+    backgroundColor: theme.colors.surfaceTertiary,
+    borderWidth: 1, borderColor: theme.colors.border,
+    paddingHorizontal: 6, paddingVertical: 2,
+  },
+  livesBadgeSmallText: {
+    color: theme.colors.muted, fontWeight: '900', fontSize: 11,
+  },
+  livesBadgeTotal: {
+    borderWidth: 1, borderColor: COLOR + '55',
+  },
   lbBadgesCol: {
     alignItems: 'flex-end', gap: 4,
   },

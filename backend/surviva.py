@@ -1369,19 +1369,31 @@ def build_router(
             {"$group": {"_id": "$user_id", "n": {"$sum": 1}}},
         ]):
             bonus_wins[row["_id"]] = int(row["n"])
+        # Wrong picks per player — needed to compute "pick lives" which is
+        # ``initial_lives - wrong_picks``. May be negative when a player
+        # was already eliminated before the bonus could top them up.
+        wrong_picks: dict[str, int] = {}
+        async for row in db.sv_picks.aggregate([
+            {"$match": {"tournament_id": tid, "correct": False}},
+            {"$group": {"_id": "$user_id", "n": {"$sum": 1}}},
+        ]):
+            wrong_picks[row["_id"]] = int(row["n"])
+        initial_lives = int(t.get("initial_lives") or 0)
         cursor = db.sv_participants.find({"tournament_id": tid}, {"_id": 0})
         rows = []
         async for p in cursor:
+            uid = p["user_id"]
             rows.append({
-                "user_id": p["user_id"],
+                "user_id": uid,
                 "nickname": p["nickname"],
                 "lives_left": p.get("lives_left", 0),
                 "locked_teams_count": len(p.get("locked_teams") or []),
                 "blocked_signs_count": 0,  # legacy field (always 0 in v2)
                 "eliminated": p.get("eliminated_at") is not None,
                 "eliminated_at": p.get("eliminated_at"),
-                "has_submitted_current": p["user_id"] in submitted_user_ids,
-                "bonus_wins": bonus_wins.get(p["user_id"], 0),
+                "has_submitted_current": uid in submitted_user_ids,
+                "bonus_wins": bonus_wins.get(uid, 0),
+                "pick_lives": initial_lives - wrong_picks.get(uid, 0),
             })
         # Sort: alive first (by lives desc, most locked teams desc = most
         # experienced player), then eliminated last.
