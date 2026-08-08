@@ -136,6 +136,11 @@ export default function SettleMatchday() {
       );
       // Do NOT overwrite the matchday input — respect admin's choice.
       await loadState(targetMd);
+      // Auto-generate the preview immediately so the admin can see all
+      // fixtures + toggle postponed matches BEFORE confirming the settle.
+      // Requested behaviour: PDF upload → fixture list with ✕ toggle
+      // shown right away, no need to press CALCOLA first.
+      await doCalculate();
     } catch (e: any) {
       setUploadResult(`❌ ${e.message}`);
     } finally {
