@@ -110,6 +110,13 @@ export default function SettleMatchday() {
   };
   useEffect(() => {
     const md = parseInt(matchday, 10) || 1;
+    // Changing the matchday number invalidates any pending preview /
+    // save log — otherwise the admin sees stale fixtures from a
+    // previously-selected matchday.
+    setPreview(null);
+    setSaveLog(null);
+    setOverrides({});
+    setPostponed({});
     loadState(md);
   }, [matchday]);
 
