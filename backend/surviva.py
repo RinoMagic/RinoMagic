@@ -1358,6 +1358,17 @@ def build_router(
                 # allows partial submissions but empty pick set = not started)
                 if pk.get("picks"):
                     submitted_user_ids.add(pk["user_id"])
+        # Bonus wins per player (across all bonus games attached to THIS
+        # Survival tournament). Used in the leaderboard to reveal how many
+        # of a player's lives came from a bonus win.
+        bonus_wins: dict[str, int] = {}
+        async for row in db.bonus_picks.aggregate([
+            {"$match": {
+                "game": "survival", "subscription_id": tid, "is_correct": True,
+            }},
+            {"$group": {"_id": "$user_id", "n": {"$sum": 1}}},
+        ]):
+            bonus_wins[row["_id"]] = int(row["n"])
         cursor = db.sv_participants.find({"tournament_id": tid}, {"_id": 0})
         rows = []
         async for p in cursor:
@@ -1370,6 +1381,7 @@ def build_router(
                 "eliminated": p.get("eliminated_at") is not None,
                 "eliminated_at": p.get("eliminated_at"),
                 "has_submitted_current": p["user_id"] in submitted_user_ids,
+                "bonus_wins": bonus_wins.get(p["user_id"], 0),
             })
         # Sort: alive first (by lives desc, most locked teams desc = most
         # experienced player), then eliminated last.

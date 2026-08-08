@@ -134,9 +134,17 @@ export default function SurvivaHistory() {
               <Text style={styles.lbName}>{r.nickname}</Text>
               {r.eliminated && <Text style={styles.lbEliminated}>Eliminato</Text>}
             </View>
-            <View style={styles.livesBadge}>
-              <Ionicons name="heart" size={12} color={COLOR} />
-              <Text style={styles.livesBadgeText}>{r.lives_left}</Text>
+            <View style={styles.lbBadgesCol}>
+              <View style={styles.livesBadge}>
+                <Ionicons name="heart" size={12} color={COLOR} />
+                <Text style={styles.livesBadgeText}>{r.lives_left}</Text>
+              </View>
+              {((r as any).bonus_wins ?? 0) > 0 && (
+                <View style={styles.bonusBadge}>
+                  <Ionicons name="gift" size={11} color="#F59E0B" />
+                  <Text style={styles.bonusBadgeText}>+{(r as any).bonus_wins}</Text>
+                </View>
+              )}
             </View>
             <Ionicons
               name="chevron-forward"
@@ -318,6 +326,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 4,
   },
   livesBadgeText: { color: COLOR, fontWeight: '900', fontSize: 14 },
+  lbBadgesCol: { alignItems: 'flex-end', gap: 4 },
+  bonusBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: theme.radius.pill,
+    backgroundColor: '#F59E0B18',
+    borderWidth: 1, borderColor: '#F59E0B55',
+  },
+  bonusBadgeText: { color: '#F59E0B', fontWeight: '900', fontSize: 11 },
 
   // Matchday summary card (same visual language as pick modal)
   mdBlock: {
