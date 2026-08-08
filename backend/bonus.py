@@ -870,8 +870,9 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             # tied to subscriptions the caller was in.
             if not is_admin:
                 picks = [p for p in picks if p.get("subscription_id") in my_sub_ids]
-            if not picks:
-                continue
+            # NOTE: we intentionally do NOT skip empty rows anymore — past
+            # settled matchdays must always be visible so users can review
+            # results / big-match even when no one they know played.
             out.append({
                 "matchday": cfg["matchday"],
                 "bonus_type": cfg["bonus_type"],

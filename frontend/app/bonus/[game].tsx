@@ -642,6 +642,11 @@ function FullHistoryRowView({ h, color }: { h: FullHistoryRow; color: string }) 
         </View>
       </View>
       <View style={styles.fullHistPicks}>
+        {h.picks.length === 0 && (
+          <Text style={styles.fullHistEmpty}>
+            Nessun pronostico giocato da te o dalle tue iscrizioni per questa giornata.
+          </Text>
+        )}
         {h.picks.map((p) => (
           <View
             key={`${p.user_id}-${p.subscription_id}`}
@@ -660,6 +665,7 @@ function FullHistoryRowView({ h, color }: { h: FullHistoryRow; color: string }) 
               numberOfLines={1}
             >
               {p.is_correct ? '🏆 ' : ''}{p.nickname || p.user_id.slice(0, 8)}
+              {p.subscription_name ? <Text style={styles.fullHistSubName}>  · {p.subscription_name}</Text> : null}
             </Text>
             <Text
               style={[
@@ -898,5 +904,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   fullHistNick: { fontSize: 12, fontWeight: '700', flex: 1 },
+  fullHistSubName: { color: theme.colors.muted, fontSize: 10, fontWeight: '600' },
+  fullHistEmpty: {
+    color: theme.colors.muted, fontSize: 12, fontStyle: 'italic',
+    paddingVertical: 4,
+  },
   fullHistPick: { fontSize: 13, fontWeight: '900', marginLeft: 8 },
 });
