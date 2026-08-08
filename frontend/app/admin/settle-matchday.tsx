@@ -117,17 +117,25 @@ export default function SettleMatchday() {
     setUploading(true); setUploadResult(null);
     setUploadName(file.name);
     try {
+      // Always store the PDF under the matchday the admin selected in
+      // the top input — NOT the one auto-detected from the PDF header.
+      // This lets the admin re-use an "old" PDF (e.g. G38 header) for
+      // the current tournament matchday (e.g. G1) without editing the PDF.
+      const targetMd = parseInt(matchday, 10) || 1;
       const d = await apiUpload<any>(
         '/admin/voti/upload-pdf',
         { name: file.name, type: file.type || 'application/pdf', blob: file },
-        { dry_run: false, replace: true },
+        { dry_run: false, replace: true, matchday_override: targetMd },
       );
+      const detected = d.matchday;
+      const note = detected && detected !== targetMd
+        ? ` (PDF diceva G${detected}, salvato come G${targetMd})`
+        : '';
       setUploadResult(
-        `Giornata ${d.matchday}: ${d.stored_total} giocatori · ${d.scorers_count} marcatori (${d.total_goals} gol).`,
+        `Giornata ${d.matchday}: ${d.stored_total} giocatori · ${d.scorers_count} marcatori (${d.total_goals} gol).${note}`,
       );
-      // Auto-align matchday input with what the PDF says
-      if (d.matchday) setMatchday(String(d.matchday));
-      await loadState(d.matchday || (parseInt(matchday, 10) || 1));
+      // Do NOT overwrite the matchday input — respect admin's choice.
+      await loadState(targetMd);
     } catch (e: any) {
       setUploadResult(`❌ ${e.message}`);
     } finally {
