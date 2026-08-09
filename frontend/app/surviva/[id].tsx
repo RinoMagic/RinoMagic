@@ -473,7 +473,9 @@ function PlayTab({
             ? 'Giornata bloccata: le partite sono iniziate.'
             : t.is_admin && !t.joined
               ? 'Vista admin: puoi gestire le partite di questa giornata (rinvii).'
-              : `Scegli ${requiredPicks} partit${requiredPicks === 1 ? 'a' : 'e'} divers${requiredPicks === 1 ? 'a' : 'e'} e per ognuna il segno 1 / X / 2 (1 pronostico per ogni vita rimasta). Puoi cambiare i pronostici finché la giornata non si blocca.`}
+              : requiredPicks === 1
+                ? `Hai 1 vita rimasta: scegli 1 partita e il segno (1 / X / 2). Puoi cambiare il pronostico finché la giornata non si blocca.`
+                : `Hai ${requiredPicks} vite rimaste: scegli ${requiredPicks} partite diverse e per ognuna il segno (1 / X / 2) — 1 pronostico per ogni vita. Puoi cambiare i pronostici finché la giornata non si blocca.`}
         </Text>
       </View>
 
