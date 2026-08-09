@@ -99,9 +99,6 @@ export default function SurvivaRules() {
         />
 
         <View style={{ height: 32 }} />
-        <Text style={styles.footer}>
-          Buon Survival! ⚽ Se hai dubbi, l&apos;admin del torneo può sempre correggere manualmente risultati e stato dei giocatori.
-        </Text>
       </ScrollView>
     </View>
   );
