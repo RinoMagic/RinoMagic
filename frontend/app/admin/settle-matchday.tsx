@@ -270,6 +270,17 @@ export default function SettleMatchday() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: 80 }}>
+        {/* Always-visible sticky banner showing the currently selected
+            matchday — the admin's single source of truth. */}
+        <View style={styles.stickyMdBanner}>
+          <Ionicons name="calendar" size={24} color="#fff" />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.stickyMdLabel}>STAI CALCOLANDO</Text>
+            <Text style={styles.stickyMdValue}>GIORNATA {parseInt(matchday, 10) || 1}</Text>
+          </View>
+          <Text style={styles.stickyMdBadge}>G{parseInt(matchday, 10) || 1}</Text>
+        </View>
+
         {/* Step 1 — matchday number */}
         <View style={styles.card}>
           <Text style={styles.cardLabel}>1 · GIORNATA</Text>
@@ -779,6 +790,26 @@ const styles = StyleSheet.create({
   },
   mainBtnText: { color: '#fff', fontWeight: '900', fontSize: 15, letterSpacing: 0.5 },
   previewTitle: { color: theme.colors.text, fontWeight: '900', fontSize: 15, letterSpacing: 0.5 },
+  stickyMdBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    padding: 14,
+    backgroundColor: '#EF4444',
+    borderRadius: 12,
+  },
+  stickyMdLabel: {
+    color: '#fff', fontSize: 10, fontWeight: '800',
+    letterSpacing: 1, opacity: 0.85,
+  },
+  stickyMdValue: {
+    color: '#fff', fontSize: 18, fontWeight: '900',
+    letterSpacing: 0.5, marginTop: 2,
+  },
+  stickyMdBadge: {
+    color: '#EF4444', fontSize: 20, fontWeight: '900',
+    backgroundColor: '#fff',
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 6,
+  },
   previewMdBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     padding: 14, marginBottom: 8,
