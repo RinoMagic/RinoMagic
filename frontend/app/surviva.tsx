@@ -155,6 +155,13 @@ export default function SurvivaHome() {
             <Text style={styles.title}>Survival 2.0</Text>
             <Text style={styles.subtitle}>3 vite iniziali · 1 pronostico per ogni vita</Text>
           </View>
+          <Pressable
+            onPress={() => router.push('/surviva/rules')}
+            hitSlop={12}
+            testID="sv-rules"
+          >
+            <Ionicons name="book" size={22} color={COLOR} />
+          </Pressable>
           {isAdmin && (
             <Pressable onPress={() => setCreateOpen(true)} hitSlop={12} testID="sv-create">
               <Ionicons name="add-circle" size={26} color={COLOR} />
