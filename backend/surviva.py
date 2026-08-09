@@ -39,6 +39,11 @@ logger = logging.getLogger("surviva")
 
 DEFAULT_LIVES = 3
 
+# Maximum number of picks a player can be asked to submit in a single
+# matchday. Corresponds to ``initial_lives`` upper bound — a player can
+# never have more picks required than lives they hold.
+MAX_PICKS_PER_MATCHDAY = 10
+
 # =========================================================================
 # Team-lock engine (Surviva 2.0 — new rules)
 # =========================================================================
@@ -51,8 +56,14 @@ DEFAULT_LIVES = 3
 #   • Concession    → a fixture where BOTH teams are already locked is
 #                     playable with any sign; the outcome of that pick does
 #                     NOT introduce new locks.
-# Lives: -1 for every wrong pick (so up to -3 in a single matchday).
+# Lives: -1 for every wrong pick.
+#
+# Surviva 2.1 (June 2026): picks required per matchday is now DYNAMIC —
+# equal to the player's remaining lives at the start of the matchday.
+# A player with 3 lives submits 3 picks; a player with 1 life submits 1.
 
+# Legacy constant — kept for the DB index setup and settlement
+# reference; NOT used anymore to enforce per-matchday pick count.
 REQUIRED_PICKS_PER_MATCHDAY = 3
 
 # Legacy per-outcome map kept for retro-compat helpers (used by the
@@ -144,18 +155,18 @@ class PickItem(BaseModel):
 
 
 class PicksSubmit(BaseModel):
-    """Surviva 2.0 (v2 rules): submit **3** picks for a matchday.
+    """Bulk submit of the caller's Surviva-v2 picks for a matchday.
 
-    Rules enforced by the endpoint:
-      • exactly 3 picks
+    Rules (v2.1 — dynamic pick count):
+      • Number of picks = participant's ``lives_left`` at submit time
       • each pick on a DIFFERENT fixture of the matchday
       • pick "1" / "2" cannot target an already-locked team, UNLESS the
         fixture has BOTH teams locked (concession)
       • correct picks with sign "1"/"2" add the winning team to the
         player's locked_teams set; correct picks with sign "X" do NOT lock
     """
-    picks: List[PickItem] = Field(min_length=REQUIRED_PICKS_PER_MATCHDAY,
-                                  max_length=REQUIRED_PICKS_PER_MATCHDAY)
+    picks: List[PickItem] = Field(min_length=1,
+                                  max_length=MAX_PICKS_PER_MATCHDAY)
 
 
 # Legacy single-pick model kept for retro-compat helpers (unused as of v2).
@@ -724,12 +735,23 @@ def build_router(
     async def _matchday_dict(md: dict, viewer_id: Optional[str] = None) -> dict:
         locked = _md_is_locked(md)
         my_picks_count = 0
+        picks_required = REQUIRED_PICKS_PER_MATCHDAY  # fallback
         if viewer_id:
             my_picks_count = await db.sv_picks.count_documents({
                 "tournament_id": md["tournament_id"],
                 "matchday_id": md["id"],
                 "user_id": viewer_id,
             })
+            # v2.1 — picks required = viewer's current lives_left in this
+            # tournament (0 if not participating / already eliminated).
+            part = await db.sv_participants.find_one(
+                {"tournament_id": md["tournament_id"], "user_id": viewer_id},
+                {"_id": 0, "lives_left": 1, "eliminated_at": 1},
+            )
+            if part and not part.get("eliminated_at"):
+                picks_required = max(0, int(part.get("lives_left") or 0))
+            else:
+                picks_required = 0
         return {
             "id": md["id"],
             "tournament_id": md["tournament_id"],
@@ -741,7 +763,7 @@ def build_router(
             "locked": locked,
             "settled": md.get("status") == "settled",
             "my_picks_count": my_picks_count,
-            "picks_required": REQUIRED_PICKS_PER_MATCHDAY,
+            "picks_required": picks_required,
         }
 
     @router.get("/tournaments/{tid}/matchdays")
@@ -766,13 +788,20 @@ def build_router(
 
     @router.get("/tournaments/{tid}/matchdays/{md_id}/my-picks")
     async def my_picks(tid: str, md_id: str, user: dict = Depends(current_user)):
-        """Return all picks (0..3) the caller has submitted for a matchday."""
-        await _require_participant(tid, user["id"])
+        """Return the picks the caller has submitted for a matchday.
+
+        The ``required`` value is dynamic: equal to the caller's remaining
+        lives at read time (0 if not participating / eliminated).
+        """
+        p = await _require_participant(tid, user["id"])
         picks = [pk async for pk in db.sv_picks.find(
             {"tournament_id": tid, "matchday_id": md_id, "user_id": user["id"]},
             {"_id": 0},
         )]
-        return {"picks": picks, "required": REQUIRED_PICKS_PER_MATCHDAY}
+        required = 0
+        if not p.get("eliminated_at"):
+            required = max(0, int(p.get("lives_left") or 0))
+        return {"picks": picks, "required": required}
 
     @router.get("/tournaments/{tid}/participants/{user_id}/picks")
     async def participant_picks(
@@ -875,15 +904,32 @@ def build_router(
     async def submit_picks(
         tid: str, md_id: str, data: PicksSubmit, user: dict = Depends(current_user),
     ):
-        """Submit the caller's **3 picks** for a matchday (Surviva 2.0 v2).
+        """Submit the caller's picks for a matchday (Surviva 2.1 dynamic).
 
-        The 3 picks REPLACE any existing picks for the matchday (idempotent
-        upsert). Full validation happens up-front — the write only occurs
-        if ALL 3 picks are legal.
+        The number of picks required equals the player's ``lives_left`` at
+        submit time. Picks REPLACE any existing picks for the matchday
+        (idempotent upsert). Full validation happens up-front — the write
+        only occurs if ALL picks are legal.
         """
         p = await _require_participant(tid, user["id"])
         if p.get("eliminated_at"):
             raise HTTPException(status_code=403, detail="Sei stato eliminato dal torneo")
+        # v2.1 — required picks == current lives_left
+        required = max(0, int(p.get("lives_left") or 0))
+        if required == 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Non hai vite disponibili per giocare questa giornata.",
+            )
+        if len(data.picks) != required:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Devi inviare esattamente {required} "
+                    f"pronostic{'o' if required == 1 else 'i'} "
+                    f"(uno per ogni vita rimasta), ne hai inviati {len(data.picks)}."
+                ),
+            )
         md = await db.sv_matchdays.find_one({"id": md_id, "tournament_id": tid}, {"_id": 0})
         if not md:
             raise HTTPException(status_code=404, detail="Giornata non trovata")
@@ -922,7 +968,7 @@ def build_router(
                 raise HTTPException(
                     status_code=400,
                     detail=f"Pronostico {i}: hai già scelto questo match, "
-                           "i 3 pronostici devono essere su match diversi.",
+                           f"gli {required} pronostici devono essere su match diversi.",
                 )
             seen_keys.add(key)
 
@@ -941,7 +987,7 @@ def build_router(
                         ),
                     )
 
-        # All 3 picks are legal — replace existing picks atomically.
+        # All picks are legal — replace existing picks atomically.
         now = _now()
         await db.sv_picks.delete_many(
             {"tournament_id": tid, "matchday_id": md_id, "user_id": user["id"]},
@@ -997,7 +1043,8 @@ def build_router(
               - "1" (home team) if home team is NOT locked
               - "2" (away team) if home is locked but away is NOT
               - "X" (draw) if BOTH teams are locked (concession)
-          • Fill picks until the user reaches ``REQUIRED_PICKS_PER_MATCHDAY``.
+          • Fill picks until the user reaches their ``lives_left``
+            (Surviva 2.1 dynamic rule: 1 pick per remaining life).
 
         Returns a dict ``{"users_filled": int, "picks_created": int}``.
 
@@ -1020,7 +1067,9 @@ def build_router(
                 {"tournament_id": tid, "matchday_id": md["id"], "user_id": uid},
                 {"_id": 0, "home_team": 1, "away_team": 1},
             )]
-            needed = REQUIRED_PICKS_PER_MATCHDAY - len(existing)
+            # v2.1 — number of picks required is the player's current lives
+            required = max(0, int(p.get("lives_left") or 0))
+            needed = required - len(existing)
             if needed <= 0:
                 continue
             picked_keys = {(pk["home_team"], pk["away_team"]) for pk in existing}

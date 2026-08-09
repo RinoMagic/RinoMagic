@@ -29,7 +29,11 @@ import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
 import { SurvivaPicksModal } from '@/src/components/SurvivaPicksModal';
 
 const COLOR = '#EF4444';
-const REQUIRED_PICKS = 3;
+// Surviva 2.1 — picks required per matchday is DYNAMIC (equal to the
+// player's remaining lives). This is only kept as an upper-bound safety
+// net for the very unlikely case the server has not yet returned the
+// matchday details (backend field ``picks_required``).
+const MAX_PICKS_UI = 10;
 
 type Fixture = { home_team: string; away_team: string; kickoff_iso?: string | null; postponed_before?: boolean };
 type Matchday = {
@@ -115,7 +119,7 @@ export default function SurvivaTournament() {
       if (cur && detail.joined) {
         const r = await api<{ picks: MyPick[]; required: number }>(
           `/sv/tournaments/${id}/matchdays/${cur.id}/my-picks`,
-        ).catch(() => ({ picks: [] as MyPick[], required: REQUIRED_PICKS }));
+        ).catch(() => ({ picks: [] as MyPick[], required: MAX_PICKS_UI }));
         const submitted = r.picks || [];
         setMyPicks(submitted);
         // Preload pending with the server-confirmed picks so users can edit
@@ -211,13 +215,15 @@ export default function SurvivaTournament() {
     pending.find(p => p.home_team === fx.home_team && p.away_team === fx.away_team) || null;
 
   // Toggle a pick locally. Rules:
-  //   • Only 3 fixtures max in the pending list.
+  //   • Only up to ``requiredPicks`` fixtures in the pending list
+  //     (v2.1: requiredPicks = player's remaining lives).
   //   • Tapping the SAME sign on the SAME fixture → remove.
   //   • Tapping a DIFFERENT sign on the SAME fixture → replace.
-  //   • Tapping a NEW fixture when we already have 3 picks → alert.
+  //   • Tapping a NEW fixture when we already have N picks → alert.
   const togglePick = (fx: Fixture, sign: '1' | 'X' | '2') => {
     if (!md || md.locked) return;
     if (fx.postponed_before) return;
+    const requiredPicks = md.picks_required ?? livesLeft;
     if (pickBlockedTeam(sign, fx)) {
       const team = pickBlockedTeam(sign, fx)!;
       alert(`${team} è già stata usata correttamente. Scegli un'altra squadra o cambia segno.`);
@@ -234,8 +240,8 @@ export default function SurvivaTournament() {
       setPending(pending.map(p => p === existing ? { ...existing, pick: sign } : p));
       return;
     }
-    if (pending.length >= REQUIRED_PICKS) {
-      alert(`Hai già selezionato ${REQUIRED_PICKS} pronostici. Deseleziona uno per cambiare.`);
+    if (pending.length >= requiredPicks) {
+      alert(`Hai già selezionato ${requiredPicks} pronostic${requiredPicks === 1 ? 'o' : 'i'}. Deseleziona uno per cambiare.`);
       return;
     }
     setPending([...pending, {
@@ -245,8 +251,9 @@ export default function SurvivaTournament() {
 
   const submitAllPicks = async () => {
     if (!md || !t) return;
-    if (pending.length !== REQUIRED_PICKS) {
-      alert(`Devi selezionare esattamente ${REQUIRED_PICKS} pronostici.`);
+    const req = md.picks_required ?? livesLeft;
+    if (pending.length !== req) {
+      alert(`Devi selezionare esattamente ${req} pronostic${req === 1 ? 'o' : 'i'} (uno per ogni vita rimasta).`);
       return;
     }
     setSubmitting(true);
@@ -446,14 +453,15 @@ function PlayTab({
   }
 
   // Has the player already submitted picks equal to the pending selection?
-  const submittedMatches = myPicks.length === REQUIRED_PICKS
+  const requiredPicks = md.picks_required ?? livesLeft;
+  const submittedMatches = myPicks.length === requiredPicks
     && myPicks.every(mp => pending.some(
       p => p.home_team === mp.home_team
         && p.away_team === mp.away_team
         && p.pick === mp.pick,
     ));
   const submitEnabled = !md.locked && canPlay
-    && pending.length === REQUIRED_PICKS
+    && pending.length === requiredPicks
     && !submittedMatches;
 
   return (
@@ -465,7 +473,7 @@ function PlayTab({
             ? 'Giornata bloccata: le partite sono iniziate.'
             : t.is_admin && !t.joined
               ? 'Vista admin: puoi gestire le partite di questa giornata (rinvii).'
-              : `Scegli ${REQUIRED_PICKS} partite diverse e per ognuna il segno 1 / X / 2. Puoi cambiare i pronostici finché la giornata non si blocca.`}
+              : `Scegli ${requiredPicks} partit${requiredPicks === 1 ? 'a' : 'e'} divers${requiredPicks === 1 ? 'a' : 'e'} e per ognuna il segno 1 / X / 2 (1 pronostico per ogni vita rimasta). Puoi cambiare i pronostici finché la giornata non si blocca.`}
         </Text>
       </View>
 
@@ -473,7 +481,7 @@ function PlayTab({
       {t.joined && !md.locked && (
         <View style={styles.progressBar}>
           <Text style={styles.progressText}>
-            Pronostici selezionati: <Text style={{ fontWeight: '800', color: COLOR }}>{pending.length}</Text> / {REQUIRED_PICKS}
+            Pronostici selezionati: <Text style={{ fontWeight: '800', color: COLOR }}>{pending.length}</Text> / {requiredPicks}
           </Text>
           <Pressable
             onPress={onSubmitAll}

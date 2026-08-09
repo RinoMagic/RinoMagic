@@ -153,7 +153,7 @@ export default function SurvivaHome() {
           </Pressable>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>Survival 2.0</Text>
-            <Text style={styles.subtitle}>3 vite, 1 pronostico a giornata</Text>
+            <Text style={styles.subtitle}>3 vite iniziali · 1 pronostico per ogni vita</Text>
           </View>
           {isAdmin && (
             <Pressable onPress={() => setCreateOpen(true)} hitSlop={12} testID="sv-create">
