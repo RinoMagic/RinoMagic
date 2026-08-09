@@ -1467,10 +1467,15 @@ def build_router(
           l'identità dei giocatori.
         - Dopo il calcio d'inizio: sblocca anche la lista delle singole
           scelte per ogni utente.
+        - **Privacy**: quando restano pochissimi giocatori vivi
+          (≤ ``PRIVACY_THRESHOLD``), gli aggregati vengono nascosti prima
+          del calcio d'inizio, altrimenti sarebbe banale dedurre chi ha
+          scelto cosa.
 
         Anyone logged in can view — eliminated participants and past
         players must still be able to consult past matchdays.
         """
+        PRIVACY_THRESHOLD = 4
         # No participant check: eliminated users must be able to see the
         # per-matchday summary of tournaments they took part in.
         md = await db.sv_matchdays.find_one({"id": md_id, "tournament_id": tid}, {"_id": 0})
@@ -1478,6 +1483,12 @@ def build_router(
             raise HTTPException(status_code=404, detail="Giornata non trovata")
 
         locked = _md_is_locked(md)
+        alive_count = await db.sv_participants.count_documents(
+            {"tournament_id": tid, "eliminated_at": None},
+        )
+        # Only mask counts BEFORE kick-off — after kick-off the round is
+        # already decided so identity leakage is irrelevant.
+        counts_hidden = (not locked) and alive_count > 0 and alive_count <= PRIVACY_THRESHOLD
         picks_cur = db.sv_picks.find({"tournament_id": tid, "matchday_id": md_id})
 
         # Aggregate counts per fixture
@@ -1496,7 +1507,7 @@ def build_router(
             if not slot:
                 continue
             p = pk["pick"]
-            if p in slot["counts"]:
+            if p in slot["counts"] and not counts_hidden:
                 slot["counts"][p] += 1
             if locked and slot["picks"] is not None:
                 slot["picks"].append({
@@ -1510,6 +1521,9 @@ def build_router(
             "matchday": md["matchday"],
             "kickoff_first": md.get("kickoff_first"),
             "locked": locked,
+            "counts_hidden": counts_hidden,
+            "alive_count": alive_count,
+            "privacy_threshold": PRIVACY_THRESHOLD,
             "fixtures": list(agg.values()),
         }
 

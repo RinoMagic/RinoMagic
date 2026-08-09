@@ -90,7 +90,13 @@ export default function SurvivaTournament() {
   const [lockedTeams, setLockedTeams] = useState<string[]>([]);
   const [livesLeft, setLivesLeft] = useState<number>(0);
   const [lb, setLb] = useState<LeaderboardRow[]>([]);
-  const [summary, setSummary] = useState<{ locked: boolean; fixtures: SummaryFixture[] } | null>(null);
+  const [summary, setSummary] = useState<{
+    locked: boolean;
+    fixtures: SummaryFixture[];
+    counts_hidden?: boolean;
+    alive_count?: number;
+    privacy_threshold?: number;
+  } | null>(null);
   const [invites, setInvites] = useState<SvInvite[]>([]);
   const [bonusCfg, setBonusCfg] = useState<BonusCfg | null>(null);
   const [busyInvite, setBusyInvite] = useState(false);
@@ -188,7 +194,13 @@ export default function SurvivaTournament() {
   const loadSummary = async () => {
     if (!md) return;
     try {
-      const s = await api<{ locked: boolean; fixtures: SummaryFixture[] }>(
+      const s = await api<{
+        locked: boolean;
+        fixtures: SummaryFixture[];
+        counts_hidden?: boolean;
+        alive_count?: number;
+        privacy_threshold?: number;
+      }>(
         `/sv/tournaments/${id}/matchdays/${md.id}/summary`,
       );
       setSummary(s);
@@ -947,7 +959,13 @@ function SummaryTab({
   md, summary, hasPicked, joined,
 }: {
   md: Matchday | null;
-  summary: { locked: boolean; fixtures: SummaryFixture[] } | null;
+  summary: {
+    locked: boolean;
+    fixtures: SummaryFixture[];
+    counts_hidden?: boolean;
+    alive_count?: number;
+    privacy_threshold?: number;
+  } | null;
   hasPicked: boolean;
   joined: boolean;
 }) {
@@ -957,6 +975,7 @@ function SummaryTab({
   const badgeLabel = summary.locked
     ? (md.settled ? 'Calcolata' : 'Chiusa')
     : 'Aperta';
+  const countsHidden = !!summary.counts_hidden;
 
   return (
     <>
@@ -968,6 +987,16 @@ function SummaryTab({
             : 'Solo aggregati fino al calcio d\u2019inizio della prima partita. Le scelte individuali sono nascoste.'}
         </Text>
       </View>
+      {countsHidden && (
+        <View style={[styles.notice, { borderColor: '#F59E0B55' }]}>
+          <Ionicons name="eye-off" size={18} color="#F59E0B" />
+          <Text style={[styles.noticeText, { color: '#F59E0B' }]}>
+            🔒 Privacy: siete rimasti in {summary.alive_count ?? '?'}. I conteggi
+            per partita sono nascosti fino al calcio d'inizio per non
+            rivelare chi ha giocato cosa.
+          </Text>
+        </View>
+      )}
       {joined && !hasPicked && !summary.locked && (
         <View style={[styles.notice, { borderColor: COLOR + '55' }]}>
           <Ionicons name="warning" size={18} color={COLOR} />
@@ -1021,36 +1050,43 @@ function SummaryTab({
                   <Text style={styles.pickTeams} numberOfLines={1}>
                     {fx.home_team} - {fx.away_team}
                   </Text>
-                  <View style={styles.summaryCountsRow}>
-                    {(['1', 'X', '2'] as const).map((s) => {
-                      const isWinner = total > 0 && fx.counts[s] > 0 && s === winner;
-                      return (
-                        <View
-                          key={s}
-                          style={[
-                            styles.summaryCountPill,
-                            isWinner && {
-                              backgroundColor: COLOR + '22',
-                              borderColor: COLOR,
-                            },
-                          ]}
-                        >
-                          <Text style={[
-                            styles.summaryCountSign,
-                            isWinner && { color: COLOR },
-                          ]}>
-                            {s}
-                          </Text>
-                          <Text style={[
-                            styles.summaryCountValue,
-                            isWinner && { color: COLOR },
-                          ]}>
-                            {fx.counts[s]}
-                          </Text>
-                        </View>
-                      );
-                    })}
-                  </View>
+                  {countsHidden ? (
+                    <View style={styles.summaryHiddenPill}>
+                      <Ionicons name="eye-off" size={11} color={theme.colors.muted} />
+                      <Text style={styles.summaryHiddenPillText}>nascosto</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.summaryCountsRow}>
+                      {(['1', 'X', '2'] as const).map((s) => {
+                        const isWinner = total > 0 && fx.counts[s] > 0 && s === winner;
+                        return (
+                          <View
+                            key={s}
+                            style={[
+                              styles.summaryCountPill,
+                              isWinner && {
+                                backgroundColor: COLOR + '22',
+                                borderColor: COLOR,
+                              },
+                            ]}
+                          >
+                            <Text style={[
+                              styles.summaryCountSign,
+                              isWinner && { color: COLOR },
+                            ]}>
+                              {s}
+                            </Text>
+                            <Text style={[
+                              styles.summaryCountValue,
+                              isWinner && { color: COLOR },
+                            ]}>
+                              {fx.counts[s]}
+                            </Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
                 </View>
 
                 {summary.locked && total > 0 && (
@@ -1462,6 +1498,17 @@ const styles = StyleSheet.create({
   },
   summaryCountValue: {
     color: theme.colors.onSurface, fontWeight: '800', fontSize: 12,
+  },
+  summaryHiddenPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surfaceTertiary,
+    borderWidth: 1, borderColor: theme.colors.border,
+  },
+  summaryHiddenPillText: {
+    color: theme.colors.muted, fontWeight: '700', fontSize: 10,
+    fontStyle: 'italic',
   },
   picksGroupSign: {
     minWidth: 22, paddingHorizontal: 6, paddingVertical: 1,
