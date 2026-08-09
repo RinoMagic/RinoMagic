@@ -192,7 +192,7 @@ export default function SettleMatchday() {
       // Always use the ref value — the admin's top input — as the
       // definitive matchday to calculate. Optionally an explicit value
       // can be passed by ``doUploadPdf`` right after storing the PDF.
-      const md = forceMatchday ?? parseInt(matchdayRef.current, 10) || 1;
+      const md = forceMatchday ?? (parseInt(matchdayRef.current, 10) || 1);
       const p = await api<Preview>(`/admin/settle-matchday/preview`, {
         method: 'POST',
         body: {
