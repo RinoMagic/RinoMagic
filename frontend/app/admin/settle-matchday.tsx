@@ -91,6 +91,12 @@ export default function SettleMatchday() {
   const [state, setState] = useState<State | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadName, setUploadName] = useState<string | null>(null);
+  // Ref that ALWAYS holds the latest matchday value. Guards against
+  // React-closure staleness — if the admin re-uploads a PDF right after
+  // changing the matchday, we still submit under the *current* value,
+  // never a captured/stale one from a previous render.
+  const matchdayRef = useRef<string>(matchday);
+  useEffect(() => { matchdayRef.current = matchday; }, [matchday]);
   const [uploadResult, setUploadResult] = useState<string | null>(null);
   const [firstScorer, setFirstScorer] = useState<Scorer | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -112,11 +118,14 @@ export default function SettleMatchday() {
     const md = parseInt(matchday, 10) || 1;
     // Changing the matchday number invalidates any pending preview /
     // save log — otherwise the admin sees stale fixtures from a
-    // previously-selected matchday.
+    // previously-selected matchday. We also wipe the last-upload chip
+    // so the admin gets an unambiguous "fresh state" signal.
     setPreview(null);
     setSaveLog(null);
     setOverrides({});
     setPostponed({});
+    setUploadResult(null);
+    setUploadName(null);
     loadState(md);
   }, [matchday]);
 
@@ -124,11 +133,11 @@ export default function SettleMatchday() {
     setUploading(true); setUploadResult(null);
     setUploadName(file.name);
     try {
-      // Always store the PDF under the matchday the admin selected in
-      // the top input — NOT the one auto-detected from the PDF header.
-      // This lets the admin re-use an "old" PDF (e.g. G38 header) for
-      // the current tournament matchday (e.g. G1) without editing the PDF.
-      const targetMd = parseInt(matchday, 10) || 1;
+      // ALWAYS read the CURRENT matchday from the ref — the admin's top
+      // input is the single source of truth. This guards against React
+      // closure staleness and against the PDF header overriding the
+      // admin's selection.
+      const targetMd = parseInt(matchdayRef.current, 10) || 1;
       const d = await apiUpload<any>(
         '/admin/voti/upload-pdf',
         { name: file.name, type: file.type || 'application/pdf', blob: file },
@@ -136,7 +145,7 @@ export default function SettleMatchday() {
       );
       const detected = d.matchday;
       const note = detected && detected !== targetMd
-        ? ` (PDF diceva G${detected}, salvato come G${targetMd})`
+        ? ` ⚠️ (il PDF diceva G${detected}, salvato come G${targetMd} come da tuo campo in alto)`
         : '';
       setUploadResult(
         `Giornata ${d.matchday}: ${d.stored_total} giocatori · ${d.scorers_count} marcatori (${d.total_goals} gol).${note}`,
@@ -145,9 +154,7 @@ export default function SettleMatchday() {
       await loadState(targetMd);
       // Auto-generate the preview immediately so the admin can see all
       // fixtures + toggle postponed matches BEFORE confirming the settle.
-      // Requested behaviour: PDF upload → fixture list with ✕ toggle
-      // shown right away, no need to press CALCOLA first.
-      await doCalculate();
+      await doCalculate(targetMd);
     } catch (e: any) {
       setUploadResult(`❌ ${e.message}`);
     } finally {
@@ -179,10 +186,13 @@ export default function SettleMatchday() {
         return { home_team, away_team };
       });
 
-  const doCalculate = async () => {
+  const doCalculate = async (forceMatchday?: number) => {
     setCalculating(true); setPreview(null); setSaveLog(null);
     try {
-      const md = parseInt(matchday, 10);
+      // Always use the ref value — the admin's top input — as the
+      // definitive matchday to calculate. Optionally an explicit value
+      // can be passed by ``doUploadPdf`` right after storing the PDF.
+      const md = forceMatchday ?? parseInt(matchdayRef.current, 10) || 1;
       const p = await api<Preview>(`/admin/settle-matchday/preview`, {
         method: 'POST',
         body: {
@@ -465,6 +475,17 @@ function PreviewBlock({
 }) {
   return (
     <View style={styles.card}>
+      {/* Prominent header — always visible so the admin instantly
+          knows WHICH matchday the current preview refers to. */}
+      <View style={styles.previewMdBanner}>
+        <Ionicons name="calendar" size={22} color="#fff" />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.previewMdBannerLabel}>STAI CALCOLANDO</Text>
+          <Text style={styles.previewMdBannerValue}>GIORNATA {preview.matchday}</Text>
+        </View>
+        <Text style={styles.previewMdBannerBadge}>G{preview.matchday}</Text>
+      </View>
+
       <Text style={styles.previewTitle}>ANTEPRIMA GIORNATA {preview.matchday}</Text>
 
       {/* Privacy banner — clarifies nothing is public yet */}
@@ -758,6 +779,26 @@ const styles = StyleSheet.create({
   },
   mainBtnText: { color: '#fff', fontWeight: '900', fontSize: 15, letterSpacing: 0.5 },
   previewTitle: { color: theme.colors.text, fontWeight: '900', fontSize: 15, letterSpacing: 0.5 },
+  previewMdBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    padding: 14, marginBottom: 8,
+    backgroundColor: '#EF4444',
+    borderRadius: 12,
+  },
+  previewMdBannerLabel: {
+    color: '#fff', fontSize: 10, fontWeight: '800',
+    letterSpacing: 1, opacity: 0.85,
+  },
+  previewMdBannerValue: {
+    color: '#fff', fontSize: 18, fontWeight: '900',
+    letterSpacing: 0.5, marginTop: 2,
+  },
+  previewMdBannerBadge: {
+    color: '#EF4444', fontSize: 20, fontWeight: '900',
+    backgroundColor: '#fff',
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 6,
+  },
   warnBox: {
     padding: 8, backgroundColor: '#FEF3C7', borderRadius: 8, gap: 4,
     borderWidth: 1, borderColor: '#F59E0B55',
