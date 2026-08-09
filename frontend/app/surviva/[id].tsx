@@ -41,6 +41,7 @@ type Matchday = {
   kickoff_first: string | null; fixtures: Fixture[];
   locked: boolean; settled: boolean; my_picks_count: number;
   picks_required?: number;
+  tie_break?: boolean;
 };
 type Tournament = {
   id: string; name: string; season: string; status: string;

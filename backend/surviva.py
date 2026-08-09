@@ -762,6 +762,7 @@ def build_router(
             "fixtures": md.get("fixtures", []),
             "locked": locked,
             "settled": md.get("status") == "settled",
+            "tie_break": bool(md.get("tie_break")),
             "my_picks_count": my_picks_count,
             "picks_required": picks_required,
         }
@@ -1195,6 +1196,23 @@ def build_router(
                 stats["wrong"] += 1
                 state["life_delta"] -= 1
 
+        # Snapshot the state of ALL currently-alive participants BEFORE we
+        # apply life deductions — needed for the "pareggio → resurrezione"
+        # rule: if EVERY remaining alive player dies in the same matchday,
+        # we restore them to this pre-settle state and force them to
+        # replay the next matchday (repeat until only one survives).
+        pre_alive_snapshot: List[dict] = [
+            {
+                "user_id": p["user_id"],
+                "lives_left": int(p.get("lives_left") or 0),
+                "locked_teams": list(p.get("locked_teams") or []),
+            }
+            async for p in db.sv_participants.find(
+                {"tournament_id": tid, "eliminated_at": None},
+                {"_id": 0, "user_id": 1, "lives_left": 1, "locked_teams": 1},
+            )
+        ]
+
         # Apply participant updates
         for uid, state in pending_participant_updates.items():
             p = await _get_participant(tid, uid)
@@ -1212,6 +1230,40 @@ def build_router(
             await db.sv_participants.update_one(
                 {"tournament_id": tid, "user_id": uid},
                 {"$set": update_set},
+            )
+
+        # ----- Pareggio → Resurrezione ------------------------------------
+        # If ALL previously-alive players got eliminated in this same
+        # matchday (and at least 2 were alive going in), it's a tie: no
+        # single winner emerged. Restore them all to their pre-matchday
+        # state and let the tournament continue to the next matchday.
+        # Repeats naturally: any tied matchday triggers this branch again.
+        alive_after_updates = await db.sv_participants.count_documents(
+            {"tournament_id": tid, "eliminated_at": None},
+        )
+        tie_break_triggered = False
+        if (
+            alive_after_updates == 0
+            and len(pre_alive_snapshot) >= 2
+        ):
+            tie_break_triggered = True
+            for snap in pre_alive_snapshot:
+                await db.sv_participants.update_one(
+                    {"tournament_id": tid, "user_id": snap["user_id"]},
+                    {"$set": {
+                        "lives_left": snap["lives_left"],
+                        "locked_teams": snap["locked_teams"],
+                        "eliminated_at": None,
+                    }},
+                )
+            eliminated_now = []
+            await db.sv_matchdays.update_one(
+                {"id": md_id, "tournament_id": tid},
+                {"$set": {"tie_break": True}},
+            )
+            logger.info(
+                "Surviva tie-break on tournament=%s matchday=%s: %d players resurrected",
+                tid, md["matchday"], len(pre_alive_snapshot),
             )
 
         # Mark matchday as settled and advance the tournament
@@ -1289,6 +1341,11 @@ def build_router(
             "tournament_finished": finished,
             "alive_players": alive,
             "next_tournament_id": new_tournament_id,
+            "tie_break": tie_break_triggered,
+            "tie_break_players": (
+                [s["user_id"] for s in pre_alive_snapshot]
+                if tie_break_triggered else []
+            ),
         }
 
     # ------------------------------------------------------------------
