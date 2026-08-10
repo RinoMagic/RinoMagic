@@ -68,14 +68,18 @@ export default function PickPage() {
   const submit = async () => {
     if (!md) return;
     const playable = md.fixtures.filter((f) => !f.postponed_before);
-    const missing = playable.filter((f) => !picks[f.idx]);
-    if (missing.length) return alert(`Manca il pick per ${missing.length} partita/e`);
+    const required = md.expected_picks_count ?? playable.length;
+    const filledPicks = playable
+      .filter((f) => picks[f.idx])
+      .map((f) => ({ fixture_idx: f.idx, player_id: picks[f.idx] }));
+    if (filledPicks.length !== required) {
+      return alert(
+        `Devi selezionare esattamente ${required} pronostic${required === 1 ? 'o' : 'i'} `
+        + `(uno per ogni vita rimasta). Ne hai selezionati ${filledPicks.length}.`,
+      );
+    }
     setSaving(true);
     try {
-      // Only submit fixtures that HAVE a pick — skipped matches don't count.
-      const filledPicks = playable
-        .filter((f) => picks[f.idx])
-        .map((f) => ({ fixture_idx: f.idx, player_id: picks[f.idx] }));
       await api(`/sal/tournaments/${id}/matchdays/${matchday_id}/picks`, {
         method: 'POST',
         body: { picks: filledPicks },
@@ -128,9 +132,12 @@ export default function PickPage() {
         <View style={styles.ruleBanner}>
           <Ionicons name="information-circle" size={16} color={COLOR} />
           <Text style={styles.ruleBannerText}>
-            <Text style={{ fontWeight: '800' }}>Devi scegliere {expected} pronostici su {playable.length} partite.</Text>
-            {'\n'}Hai <Text style={{ fontWeight: '800', color: COLOR }}>{lives} vite</Text>: puoi giocare tante partite quante ne hai (max {playable.length}).
-            {'\n'}<Text style={{ fontStyle: 'italic', color: theme.colors.muted }}>+1 vita per ogni marcatore azzeccato (cap 15). Le partite non selezionate non incidono.</Text>
+            <Text style={{ fontWeight: '800' }}>
+              Devi selezionare esattamente {expected} pronostic{expected === 1 ? 'o' : 'i'} — uno per ogni vita rimasta.
+            </Text>
+            {'\n'}Hai <Text style={{ fontWeight: '800', color: COLOR }}>{lives} vit{lives === 1 ? 'a' : 'e'}</Text>
+            {' '}su <Text style={{ fontWeight: '800' }}>{playable.length}</Text> partite disponibili — scegli le {expected} che preferisci.
+            {'\n'}<Text style={{ fontStyle: 'italic', color: theme.colors.muted }}>+1 vita per ogni marcatore azzeccato (cap 15). Tocca lo stesso giocatore per deselezionarlo.</Text>
           </Text>
         </View>
         {blockedPlayers.length > 0 && (
@@ -193,20 +200,6 @@ export default function PickPage() {
                   </Text>
                 </View>
               )}
-              {selectedId && (
-                <Pressable
-                  onPress={() => setPicks((s) => {
-                    const next = { ...s };
-                    delete next[f.idx];
-                    return next;
-                  })}
-                  style={styles.clearPickBtn}
-                  hitSlop={6}
-                  testID={`sal-clear-pick-${f.idx}`}
-                >
-                  <Text style={styles.clearPickBtnText}>SALTA QUESTA PARTITA</Text>
-                </Pressable>
-              )}
               <TextInput
                 style={styles.input}
                 placeholder="Cerca calciatore..."
@@ -221,7 +214,17 @@ export default function PickPage() {
                   return (
                     <Pressable
                       key={p.id}
-                      onPress={() => setPicks((s) => ({ ...s, [f.idx]: p.id }))}
+                      onPress={() => setPicks((s) => {
+                        // Toggle: tap the already-selected player to
+                        // clear the pick for this fixture (replaces the
+                        // old "Salta questa partita" button).
+                        if (s[f.idx] === p.id) {
+                          const next = { ...s };
+                          delete next[f.idx];
+                          return next;
+                        }
+                        return { ...s, [f.idx]: p.id };
+                      })}
                       style={[
                         styles.playerRow,
                         isSelected && { backgroundColor: COLOR + '22', borderColor: COLOR },
