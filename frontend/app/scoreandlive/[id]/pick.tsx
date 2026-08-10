@@ -193,12 +193,24 @@ export default function PickPage() {
                 </View>
               </View>
               {selectedPlayer && (
-                <View style={styles.pickedInline}>
+                <Pressable
+                  onPress={() => setPicks((s) => {
+                    const next = { ...s };
+                    delete next[f.idx];
+                    return next;
+                  })}
+                  style={styles.pickedInline}
+                  testID={`sal-remove-picked-${f.idx}`}
+                  hitSlop={8}
+                >
                   <Ionicons name="football" size={13} color={COLOR} />
                   <Text style={styles.pickedInlineText}>
                     {selectedPlayer.full_name} · {selectedPlayer.team}
                   </Text>
-                </View>
+                  <View style={styles.pickedInlineRemove}>
+                    <Ionicons name="close" size={14} color="#fff" />
+                  </View>
+                </Pressable>
               )}
               <TextInput
                 style={styles.input}
@@ -216,12 +228,23 @@ export default function PickPage() {
                       key={p.id}
                       onPress={() => setPicks((s) => {
                         // Toggle: tap the already-selected player to
-                        // clear the pick for this fixture (replaces the
-                        // old "Salta questa partita" button).
+                        // clear the pick for this fixture.
                         if (s[f.idx] === p.id) {
                           const next = { ...s };
                           delete next[f.idx];
                           return next;
+                        }
+                        // Enforce max picks — a player with 9 lives
+                        // cannot select 10 fixtures. Show a friendly
+                        // alert and require deselection first.
+                        const currentCount = Object.keys(s).filter(k => !!s[Number(k)]).length;
+                        const isAddingNew = !s[f.idx]; // replacing an existing pick doesn't increase count
+                        if (isAddingNew && currentCount >= expected) {
+                          alert(
+                            `Hai già selezionato ${expected} pronostic${expected === 1 ? 'o' : 'i'} `
+                            + `(uno per ogni vita). Deseleziona un marcatore prima di sceglierne un altro.`,
+                          );
+                          return s;
                         }
                         return { ...s, [f.idx]: p.id };
                       })}
@@ -294,6 +317,13 @@ const styles = StyleSheet.create({
     color: COLOR,
     fontSize: 11,
     fontWeight: '700',
+  },
+  pickedInlineRemove: {
+    width: 18, height: 18,
+    borderRadius: 9,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: COLOR,
+    marginLeft: 4,
   },
   blockedBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
