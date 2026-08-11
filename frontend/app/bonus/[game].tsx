@@ -97,6 +97,21 @@ export default function BonusGame() {
   const [data, setData] = useState<Available | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [fullHistory, setFullHistory] = useState<FullHistoryRow[]>([]);
+  const [currentLocked, setCurrentLocked] = useState<{
+    visible: boolean;
+    settled?: boolean;
+    matchday?: number;
+    big_match?: { home_team: string; away_team: string } | null;
+    result?: { home_score: number; away_score: number } | null;
+    picks: Array<{
+      user_id: string;
+      nickname: string;
+      subscription_id: string;
+      subscription_name?: string;
+      pick: any;
+      is_correct?: boolean | null;
+    }>;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -105,14 +120,16 @@ export default function BonusGame() {
     try {
       const s = await session.load();
       setMe(s.user);
-      const [av, hs, fh] = await Promise.all([
+      const [av, hs, fh, cl] = await Promise.all([
         api<Available>(`/bonus/available?game=${game}&season=${SEASON}`),
         api<HistoryRow[]>(`/bonus/history?game=${game}&season=${SEASON}&limit=30`).catch(() => []),
         api<FullHistoryRow[]>(`/bonus/history/full?game=${game}&season=${SEASON}&limit=30`).catch(() => []),
+        api<any>(`/bonus/current-locked-picks?game=${game}&season=${SEASON}`).catch(() => null),
       ]);
       setData(av);
       setHistory(hs);
       setFullHistory(fh);
+      setCurrentLocked(cl);
     } catch (e: any) {
       alert(e.message);
     } finally {
@@ -207,6 +224,45 @@ export default function BonusGame() {
               />
             ))}
           </>
+        )}
+
+        {currentLocked?.visible && currentLocked.picks.length > 0 && !currentLocked.settled && (
+          <View style={[styles.histBox, { borderColor: meta.color + '55' }]}>
+            <View style={styles.currentLockedHeader}>
+              <Ionicons name="lock-open" size={16} color={meta.color} />
+              <Text style={[styles.histTitle, { color: meta.color }]}>
+                Giornata bloccata · G{currentLocked.matchday}
+              </Text>
+            </View>
+            <Text style={styles.histSub}>
+              {currentLocked.big_match
+                ? `${currentLocked.big_match.home_team} - ${currentLocked.big_match.away_team}`
+                : 'Big Match'}
+              {' · '}Pronostici di tutti i partecipanti (in attesa del risultato)
+            </Text>
+            {currentLocked.picks.map((p, i) => (
+              <View
+                key={`cl-${p.user_id}-${p.subscription_id}-${i}`}
+                style={styles.currentLockedRow}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.currentLockedNick} numberOfLines={1}>
+                    {p.nickname || p.user_id.slice(0, 8)}
+                  </Text>
+                  {p.subscription_name && (
+                    <Text style={styles.currentLockedSub} numberOfLines={1}>
+                      {p.subscription_name}
+                    </Text>
+                  )}
+                </View>
+                <View style={[styles.currentLockedPick, { borderColor: meta.color + '55' }]}>
+                  <Text style={[styles.currentLockedPickText, { color: meta.color }]}>
+                    {pickText(p)}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
         )}
 
         {fullHistory.length > 0 && (
@@ -866,6 +922,30 @@ const styles = StyleSheet.create({
   histMd: { color: theme.colors.muted, fontWeight: '800', fontSize: 12, width: 32 },
   histPick: { color: theme.colors.onSurface, fontWeight: '700', fontSize: 13 },
   histSub: { color: theme.colors.muted, fontSize: 10, marginTop: 1 },
+  currentLockedHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+  },
+  currentLockedRow: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
+    paddingVertical: 8,
+    borderTopWidth: 1, borderTopColor: theme.colors.border,
+  },
+  currentLockedNick: {
+    color: theme.colors.onSurface, fontSize: 13, fontWeight: '700',
+  },
+  currentLockedSub: {
+    color: theme.colors.muted, fontSize: 10, marginTop: 2,
+  },
+  currentLockedPick: {
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    backgroundColor: theme.colors.surface,
+    minWidth: 44, alignItems: 'center',
+  },
+  currentLockedPickText: {
+    fontWeight: '900', fontSize: 13,
+  },
   histBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill,

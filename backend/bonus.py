@@ -806,6 +806,70 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         ]
         return [await _pick_dict(p) for p in rows]
 
+    @router.get("/current-locked-picks")
+    async def current_locked_picks(
+        game: str,
+        season: str = "2026-27",
+        user: dict = Depends(current_user),
+    ):
+        """Riassunto pubblico dei pick del bonus corrente.
+
+        Restituisce l'elenco completo dei partecipanti + i loro pronostici
+        SOLO se la deadline è passata e la giornata è bloccata (locked)
+        oppure il bonus è già stato liquidato. Prima del kickoff torna una
+        lista vuota per non rivelare le scelte in anticipo.
+        """
+        if game not in GAMES:
+            raise HTTPException(status_code=400, detail="Gioco non valido")
+        bonus_type = BONUS_TYPE_BY_GAME[game]
+        # Latest open OR just-settled config for this game (most recent)
+        cfg = await db.bonus_configs.find_one(
+            {"season": season, "bonus_type": bonus_type},
+            {"_id": 0}, sort=[("matchday", -1)],
+        )
+        if not cfg:
+            return {"visible": False, "reason": "no_config", "picks": []}
+
+        status = _config_status(cfg)
+        md = cfg.get("matchday")
+        deadline_passed = False
+        if isinstance(md, int):
+            deadline_passed = await _global_deadline_passed(db, season, md)
+        visible = status in ("locked", "settled") or deadline_passed
+
+        if not visible:
+            return {
+                "visible": False,
+                "reason": "deadline_not_passed",
+                "matchday": cfg.get("matchday"),
+                "big_match": cfg.get("big_match"),
+                "picks": [],
+            }
+
+        raw = [
+            p async for p in db.bonus_picks.find({
+                "season": season,
+                "matchday": cfg["matchday"],
+                "bonus_type": bonus_type,
+                "game": game,
+            }, {"_id": 0})
+        ]
+        # Sort alphabetically by subscription name then nickname — simple
+        # and neutral (does not reveal submission order).
+        raw.sort(key=lambda p: (
+            (p.get("subscription_name") or "").lower(),
+            (p.get("nickname") or "").lower(),
+        ))
+        picks_out = [await _pick_dict(p) for p in raw]
+        return {
+            "visible": True,
+            "settled": status == "settled",
+            "matchday": cfg.get("matchday"),
+            "big_match": cfg.get("big_match"),
+            "result": cfg.get("result"),
+            "picks": picks_out,
+        }
+
     @router.get("/history/full")
     async def history_full(
         game: str,
