@@ -1077,12 +1077,19 @@ function SummaryTab({
                             ]}>
                               {s}
                             </Text>
-                            <Text style={[
-                              styles.summaryCountValue,
-                              isWinner && { color: COLOR },
-                            ]}>
-                              {fx.counts[s]}
-                            </Text>
+                            <View style={styles.summaryCountBottom}>
+                              <Text style={[
+                                styles.summaryCountValue,
+                                isWinner && { color: COLOR },
+                              ]}>
+                                {fx.counts[s]}
+                              </Text>
+                              <Ionicons
+                                name="heart"
+                                size={10}
+                                color={isWinner ? COLOR : theme.colors.muted}
+                              />
+                            </View>
                           </View>
                         );
                       })}
@@ -1486,16 +1493,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row', gap: 4,
   },
   summaryCountPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 3,
-    minWidth: 44,
-    paddingHorizontal: 6, paddingVertical: 3,
+    minWidth: 42,
+    paddingHorizontal: 6, paddingVertical: 4,
     borderRadius: theme.radius.sm,
     borderWidth: 1, borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
+    gap: 2,
   },
   summaryCountSign: {
-    color: theme.colors.muted, fontWeight: '900', fontSize: 11,
+    color: theme.colors.muted, fontWeight: '900', fontSize: 12,
+  },
+  summaryCountBottom: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
   },
   summaryCountValue: {
     color: theme.colors.onSurface, fontWeight: '800', fontSize: 12,
