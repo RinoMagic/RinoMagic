@@ -509,6 +509,85 @@ def build_router(
         result["total"] = await db.sal_players.count_documents({})
         return result
 
+    @router.post("/players/import-xlsx")
+    async def import_players_xlsx(
+        file: UploadFile = File(...),
+        dry_run: bool = True,
+        replace_all: bool = False,
+        user: dict = Depends(require_admin),
+    ):
+        """Upload a "Quotazioni Fantacalcio" **XLSX** and import players.
+
+        Same semantics as ``import-pdf`` but reads the official
+        fantacalcio.it Excel export (sheet ``Tutti``). Instant parse, zero
+        OCR ambiguity.
+
+        - ``dry_run=true`` (default) → preview without writing to DB
+        - ``dry_run=false`` → actually imports (use ``replace_all=true`` to
+          wipe the existing roster first — recommended for a new season)
+        """
+        if not file.filename or not file.filename.lower().endswith(".xlsx"):
+            raise HTTPException(status_code=400, detail="Serve un file .xlsx")
+        raw = await file.read()
+        if len(raw) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="XLSX troppo grande (max 20MB)")
+
+        from excel_parser import parse_listone_xlsx  # local import → light startup
+        try:
+            extracted = parse_listone_xlsx(raw)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("XLSX parse error")
+            raise HTTPException(status_code=400, detail=f"Errore nell'analisi dell'XLSX: {e}")
+
+        if not extracted:
+            raise HTTPException(
+                status_code=400,
+                detail="Nessun giocatore riconosciuto nell'XLSX. Verifica il formato "
+                       "(atteso: 'Quotazioni Fantacalcio', foglio 'Tutti').",
+            )
+
+        by_team: Dict[str, int] = {}
+        by_role: Dict[str, int] = {}
+        for p in extracted:
+            by_team[p["team"]] = by_team.get(p["team"], 0) + 1
+            by_role[p["role"]] = by_role.get(p["role"], 0) + 1
+
+        result: Dict[str, Any] = {
+            "extracted": len(extracted),
+            "by_team": dict(sorted(by_team.items())),
+            "by_role": dict(sorted(by_role.items())),
+            "sample": extracted[:15],
+            "dry_run": dry_run,
+        }
+        if dry_run:
+            return result
+
+        if replace_all:
+            await db.sal_players.delete_many({})
+        now = _now()
+        docs = []
+        for p in extracted:
+            docs.append({
+                "id": str(uuid.uuid4()),
+                "fanta_id": p["fanta_id"],
+                "first_name": p["first_name"],
+                "last_name": p["last_name"],
+                "full_name": (p["first_name"] + " " + p["last_name"]).strip(),
+                "team": p["team"],
+                "role": p["role"],
+                "role_mantra": p.get("role_mantra"),
+                "price_current": p.get("price_current"),
+                "price_initial": p.get("price_initial"),
+                "active": True,
+                "created_at": now,
+            })
+        await db.sal_players.insert_many(docs)
+        result["inserted"] = len(docs)
+        result["total"] = await db.sal_players.count_documents({})
+        return result
+
     @router.get("/players")
     async def list_players(
         q: Optional[str] = Query(default=None, min_length=1, max_length=40),

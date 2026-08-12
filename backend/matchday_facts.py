@@ -387,6 +387,110 @@ def build_router(
         result["stored_total"] = await db.matchday_facts.count_documents({"matchday": matchday})
         return result
 
+    @router.post("/upload-xlsx")
+    async def upload_voti_xlsx(
+        file: UploadFile = File(...),
+        dry_run: bool = True,
+        replace: bool = True,
+        matchday_override: Optional[int] = None,
+        sheet: str = "Fantacalcio",
+        user: dict = Depends(require_admin),
+    ):
+        """Upload a "Voti Fantacalcio" **XLSX** for a Serie A matchday.
+
+        Same contract as ``upload-pdf`` but reads the official fantacalcio.it
+        Excel export. Reliable, fast, no OCR — the matchday is auto-detected
+        from the title row (e.g. "38ª giornata"). Rows with ``Ruolo == "ALL"``
+        (allenatore) are automatically excluded.
+
+        Query params:
+            dry_run: if ``true`` (default) only returns a preview
+            replace: if ``true`` (default) removes previous facts for the same
+                matchday before inserting the new ones (idempotent re-uploads)
+            matchday_override: force a matchday number if auto-detect fails
+            sheet: which sheet to read (``Fantacalcio`` [default], ``Statistico``
+                or ``Italia`` — same rows, different rating models)
+        """
+        if not file.filename or not file.filename.lower().endswith(".xlsx"):
+            raise HTTPException(status_code=400, detail="Serve un file .xlsx")
+        raw = await file.read()
+        if len(raw) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="XLSX troppo grande (max 20MB)")
+
+        from excel_parser import parse_voti_xlsx  # local import → light startup
+        try:
+            matchday, rows, diagnostics = parse_voti_xlsx(raw, sheet=sheet)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("XLSX parse error")
+            raise HTTPException(status_code=400, detail=f"Errore nell'analisi dell'XLSX: {e}")
+
+        if matchday_override is not None:
+            matchday = matchday_override
+            for r in rows:
+                r["matchday"] = matchday
+
+        if not rows:
+            teams_str = ", ".join(diagnostics.get("teams_seen", [])[:10]) or "nessuna"
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Nessun giocatore riconosciuto nell'XLSX ({diagnostics.get('lines_scanned', 0)} righe scansionate). "
+                    f"Squadre trovate: {teams_str}. Foglio usato: {diagnostics.get('sheet_used')}. "
+                    f"Assicurati che il file sia il 'Voti Fantacalcio' ufficiale."
+                ),
+            )
+        if not matchday:
+            raise HTTPException(
+                status_code=400,
+                detail="Giornata non rilevata dall'XLSX. Passa 'matchday_override' esplicito.",
+            )
+
+        summary = summarize(rows)
+        result: Dict[str, Any] = {
+            "matchday": matchday,
+            "dry_run": dry_run,
+            "source": "xlsx",
+            "sheet_used": diagnostics.get("sheet_used"),
+            "excluded_all": diagnostics.get("excluded_all", 0),
+            **summary,
+        }
+        if dry_run:
+            return result
+
+        now = _now()
+        if replace:
+            await db.matchday_facts.delete_many({"matchday": matchday})
+
+        docs = []
+        for r in rows:
+            docs.append({
+                "id": str(uuid.uuid4()),
+                **r,
+                "created_at": now,
+                "updated_at": now,
+            })
+        inserted = 0
+        for d in docs:
+            try:
+                await db.matchday_facts.update_one(
+                    {
+                        "matchday": d["matchday"],
+                        "team": d["team"],
+                        "player_code": d["player_code"],
+                    },
+                    {"$setOnInsert": d},
+                    upsert=True,
+                )
+                inserted += 1
+            except Exception:  # pragma: no cover
+                logger.exception("Upsert failed for %s / %s", d["team"], d["player_name"])
+
+        result["inserted"] = inserted
+        result["stored_total"] = await db.matchday_facts.count_documents({"matchday": matchday})
+        return result
+
     # --- Read --------------------------------------------------------------
 
     @router.get("/{matchday}")
