@@ -491,6 +491,21 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             details["credit_id"] = credit_id
             return details
         if game == "survival":
+            # Survival "Big Match" (bonus_type=="exact_score") bonus lives
+            # are granted by ``surviva.settle_matchday`` itself so that the
+            # +1 can double as a rescue from 0 (needs to happen WITHIN the
+            # Survival settle transaction, before eliminated_at is set).
+            # We MUST NOT $inc lives here or the bonus would be applied
+            # twice, inflating lives_left silently.
+            # The "first_scorer" bonus, however, is still granted here —
+            # it's independent from the Survival life-per-life mechanic
+            # and safely adds +1 on top of the current state.
+            if pick.get("bonus_type") == "exact_score":
+                details["kind"] = "extra_life"
+                details["tournament_id"] = sub_id
+                details["granted_by"] = "surviva.settle_matchday"
+                details["participations_updated"] = 0  # no-op here
+                return details
             # +1 life on THIS SPECIFIC tournament's participation (non-eliminated).
             r = await db.sv_participants.update_one(
                 {"tournament_id": sub_id, "user_id": uid, "eliminated_at": None},
