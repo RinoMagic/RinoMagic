@@ -1180,6 +1180,21 @@ def build_router(
         if not md:
             raise HTTPException(status_code=404, detail="Giornata non trovata")
 
+        # IDEMPOTENCY GUARD — running settle_matchday twice on the same
+        # matchday would re-apply life deductions AND re-award the Big Match
+        # bonus, silently inflating (or wrongly deflating) lives_left. We
+        # refuse the second call with a clear message. To re-run legitimately,
+        # an admin must first invoke the dedicated reset endpoint (roadmap).
+        if md.get("status") == "settled":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Giornata {md['matchday']} già liquidata (settle_at={md.get('settled_at')}). "
+                    "Ri-eseguire il calcolo ora falserebbe le vite e i bonus. "
+                    "Per rifare il settle serve prima resettare la giornata (funzione da abilitare)."
+                ),
+            )
+
         # STEP 0 — Auto-generate default picks for inactive players.
         # Anyone who didn't submit the required number of picks receives
         # default picks (first-fixture-first, sign chosen respecting their
