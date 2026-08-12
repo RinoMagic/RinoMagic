@@ -63,14 +63,18 @@ type Preview = {
 };
 
 // Reuse the pattern from pdf-admin.tsx for web file picker
-function useWebFileInput(onPick: (f: File) => void) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
+function useWebFileInput(onPick: (f: File) => void, kind: 'xlsx' | 'pdf') {
+  const inputRefXlsx = useRef<HTMLInputElement | null>(null);
+  const inputRefPdf = useRef<HTMLInputElement | null>(null);
   const openPicker = () => {
     if (Platform.OS !== 'web') return;
-    if (!inputRef.current) {
+    const ref = kind === 'xlsx' ? inputRefXlsx : inputRefPdf;
+    if (!ref.current) {
       const el = document.createElement('input');
       el.type = 'file';
-      el.accept = 'application/pdf,.pdf';
+      el.accept = kind === 'xlsx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx'
+        : 'application/pdf,.pdf';
       el.style.display = 'none';
       el.addEventListener('change', () => {
         const f = el.files?.[0];
@@ -78,9 +82,9 @@ function useWebFileInput(onPick: (f: File) => void) {
         el.value = '';
       });
       document.body.appendChild(el);
-      inputRef.current = el;
+      ref.current = el;
     }
-    inputRef.current.click();
+    ref.current.click();
   };
   return openPicker;
 }
@@ -129,26 +133,31 @@ export default function SettleMatchday() {
     loadState(md);
   }, [matchday]);
 
-  const doUploadPdf = async (file: File) => {
+  const doUploadVoti = async (file: File, kind: 'xlsx' | 'pdf') => {
     setUploading(true); setUploadResult(null);
     setUploadName(file.name);
     try {
       // ALWAYS read the CURRENT matchday from the ref — the admin's top
       // input is the single source of truth. This guards against React
-      // closure staleness and against the PDF header overriding the
+      // closure staleness and against the file header overriding the
       // admin's selection.
       const targetMd = parseInt(matchdayRef.current, 10) || 1;
+      const endpoint = kind === 'xlsx' ? '/admin/voti/upload-xlsx' : '/admin/voti/upload-pdf';
+      const mime = kind === 'xlsx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'application/pdf';
       const d = await apiUpload<any>(
-        '/admin/voti/upload-pdf',
-        { name: file.name, type: file.type || 'application/pdf', blob: file },
+        endpoint,
+        { name: file.name, type: file.type || mime, blob: file },
         { dry_run: false, replace: true, matchday_override: targetMd },
       );
       const detected = d.matchday;
       const note = detected && detected !== targetMd
-        ? ` ⚠️ (il PDF diceva G${detected}, salvato come G${targetMd} come da tuo campo in alto)`
+        ? ` ⚠️ (il file diceva G${detected}, salvato come G${targetMd} come da tuo campo in alto)`
         : '';
+      const src = kind === 'xlsx' ? 'Excel' : 'PDF';
       setUploadResult(
-        `Giornata ${d.matchday}: ${d.stored_total} giocatori · ${d.scorers_count} marcatori (${d.total_goals} gol).${note}`,
+        `${src} · Giornata ${d.matchday}: ${d.stored_total} giocatori · ${d.scorers_count} marcatori (${d.total_goals} gol).${note}`,
       );
       // Do NOT overwrite the matchday input — respect admin's choice.
       await loadState(targetMd);
@@ -161,7 +170,8 @@ export default function SettleMatchday() {
       setUploading(false);
     }
   };
-  const openPicker = useWebFileInput(doUploadPdf);
+  const openPickerXlsx = useWebFileInput((f) => doUploadVoti(f, 'xlsx'), 'xlsx');
+  const openPickerPdf = useWebFileInput((f) => doUploadVoti(f, 'pdf'), 'pdf');
 
   const _buildOverrides = () => {
     return Object.entries(overrides)
@@ -295,7 +305,7 @@ export default function SettleMatchday() {
           />
           {state && (
             <View style={styles.stateGrid}>
-              <StateChip icon="document-text" label="Voti PDF"
+              <StateChip icon="document-text" label="Voti file"
                 value={state.voti_loaded ? `${state.voti_rows} righe` : 'da caricare'}
                 good={state.voti_loaded} />
               <StateChip icon="trophy" label="Survival"
@@ -312,17 +322,23 @@ export default function SettleMatchday() {
           )}
         </View>
 
-        {/* Step 2 — PDF upload */}
+        {/* Step 2 — Voti file upload (XLSX primary, PDF legacy fallback) */}
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>2 · PDF VOTI GIORNATA</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={styles.cardLabel}>2 · FILE VOTI GIORNATA</Text>
+            <View style={styles.newBadge}>
+              <Text style={styles.newBadgeText}>EXCEL</Text>
+            </View>
+          </View>
           <Text style={styles.help}>
-            Carica il PDF di Fantacalcio (voti calciatori). Da questo ricaviamo
+            Carica il file <Text style={{ fontWeight: '800' }}>Excel (.xlsx)</Text> ufficiale di
+            fantacalcio.it — parsing istantaneo, nessuna ambiguità OCR. Da questo ricaviamo
             automaticamente risultati partite, marcatori, gol subiti/fatti per squadra.
           </Text>
           <Pressable
-            testID="mds-upload"
+            testID="mds-upload-xlsx"
             style={[styles.dropZone, uploading && { opacity: 0.6 }]}
-            onPress={openPicker}
+            onPress={openPickerXlsx}
             disabled={uploading}
           >
             {uploading
@@ -330,10 +346,27 @@ export default function SettleMatchday() {
               : <>
                   <Ionicons name="cloud-upload-outline" size={26} color={COLOR} />
                   <Text style={[styles.dropText, { color: COLOR }]}>
-                    {uploadName ? `Cambia file (${uploadName})` : 'Seleziona PDF Voti'}
+                    {uploadName ? `Cambia file (${uploadName})` : 'Seleziona Excel Voti (.xlsx)'}
                   </Text>
                 </>}
           </Pressable>
+
+          {/* Legacy PDF fallback */}
+          <View style={styles.legacyRow}>
+            <View style={styles.legacyLine} />
+            <Text style={styles.legacyLabel}>o usa il formato legacy</Text>
+            <View style={styles.legacyLine} />
+          </View>
+          <Pressable
+            testID="mds-upload-pdf"
+            style={[styles.legacyBtn, uploading && { opacity: 0.5 }]}
+            onPress={openPickerPdf}
+            disabled={uploading}
+          >
+            <Ionicons name="document-text-outline" size={16} color={theme.colors.muted} />
+            <Text style={styles.legacyBtnText}>Carica PDF Voti (legacy)</Text>
+          </Pressable>
+
           {uploadResult && <Text style={styles.uploadResult}>{uploadResult}</Text>}
         </View>
 
@@ -343,7 +376,7 @@ export default function SettleMatchday() {
             <Text style={styles.cardLabel}>3 · PRIMO MARCATORE DELLA GIORNATA</Text>
             <Text style={styles.help}>
               Serve per liquidare il bonus «Primo Marcatore» (Score + Fanta).
-              Scegli dalla lista dei marcatori estratti dal PDF.
+              Scegli dalla lista dei marcatori estratti dal file voti.
             </Text>
             <FirstScorerPicker
               matchday={parseInt(matchday, 10) || 1}
@@ -924,4 +957,31 @@ const styles = StyleSheet.create({
   },
   privacyTitle: { color: '#DBEAFE', fontSize: 13, fontWeight: '900', marginBottom: 2 },
   privacyText: { color: '#BFDBFE', fontSize: 11, lineHeight: 15 },
+  newBadge: {
+    backgroundColor: '#10B981',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  newBadgeText: { color: '#fff', fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+  legacyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+  },
+  legacyLine: { flex: 1, height: 1, backgroundColor: theme.colors.border },
+  legacyLabel: { color: theme.colors.muted, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
+  legacyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  legacyBtnText: { color: theme.colors.muted, fontSize: 12, fontWeight: '700' },
 });

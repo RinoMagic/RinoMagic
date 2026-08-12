@@ -1,11 +1,11 @@
 /*
- * /admin/players — Upload the "Listone Fantacalcio" PDF.
+ * /admin/players — Upload the "Listone Fantacalcio" (Excel or PDF).
  *
  * Populates the `sal_players` collection used by ScoreAndLive, FantaGiornata
  * and Surviva for resolving player picks and lineups.
  *
  * Admin flow:
- *   1. Pick the standard Listone PDF (Id · R · RM · Nome · Squadra · Qt...)
+ *   1. Pick the Listone file (XLSX primary, PDF as legacy fallback)
  *   2. Backend returns a dry-run preview (extracted count, by team, by role)
  *   3. Admin confirms → backend imports with replace_all=true (full overwrite)
  */
@@ -36,14 +36,18 @@ type Preview = {
   dry_run: boolean;
 };
 
-function useWebFileInput(onPick: (f: File) => void) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
+function useWebFileInput(onPick: (f: File) => void, kind: 'xlsx' | 'pdf') {
+  const inputRefXlsx = useRef<HTMLInputElement | null>(null);
+  const inputRefPdf = useRef<HTMLInputElement | null>(null);
   const openPicker = () => {
     if (Platform.OS !== 'web') return;
-    if (!inputRef.current) {
+    const ref = kind === 'xlsx' ? inputRefXlsx : inputRefPdf;
+    if (!ref.current) {
       const el = document.createElement('input');
       el.type = 'file';
-      el.accept = 'application/pdf,.pdf';
+      el.accept = kind === 'xlsx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx'
+        : 'application/pdf,.pdf';
       el.style.display = 'none';
       el.addEventListener('change', () => {
         const f = el.files?.[0];
@@ -51,9 +55,9 @@ function useWebFileInput(onPick: (f: File) => void) {
         el.value = '';
       });
       document.body.appendChild(el);
-      inputRef.current = el;
+      ref.current = el;
     }
-    inputRef.current.click();
+    ref.current.click();
   };
   return openPicker;
 }
@@ -63,6 +67,7 @@ export default function AdminPlayers() {
   const [currentCount, setCurrentCount] = useState<number | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [pickedFile, setPickedFile] = useState<File | null>(null);
+  const [pickedKind, setPickedKind] = useState<'xlsx' | 'pdf'>('xlsx');
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -78,41 +83,63 @@ export default function AdminPlayers() {
 
   useEffect(() => { loadCount(); }, []);
 
-  const onPick = async (f: File) => {
-    if (!f.name.toLowerCase().endsWith('.pdf')) {
-      setFlash({ type: 'err', text: 'Serve un file .pdf' });
-      return;
-    }
+  const runDryRun = async (f: File, kind: 'xlsx' | 'pdf') => {
     setBusy(true); setFlash(null); setPreview(null); setPickedFile(null);
     try {
+      const endpoint = kind === 'xlsx' ? '/sal/players/import-xlsx' : '/sal/players/import-pdf';
+      const mime = kind === 'xlsx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'application/pdf';
       const p = await apiUpload<Preview>(
-        '/sal/players/import-pdf',
-        { name: f.name, type: f.type || 'application/pdf', blob: f },
+        endpoint,
+        { name: f.name, type: f.type || mime, blob: f },
         { dry_run: true },
       );
       setPreview(p);
       setPickedFile(f);
+      setPickedKind(kind);
     } catch (e: any) {
-      setFlash({ type: 'err', text: e.message || 'Errore lettura PDF' });
+      setFlash({ type: 'err', text: e.message || `Errore lettura ${kind.toUpperCase()}` });
     } finally {
       setBusy(false);
     }
   };
 
-  const openPicker = useWebFileInput(onPick);
+  const onPickXlsx = async (f: File) => {
+    if (!f.name.toLowerCase().endsWith('.xlsx')) {
+      setFlash({ type: 'err', text: 'Serve un file .xlsx' });
+      return;
+    }
+    await runDryRun(f, 'xlsx');
+  };
+
+  const onPickPdf = async (f: File) => {
+    if (!f.name.toLowerCase().endsWith('.pdf')) {
+      setFlash({ type: 'err', text: 'Serve un file .pdf' });
+      return;
+    }
+    await runDryRun(f, 'pdf');
+  };
+
+  const openPickerXlsx = useWebFileInput(onPickXlsx, 'xlsx');
+  const openPickerPdf = useWebFileInput(onPickPdf, 'pdf');
 
   const confirm = async () => {
     if (!pickedFile) return;
     setBusy(true); setFlash(null);
     try {
+      const endpoint = pickedKind === 'xlsx' ? '/sal/players/import-xlsx' : '/sal/players/import-pdf';
+      const mime = pickedKind === 'xlsx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'application/pdf';
       const r = await apiUpload<any>(
-        '/sal/players/import-pdf',
-        { name: pickedFile.name, type: 'application/pdf', blob: pickedFile },
+        endpoint,
+        { name: pickedFile.name, type: mime, blob: pickedFile },
         { dry_run: false, replace_all: true },
       );
       setFlash({
         type: 'ok',
-        text: `Listone importato: ${r.inserted} giocatori (totale in DB: ${r.total}).`,
+        text: `Listone importato da ${pickedKind.toUpperCase()}: ${r.inserted} giocatori (totale in DB: ${r.total}).`,
       });
       setPreview(null);
       setPickedFile(null);
@@ -204,28 +231,48 @@ export default function AdminPlayers() {
           <View style={styles.card}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Ionicons name="document-attach" size={18} color={COLOR} />
-              <Text style={styles.cardTitle}>Carica PDF Listone</Text>
+              <Text style={styles.cardTitle}>Carica Listone</Text>
+              <View style={styles.badgePrimary}>
+                <Text style={styles.badgeText}>NUOVO</Text>
+              </View>
             </View>
             <Text style={styles.muted}>
-              Formato accettato: Listone ufficiale Fantacalcio (colonne{' '}
-              <Text style={styles.mono}>Id · R · RM · Nome · Squadra · Qt.A · Qt.I · Diff · Qt.AM · Qt.IM</Text>).
+              Formato consigliato: <Text style={{ fontWeight: '800' }}>Excel (.xlsx)</Text> ufficiale di
+              fantacalcio.it. Parsing istantaneo, zero ambiguità OCR.
               L&apos;import sostituisce completamente l&apos;elenco esistente.
             </Text>
             <Pressable
-              onPress={openPicker}
+              onPress={openPickerXlsx}
               disabled={busy}
               style={[styles.cta, { backgroundColor: COLOR, opacity: busy ? 0.5 : 1 }]}
-              testID="players-pick"
+              testID="players-pick-xlsx"
             >
               {busy ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
                   <Ionicons name="cloud-upload" size={18} color="#fff" />
-                  <Text style={styles.ctaText}>Scegli PDF Listone</Text>
+                  <Text style={styles.ctaText}>Scegli file Excel (.xlsx)</Text>
                 </>
               )}
             </Pressable>
+
+            {/* Legacy PDF fallback */}
+            <View style={styles.legacyDivider}>
+              <View style={styles.legacyLine} />
+              <Text style={styles.legacyLabel}>o usa il formato legacy</Text>
+              <View style={styles.legacyLine} />
+            </View>
+            <Pressable
+              onPress={openPickerPdf}
+              disabled={busy}
+              style={[styles.ctaLegacy, { opacity: busy ? 0.5 : 1 }]}
+              testID="players-pick-pdf"
+            >
+              <Ionicons name="document-text-outline" size={16} color={theme.colors.muted} />
+              <Text style={styles.ctaLegacyText}>Carica PDF (legacy)</Text>
+            </Pressable>
+
             {Platform.OS !== 'web' && (
               <Text style={styles.mutedSm}>
                 Nota: su mobile-nativo l&apos;upload da file system non è ancora abilitato.
@@ -246,7 +293,7 @@ export default function AdminPlayers() {
             <View style={styles.okBox}>
               <Ionicons name="checkmark-circle" size={16} color={theme.colors.success} />
               <Text style={styles.okText}>
-                {preview.extracted} giocatori estratti · {teamRows.length} squadre
+                {preview.extracted} giocatori estratti · {teamRows.length} squadre · fonte: {pickedKind.toUpperCase()}
               </Text>
             </View>
 
@@ -428,4 +475,31 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.error + '55',
   },
   flashText: { fontSize: 13, fontWeight: '700', flex: 1 },
+  badgePrimary: {
+    backgroundColor: '#10B981',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  badgeText: { color: '#fff', fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+  legacyDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  legacyLine: { flex: 1, height: 1, backgroundColor: theme.colors.border },
+  legacyLabel: { color: theme.colors.muted, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
+  ctaLegacy: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 38,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceTertiary,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  ctaLegacyText: { color: theme.colors.muted, fontSize: 12, fontWeight: '700' },
 });
