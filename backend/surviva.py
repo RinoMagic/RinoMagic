@@ -1265,7 +1265,9 @@ def build_router(
         # giornata's Big Match (via the "exact_score" Bonus pick on the
         # Survival subscription), they earn +1 life on top of the standard
         # settlement. Constraints:
-        #   * Cap = tournament's initial_lives (no runaway)
+        #   * NO CAP: lives can grow unbounded (4, 5, 6, …). Survival does
+        #     NOT clamp to initial_lives — accumulating lives is a valid
+        #     strategic reward across a season.
         #   * NO resurrection: applies only if the participant is still
         #     alive AFTER the wrong-picks deduction (new_lives > 0). A
         #     player who dropped to 0 stays eliminated — the tie-break
@@ -1304,7 +1306,7 @@ def build_router(
                 except Exception:  # pragma: no cover
                     logger.exception("Big Match bonus scan failed")
 
-        initial_lives_cap = int(t.get("initial_lives", DEFAULT_LIVES))
+        initial_lives_cap = int(t.get("initial_lives", DEFAULT_LIVES))  # kept for reference only — NOT applied to Big Match bonus
 
         # Apply participant updates. We iterate over the UNION of participants
         # with pending life deltas AND those who earned the Big Match bonus,
@@ -1320,9 +1322,10 @@ def build_router(
                 uid, {"life_delta": 0, "new_locks": []},
             )
             new_lives = max(0, int(p.get("lives_left", 0)) + state["life_delta"])
-            # Big Match bonus: only if still alive after deductions.
+            # Big Match bonus: +1 life, uncapped. Only if still alive after
+            # the wrong-picks deduction (no resurrection from 0).
             if uid in big_match_bonus_users and new_lives > 0:
-                new_lives = min(initial_lives_cap, new_lives + 1)
+                new_lives = new_lives + 1
             existing = list(p.get("locked_teams") or [])
             for t_name in state["new_locks"]:
                 if t_name and t_name not in existing:

@@ -535,7 +535,7 @@ function PlayTab({
             <Text style={styles.bigMatchHint}>
               {md.my_big_match_pick
                 ? `Il tuo pronostico: ${md.my_big_match_pick.home_score} - ${md.my_big_match_pick.away_score} · tocca per modificare`
-                : 'Pronostica il risultato esatto → +1 vita se azzecchi (cap 3)'}
+                : 'Pronostica il risultato esatto → +1 vita se azzecchi (accumulabile)'}
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#fff" />
