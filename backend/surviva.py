@@ -882,7 +882,7 @@ def build_router(
         matchdays = [
             md async for md in db.sv_matchdays.find(
                 {"tournament_id": tid},
-                {"_id": 0, "id": 1, "matchday": 1, "status": 1, "fixtures": 1},
+                {"_id": 0, "id": 1, "matchday": 1, "status": 1, "fixtures": 1, "big_match_bonus_users": 1},
             ).sort("matchday", 1)
         ]
         # Group picks by matchday_id for one query
@@ -905,6 +905,13 @@ def build_router(
                 "settled": settled,
                 "deadline_passed": deadline_passed,
                 "hidden": not visible,
+                # Whether THIS participant nailed the Big Match exact score
+                # for this matchday and received +1 life. Surfaced to the
+                # picks modal so the UI can show a "🎁" icon next to the
+                # Giornata title. Only visible on settled matchdays.
+                "big_match_bonus_won": bool(
+                    settled and user_id in (md.get("big_match_bonus_users") or [])
+                ),
             }
             if visible:
                 entry["picks"] = picks_by_md.get(md["id"], [])

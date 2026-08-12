@@ -31,6 +31,7 @@ type ParticipantPickRow = {
   settled: boolean;
   deadline_passed: boolean;
   hidden: boolean;
+  big_match_bonus_won?: boolean;
   picks?: {
     home_team: string;
     away_team: string;
@@ -111,7 +112,17 @@ export function SurvivaPicksModal({
             {data && data.matchdays.map((md) => (
               <View key={md.matchday_id} style={styles.mdBlock}>
                 <View style={styles.mdBlockHeader}>
-                  <Text style={styles.mdBlockTitle}>Giornata {md.matchday}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                    <Text style={styles.mdBlockTitle}>Giornata {md.matchday}</Text>
+                    {md.big_match_bonus_won && (
+                      <View
+                        style={styles.bonusGiftBadge}
+                        accessibilityLabel="Big Match Bonus vinto: +1 vita"
+                      >
+                        <Text style={styles.bonusGiftEmoji}>🎁</Text>
+                      </View>
+                    )}
+                  </View>
                   <View style={[
                     styles.mdBlockBadge,
                     md.settled && { backgroundColor: theme.colors.success + '22' },
@@ -240,4 +251,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   pickSignText: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 12 },
+  bonusGiftBadge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 5,
+    borderRadius: 11,
+    backgroundColor: '#F59E0B22',
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bonusGiftEmoji: { fontSize: 12, lineHeight: 16 },
 });
