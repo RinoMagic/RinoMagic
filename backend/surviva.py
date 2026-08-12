@@ -1261,17 +1261,19 @@ def build_router(
         ]
 
         # ----- Big Match Bonus (+1 life) ---------------------------------
-        # Rule (Aug 2026): if a participant nailed the EXACT score of the
+        # Rule (Aug 2026 v2): if a participant nailed the EXACT score of the
         # giornata's Big Match (via the "exact_score" Bonus pick on the
-        # Survival subscription), they earn +1 life on top of the standard
-        # settlement. Constraints:
-        #   * NO CAP: lives can grow unbounded (4, 5, 6, …). Survival does
+        # Survival subscription), they earn +1 life at settlement.
+        # Constraints:
+        #   * NO CAP: lives can grow unbounded (4, 5, 44, …). Survival does
         #     NOT clamp to initial_lives — accumulating lives is a valid
         #     strategic reward across a season.
-        #   * NO resurrection: applies only if the participant is still
-        #     alive AFTER the wrong-picks deduction (new_lives > 0). A
-        #     player who dropped to 0 stays eliminated — the tie-break
-        #     resurrection is the only path back.
+        #   * RESCUE ALWAYS: the bonus is applied AFTER the wrong-picks
+        #     deduction, so it fully rescues a player who would otherwise
+        #     end at 0. Example: 3 lives → 3 wrong picks → 0 → +1 bonus = 1.
+        #     Any player who ENTERED the matchday with ≥1 life can be
+        #     saved by the Big Match. Only pre-existing eliminated players
+        #     stay out (they don't submit picks in the first place).
         #   * Reads bonus_picks (game="survival", bonus_type="exact_score")
         #     for the matchday; no coupling with the Bonus module's own
         #     settle_at flag (we just need the prediction + actual score).
@@ -1322,9 +1324,11 @@ def build_router(
                 uid, {"life_delta": 0, "new_locks": []},
             )
             new_lives = max(0, int(p.get("lives_left", 0)) + state["life_delta"])
-            # Big Match bonus: +1 life, uncapped. Only if still alive after
-            # the wrong-picks deduction (no resurrection from 0).
-            if uid in big_match_bonus_users and new_lives > 0:
+            # Big Match bonus: ALWAYS +1 life, applied AFTER the wrong-picks
+            # deduction. This is intentional so it doubles as a rescue net —
+            # a player going 3→0 from wrong picks ends the giornata at 1
+            # life if they nailed the Big Match exact score.
+            if uid in big_match_bonus_users:
                 new_lives = new_lives + 1
             existing = list(p.get("locked_teams") or [])
             for t_name in state["new_locks"]:
