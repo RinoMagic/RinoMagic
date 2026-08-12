@@ -758,11 +758,31 @@ function SaveLogBlock({ log }: { log: any }) {
                 {row.skipped ? `skipped (${row.reason})`
                   : row.status === 200 ? 'ok'
                   : `errore ${row.status}: ${JSON.stringify(row.detail).slice(0, 100)}`}
+                {row.game === 'survival' && row.big_match_bonus_count > 0 && (
+                  <Text style={styles.bigMatchBonusInline}>
+                    {'  🎯 '}{row.big_match_bonus_count} {row.big_match_bonus_count === 1 ? 'giocatore' : 'giocatori'} +1 vita Big Match
+                  </Text>
+                )}
               </Text>
             </View>
           ))}
         </ScrollView>
       )}
+      {/* Big Match Bonus aggregate banner across all Survival tournaments */}
+      {(() => {
+        const totalBonus = (log.log || [])
+          .filter((r: any) => r.game === 'survival' && r.big_match_bonus_count)
+          .reduce((s: number, r: any) => s + (r.big_match_bonus_count || 0), 0);
+        if (totalBonus <= 0) return null;
+        return (
+          <View style={styles.bigMatchBonusBanner}>
+            <Text style={{ fontSize: 20 }}>🎯</Text>
+            <Text style={styles.bigMatchBonusBannerText}>
+              {totalBonus} {totalBonus === 1 ? 'giocatore ha' : 'giocatori hanno'} azzeccato il Big Match Bonus (+1 vita)
+            </Text>
+          </View>
+        );
+      })()}
     </View>
   );
 }
@@ -984,4 +1004,27 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
   },
   legacyBtnText: { color: theme.colors.muted, fontSize: 12, fontWeight: '700' },
+  bigMatchBonusInline: {
+    color: '#F59E0B',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  bigMatchBonusBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 10,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: '#F59E0B22',
+    borderWidth: 1,
+    borderColor: '#F59E0B55',
+  },
+  bigMatchBonusBannerText: {
+    color: '#F59E0B',
+    fontSize: 13,
+    fontWeight: '800',
+    flex: 1,
+    lineHeight: 18,
+  },
 });

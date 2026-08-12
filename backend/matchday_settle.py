@@ -430,9 +430,17 @@ def build_router(*, db, require_admin) -> APIRouter:
                     f"{api}/sv/tournaments/{t['id']}/matchdays/{md_doc['id']}/settle",
                     json={"results": results},
                 )
-                log.append({"game": "survival", "tournament": t["name"],
-                            "status": r.status_code,
-                            "detail": r.json() if r.status_code == 200 else r.text[:200]})
+                body = r.json() if r.status_code == 200 else None
+                entry = {
+                    "game": "survival", "tournament": t["name"],
+                    "status": r.status_code,
+                    "detail": body if body else r.text[:200],
+                }
+                if body:
+                    bm_count = int(body.get("big_match_bonus_count") or 0)
+                    if bm_count > 0:
+                        entry["big_match_bonus_count"] = bm_count
+                log.append(entry)
 
             # ---- Score tournaments ------------------------------------
             async for t in db.sal_tournaments.find(
