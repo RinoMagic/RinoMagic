@@ -36,12 +36,23 @@ const COLOR = '#EF4444';
 const MAX_PICKS_UI = 10;
 
 type Fixture = { home_team: string; away_team: string; kickoff_iso?: string | null; postponed_before?: boolean };
+type BigMatchInfo = {
+  config_id?: string | null;
+  home_team: string;
+  away_team: string;
+  kickoff_iso?: string | null;
+  settled?: boolean;
+};
 type Matchday = {
   id: string; matchday: number; status: string;
   kickoff_first: string | null; fixtures: Fixture[];
   locked: boolean; settled: boolean; my_picks_count: number;
   picks_required?: number;
   tie_break?: boolean;
+  big_match?: BigMatchInfo | null;
+  my_big_match_pick?: { home_score: number; away_score: number } | null;
+  my_big_match_bonus_won?: boolean;
+  big_match_bonus_count?: number;
 };
 type Tournament = {
   id: string; name: string; season: string; status: string;
@@ -390,6 +401,7 @@ export default function SurvivaTournament() {
             submitting={submitting}
             onRemoveFixture={removeFixture}
             onTogglePostponed={togglePostponed}
+            onOpenBigMatchBonus={() => router.push('/bonus/survival')}
           />
         )}
         {tab === 'leaderboard' && (
@@ -428,7 +440,7 @@ export default function SurvivaTournament() {
 function PlayTab({
   t, md, pending, myPicks, lockedTeams, livesLeft, canPlay,
   pickBlockedTeam, isConcession, onTogglePick, onSubmitAll, submitting,
-  onRemoveFixture, onTogglePostponed,
+  onRemoveFixture, onTogglePostponed, onOpenBigMatchBonus,
 }: {
   t: Tournament; md: Matchday | null;
   pending: MyPick[]; myPicks: MyPick[];
@@ -440,6 +452,7 @@ function PlayTab({
   submitting: boolean;
   onRemoveFixture: (fx: Fixture, idx: number) => void;
   onTogglePostponed: (fx: Fixture, idx: number, next: boolean) => void;
+  onOpenBigMatchBonus: () => void;
 }) {
   if (!md) {
     return <Text style={styles.muted}>Nessuna giornata in corso.</Text>;
@@ -491,6 +504,43 @@ function PlayTab({
                 : `Hai ${requiredPicks} vite rimaste: scegli ${requiredPicks} partite diverse e per ognuna il segno (1 / X / 2) — 1 pronostico per ogni vita. Puoi cambiare i pronostici finché la giornata non si blocca.`}
         </Text>
       </View>
+
+      {/* Big Match Bonus CTA — appears when admin has configured the
+          Big Match for the current matchday. Player can win +1 life
+          by nailing the exact score via the linked Bonus section. */}
+      {t.joined && md.big_match && (
+        <Pressable
+          onPress={onOpenBigMatchBonus}
+          style={[
+            styles.bigMatchBanner,
+            md.my_big_match_pick && styles.bigMatchBannerDone,
+          ]}
+          testID="sv-bigmatch-cta"
+        >
+          <View style={styles.bigMatchIconWrap}>
+            <Text style={styles.bigMatchIcon}>🎯</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={styles.bigMatchTitle}>BIG MATCH — Bonus +1 vita</Text>
+              {md.my_big_match_pick && (
+                <View style={styles.bigMatchDoneBadge}>
+                  <Ionicons name="checkmark" size={10} color="#fff" />
+                </View>
+              )}
+            </View>
+            <Text style={styles.bigMatchTeams}>
+              {md.big_match.home_team} vs {md.big_match.away_team}
+            </Text>
+            <Text style={styles.bigMatchHint}>
+              {md.my_big_match_pick
+                ? `Il tuo pronostico: ${md.my_big_match_pick.home_score} - ${md.my_big_match_pick.away_score} · tocca per modificare`
+                : 'Pronostica il risultato esatto → +1 vita se azzecchi (cap 3)'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color="#fff" />
+        </Pressable>
+      )}
 
       {/* Progress + Submit CTA */}
       {t.joined && !md.locked && (
@@ -1590,4 +1640,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   pickSignText: { color: theme.colors.onSurface, fontWeight: '800', fontSize: 12 },
+  bigMatchBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    borderRadius: theme.radius.md,
+    backgroundColor: '#F59E0B',
+    borderWidth: 2,
+    borderColor: '#FBBF24',
+    marginBottom: 8,
+  },
+  bigMatchBannerDone: {
+    backgroundColor: '#10B981',
+    borderColor: '#34D399',
+  },
+  bigMatchIconWrap: {
+    width: 40, height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bigMatchIcon: { fontSize: 22 },
+  bigMatchTitle: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  bigMatchDoneBadge: {
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 8,
+    width: 16, height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bigMatchTeams: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  bigMatchHint: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 11,
+    marginTop: 3,
+    lineHeight: 15,
+  },
 });

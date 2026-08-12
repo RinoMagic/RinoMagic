@@ -736,6 +736,8 @@ def build_router(
         locked = _md_is_locked(md)
         my_picks_count = 0
         picks_required = REQUIRED_PICKS_PER_MATCHDAY  # fallback
+        my_big_match_bonus_won = False
+        my_big_match_pick: Optional[dict] = None
         if viewer_id:
             my_picks_count = await db.sv_picks.count_documents({
                 "tournament_id": md["tournament_id"],
@@ -752,6 +754,47 @@ def build_router(
                 picks_required = max(0, int(part.get("lives_left") or 0))
             else:
                 picks_required = 0
+
+            # Did this viewer earn the Big Match bonus for this matchday?
+            bonus_users = md.get("big_match_bonus_users") or []
+            if viewer_id in bonus_users:
+                my_big_match_bonus_won = True
+
+            # Their submitted exact_score pick for the current Big Match
+            # (surfaced in the pick screen so they know if they already
+            # picked or need to go to the Bonus section).
+            bp = await db.bonus_picks.find_one(
+                {"game": "survival",
+                 "bonus_type": "exact_score",
+                 "season": md.get("season"),
+                 "matchday": md["matchday"],
+                 "user_id": viewer_id},
+                {"_id": 0, "pick": 1, "subscription_id": 1},
+            )
+            if bp:
+                my_big_match_pick = bp.get("pick")
+
+        # Big Match info (from the active exact_score Bonus config for
+        # this season+matchday). Surfaced so the pick screen can show a
+        # "🎯 Bonus Big Match" CTA and the summary/history can show which
+        # game is the Big Match of the giornata.
+        big_match_info: Optional[dict] = None
+        if md.get("season") and md.get("matchday"):
+            bm_cfg = await db.bonus_configs.find_one(
+                {"season": md["season"], "matchday": md["matchday"],
+                 "bonus_type": "exact_score"},
+                {"_id": 0, "id": 1, "big_match": 1, "settled_at": 1},
+            )
+            if bm_cfg and bm_cfg.get("big_match"):
+                bm = bm_cfg["big_match"]
+                big_match_info = {
+                    "config_id": bm_cfg.get("id"),
+                    "home_team": bm.get("home_team"),
+                    "away_team": bm.get("away_team"),
+                    "kickoff_iso": bm.get("kickoff_iso"),
+                    "settled": bool(bm_cfg.get("settled_at")),
+                }
+
         return {
             "id": md["id"],
             "tournament_id": md["tournament_id"],
@@ -765,6 +808,10 @@ def build_router(
             "tie_break": bool(md.get("tie_break")),
             "my_picks_count": my_picks_count,
             "picks_required": picks_required,
+            "big_match": big_match_info,
+            "my_big_match_pick": my_big_match_pick,
+            "my_big_match_bonus_won": my_big_match_bonus_won,
+            "big_match_bonus_count": len(md.get("big_match_bonus_users") or []),
         }
 
     @router.get("/tournaments/{tid}/matchdays")
@@ -1213,12 +1260,69 @@ def build_router(
             )
         ]
 
-        # Apply participant updates
-        for uid, state in pending_participant_updates.items():
+        # ----- Big Match Bonus (+1 life) ---------------------------------
+        # Rule (Aug 2026): if a participant nailed the EXACT score of the
+        # giornata's Big Match (via the "exact_score" Bonus pick on the
+        # Survival subscription), they earn +1 life on top of the standard
+        # settlement. Constraints:
+        #   * Cap = tournament's initial_lives (no runaway)
+        #   * NO resurrection: applies only if the participant is still
+        #     alive AFTER the wrong-picks deduction (new_lives > 0). A
+        #     player who dropped to 0 stays eliminated — the tie-break
+        #     resurrection is the only path back.
+        #   * Reads bonus_picks (game="survival", bonus_type="exact_score")
+        #     for the matchday; no coupling with the Bonus module's own
+        #     settle_at flag (we just need the prediction + actual score).
+        big_match_bonus_users: set = set()
+        bm_cfg = await db.bonus_configs.find_one(
+            {"season": md.get("season"), "matchday": md["matchday"],
+             "bonus_type": "exact_score"},
+            {"_id": 0, "big_match": 1},
+        )
+        if bm_cfg and bm_cfg.get("big_match"):
+            bm = bm_cfg["big_match"]
+            bm_res = results_by_key.get((bm["home_team"], bm["away_team"]))
+            if bm_res and not bm_res.get("postponed"):
+                try:
+                    actual_hs = int(bm_res.get("home_score") or 0)
+                    actual_as = int(bm_res.get("away_score") or 0)
+                    async for bp in db.bonus_picks.find(
+                        {"game": "survival",
+                         "bonus_type": "exact_score",
+                         "season": md.get("season"),
+                         "matchday": md["matchday"]},
+                        {"_id": 0, "user_id": 1, "pick": 1},
+                    ):
+                        pred = bp.get("pick") or {}
+                        try:
+                            ph = int(pred.get("home_score"))
+                            pa = int(pred.get("away_score"))
+                        except (TypeError, ValueError):
+                            continue
+                        if ph == actual_hs and pa == actual_as:
+                            big_match_bonus_users.add(bp["user_id"])
+                except Exception:  # pragma: no cover
+                    logger.exception("Big Match bonus scan failed")
+
+        initial_lives_cap = int(t.get("initial_lives", DEFAULT_LIVES))
+
+        # Apply participant updates. We iterate over the UNION of participants
+        # with pending life deltas AND those who earned the Big Match bonus,
+        # so a participant who made 0 wrong picks still gets the +1 applied.
+        all_uids_to_update: set = (
+            set(pending_participant_updates.keys()) | big_match_bonus_users
+        )
+        for uid in all_uids_to_update:
             p = await _get_participant(tid, uid)
             if not p:
                 continue
+            state = pending_participant_updates.get(
+                uid, {"life_delta": 0, "new_locks": []},
+            )
             new_lives = max(0, int(p.get("lives_left", 0)) + state["life_delta"])
+            # Big Match bonus: only if still alive after deductions.
+            if uid in big_match_bonus_users and new_lives > 0:
+                new_lives = min(initial_lives_cap, new_lives + 1)
             existing = list(p.get("locked_teams") or [])
             for t_name in state["new_locks"]:
                 if t_name and t_name not in existing:
@@ -1269,7 +1373,11 @@ def build_router(
         # Mark matchday as settled and advance the tournament
         await db.sv_matchdays.update_one(
             {"id": md_id, "tournament_id": tid},
-            {"$set": {"status": "settled", "settled_at": _now()}},
+            {"$set": {
+                "status": "settled",
+                "settled_at": _now(),
+                "big_match_bonus_users": list(big_match_bonus_users),
+            }},
         )
         # Next matchday: the smallest one with matchday > current that exists.
         next_md = await db.sv_matchdays.find_one(
@@ -1346,6 +1454,8 @@ def build_router(
                 [s["user_id"] for s in pre_alive_snapshot]
                 if tie_break_triggered else []
             ),
+            "big_match_bonus_users": list(big_match_bonus_users),
+            "big_match_bonus_count": len(big_match_bonus_users),
         }
 
     # ------------------------------------------------------------------
