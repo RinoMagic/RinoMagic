@@ -209,20 +209,23 @@ export default function BonusGame() {
               </View>
             )}
 
-            {data.subscriptions.map((sub) => (
-              <SubscriptionCard
-                key={sub.id}
-                game={game}
-                subscription={sub}
-                bonusType={data.bonus_type}
-                color={meta.color}
-                subLabel={meta.subLabel}
-                canPlay={canPlay}
-                configStatus={data.config!.status}
-                season={SEASON}
-                onReload={load}
-              />
-            ))}
+            {/* Only allow picking when the Big Match is set (for exact_score).
+                Otherwise the form would collect a prediction against nothing. */}
+            {data.bonus_type === 'exact_score' && !data.config.big_match ? null
+              : data.subscriptions.map((sub) => (
+                <SubscriptionCard
+                  key={sub.id}
+                  game={game}
+                  subscription={sub}
+                  bonusType={data.bonus_type}
+                  color={meta.color}
+                  subLabel={meta.subLabel}
+                  canPlay={canPlay}
+                  configStatus={data.config!.status}
+                  season={SEASON}
+                  onReload={load}
+                />
+              ))}
           </>
         )}
 
@@ -570,17 +573,34 @@ function SubscriptionCard({
 function MatchdayCard({ data, color }: { data: Available; color: string }) {
   const c = data.config!;
   const hasBigMatch = data.bonus_type === 'exact_score' && c.big_match;
+  const isDraft = data.bonus_type === 'exact_score' && !c.big_match;
   return (
     <View style={[styles.matchCard, { borderColor: color }]}>
       {hasBigMatch ? (
         <>
-          <Text style={styles.bigMatchTitle}>BIG MATCH · G{c.matchday}</Text>
+          <Text style={styles.bigMatchTitle}>
+            {'\u{1F3AF}'} BIG MATCH · GIORNATA {c.matchday}
+          </Text>
           <View style={styles.teamsRow}>
             <Text style={styles.teamName}>{c.big_match!.home_team}</Text>
             <Text style={[styles.vs, { color }]}>VS</Text>
             <Text style={styles.teamName}>{c.big_match!.away_team}</Text>
           </View>
+          <Text style={styles.bigMatchHint}>
+            Pronostica il risultato esatto (es. 2-1) per vincere +1 vita
+          </Text>
         </>
+      ) : isDraft ? (
+        <View style={styles.draftWarn}>
+          <Ionicons name="warning" size={20} color="#F59E0B" />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.draftWarnTitle}>Big Match non ancora scelto</Text>
+            <Text style={styles.draftWarnHint}>
+              L&apos;admin ha aperto il Bonus per la Giornata {c.matchday} ma non ha
+              ancora selezionato quale partita usare. Riprova più tardi.
+            </Text>
+          </View>
+        </View>
       ) : (
         <View style={styles.matchRow}>
           <Text style={styles.matchLabel}>Giornata</Text>
@@ -765,14 +785,46 @@ const styles = StyleSheet.create({
   matchRow: { flexDirection: 'row', alignItems: 'center' },
   matchLabel: { color: theme.colors.muted, fontSize: 12, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase', flex: 1 },
   matchMd: { fontSize: 18, fontWeight: '800' },
-  bigMatchTitle: { color: theme.colors.muted, fontSize: 10, fontWeight: '800', letterSpacing: 1.2, marginTop: 4 },
+  bigMatchTitle: {
+    color: theme.colors.onSurface,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.6,
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  bigMatchHint: {
+    color: theme.colors.muted,
+    fontSize: 11,
+    textAlign: 'center',
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+  draftWarn: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 10,
+    backgroundColor: '#F59E0B22',
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    marginTop: 6,
+  },
+  draftWarnTitle: {
+    color: '#F59E0B',
+    fontSize: 13,
+    fontWeight: '900',
+    marginBottom: 2,
+  },
+  draftWarnHint: { color: theme.colors.onSurface, fontSize: 12, lineHeight: 16 },
   firstScorerTitle: { color: theme.colors.onSurface, fontSize: 15, fontWeight: '700', textAlign: 'center', marginVertical: 8 },
   teamsRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 12, marginVertical: 6,
   },
-  teamName: { color: theme.colors.onSurface, fontSize: 17, fontWeight: '800', flex: 1, textAlign: 'center' },
-  vs: { fontSize: 13, fontWeight: '800' },
+  teamName: { color: theme.colors.onSurface, fontSize: 20, fontWeight: '900', flex: 1, textAlign: 'center' },
+  vs: { fontSize: 14, fontWeight: '900' },
 
   cdBox: {
     flexDirection: 'row', alignSelf: 'center', alignItems: 'center', gap: 6,
