@@ -685,7 +685,7 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         subs = await _user_subscriptions(user["id"], game)
         cfg = await db.bonus_configs.find_one(
             {"season": season, "bonus_type": bonus_type, "settled_at": None},
-            {"_id": 0}, sort=[("matchday", -1)],
+            {"_id": 0}, sort=[("matchday", 1)],
         )
         subs_out: List[dict] = []
         if cfg:
