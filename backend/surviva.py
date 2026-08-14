@@ -407,6 +407,10 @@ def build_router(
         """Create a fresh tournament doc + unique invite + auto-populate the
         matchdays from ``start_matchday`` onwards. Shared between the manual
         ``POST /tournaments`` and the auto-rollover triggered on settlement.
+
+        Also auto-enrols every admin as a participant (multi-admin support)
+        so that every subsequent Round always has the admin(s) available
+        as players without requiring the invite dance.
         """
         code = await _gen_unique_code()
         tid = str(uuid.uuid4())
@@ -444,6 +448,27 @@ def build_router(
             "Surviva tournament %s created — %d matchdays populated (start=%s)",
             tid, created, start_matchday,
         )
+        # Auto-enrol EVERY admin as a participant so they can play any Round
+        # (including auto-rollover Rounds) without needing the invite code.
+        admin_users = [u async for u in db.users.find(
+            {"role": "admin"}, {"_id": 0, "id": 1, "username": 1, "email": 1},
+        )]
+        for adm in admin_users:
+            existing = await db.sv_participants.find_one({
+                "tournament_id": tid, "user_id": adm["id"],
+            })
+            if existing:
+                continue
+            await db.sv_participants.insert_one({
+                "tournament_id": tid,
+                "user_id": adm["id"],
+                "nickname": display_name(adm),
+                "lives_left": int(initial_lives),
+                "locked_teams": [],
+                "blocked_signs": [],
+                "eliminated_at": None,
+                "joined_at": now,
+            })
         # Auto-create a draft bonus config for the Survival bonus type
         # (exact_score). Admin must complete the Big Match later, but the
         # slot is now visible to players from day one.
