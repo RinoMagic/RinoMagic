@@ -720,7 +720,7 @@ function FullHistoryRowView({ h, color }: { h: FullHistoryRow; color: string }) 
       <View style={styles.fullHistPicks}>
         {h.picks.length === 0 && (
           <Text style={styles.fullHistEmpty}>
-            Nessun pronostico giocato da te o dalle tue iscrizioni per questa giornata.
+            Nessun pronostico giocato per questa giornata.
           </Text>
         )}
         {h.picks.map((p) => (

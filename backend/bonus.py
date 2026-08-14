@@ -925,38 +925,17 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         user: dict = Depends(current_user),
     ):
         """Full public history for a game: every settled bonus with ALL
-        participants' picks (winners flagged). The caller must be an admin
-        OR be part of at least one subscription that participated in the
-        bonus for the row to appear.
+        participants' picks (winners flagged).
+
+        Dopo il settle (ovvero: quando la deadline è passata e l'admin ha
+        chiuso il bonus con il risultato ufficiale) i pronostici Big Match
+        sono PUBBLICI a tutti gli utenti autenticati, indipendentemente dalla
+        stanza/torneo di appartenenza — allineato al principio "dopo la
+        deadline tutti vedono tutto" richiesto dal committente.
         """
         if game not in GAMES:
             raise HTTPException(status_code=400, detail="Gioco non valido")
         bonus_type = BONUS_TYPE_BY_GAME[game]
-        is_admin = user["role"] == "admin"
-
-        # Get user's subscription ids for this game (rooms/tournaments/leagues)
-        my_sub_ids: set = set()
-        if not is_admin:
-            if game == "survival":
-                async for p in db.sv_participants.find(
-                    {"user_id": user["id"]}, {"_id": 0, "tournament_id": 1},
-                ):
-                    my_sub_ids.add(p["tournament_id"])
-            elif game == "score":
-                async for p in db.sal_participants.find(
-                    {"user_id": user["id"]}, {"_id": 0, "tournament_id": 1},
-                ):
-                    my_sub_ids.add(p["tournament_id"])
-            elif game == "fanta":
-                async for m in db.fg_memberships.find(
-                    {"user_id": user["id"]}, {"_id": 0, "league_id": 1},
-                ):
-                    my_sub_ids.add(m["league_id"])
-            elif game == "tiket":
-                async for m in db.memberships.find(
-                    {"user_id": user["id"]}, {"_id": 0, "room_id": 1},
-                ):
-                    my_sub_ids.add(m["room_id"])
 
         # Only settled configs count as history
         configs = [
@@ -977,13 +956,13 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
                     "game": game,
                 }, {"_id": 0})
             ]
-            # Filter by "visible to caller": if not admin, only show picks
-            # tied to subscriptions the caller was in.
-            if not is_admin:
-                picks = [p for p in picks if p.get("subscription_id") in my_sub_ids]
-            # NOTE: we intentionally do NOT skip empty rows anymore — past
-            # settled matchdays must always be visible so users can review
-            # results / big-match even when no one they know played.
+            # Publicly visible — no subscription filter after settle.
+            # Sort alphabetically by subscription name then nickname to keep
+            # ordering stable and neutral (does not reveal submission order).
+            picks.sort(key=lambda p: (
+                (p.get("subscription_name") or "").lower(),
+                (p.get("nickname") or "").lower(),
+            ))
             out.append({
                 "matchday": cfg["matchday"],
                 "bonus_type": cfg["bonus_type"],
