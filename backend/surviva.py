@@ -1359,6 +1359,9 @@ def build_router(
             update_set: dict = {"lives_left": new_lives, "locked_teams": existing}
             if new_lives <= 0 and not p.get("eliminated_at"):
                 update_set["eliminated_at"] = _now()
+                # Store the matchday of elimination so the leaderboard can
+                # show "Eliminato al MD X" and group ties correctly.
+                update_set["eliminated_matchday"] = int(md["matchday"])
                 eliminated_now.append(uid)
             await db.sv_participants.update_one(
                 {"tournament_id": tid, "user_id": uid},
@@ -1636,18 +1639,35 @@ def build_router(
                 "blocked_signs_count": 0,  # legacy field (always 0 in v2)
                 "eliminated": p.get("eliminated_at") is not None,
                 "eliminated_at": p.get("eliminated_at"),
+                "eliminated_matchday": p.get("eliminated_matchday"),
                 "has_submitted_current": uid in submitted_user_ids,
                 "bonus_wins": bonus_wins.get(uid, 0),
                 "pick_lives": initial_lives - wrong_picks.get(uid, 0),
             })
         # Sort: alive first (by lives desc, most locked teams desc = most
-        # experienced player), then eliminated last.
-        rows.sort(key=lambda r: (
-            r["eliminated"],
+        # experienced player), then eliminated in REVERSE-ELIMINATION order —
+        # i.e. the player eliminated in the last matchday is ranked highest
+        # among the eliminated, then those eliminated in the penultimate MD,
+        # and so on down to the ones eliminated in G1.
+        #
+        # This produces a "how long they lasted" ranking, so an admin scanning
+        # the classifica can immediately tell who was still in play near the
+        # tournament's end vs. who dropped out early.
+        alive = [r for r in rows if not r["eliminated"]]
+        elim = [r for r in rows if r["eliminated"]]
+        alive.sort(key=lambda r: (
             -r["lives_left"],
             -r["locked_teams_count"],
             r["nickname"].lower(),
         ))
+        # 2-step stable sort: primary key = elimination matchday DESC
+        # (later matchday = eliminated later = ranked higher), secondary =
+        # eliminated_at DESC as a fallback for legacy rows without the
+        # matchday field, tertiary = nickname ASC (deterministic tie-break).
+        elim.sort(key=lambda r: r["nickname"].lower())
+        elim.sort(key=lambda r: (r.get("eliminated_at") or ""), reverse=True)
+        elim.sort(key=lambda r: int(r.get("eliminated_matchday") or 0), reverse=True)
+        rows = alive + elim
         for i, r in enumerate(rows):
             r["rank"] = i + 1
         return rows

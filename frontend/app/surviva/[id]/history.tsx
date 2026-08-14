@@ -132,7 +132,13 @@ export default function SurvivaHistory() {
             <Text style={styles.lbRank}>#{r.rank}</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.lbName}>{r.nickname}</Text>
-              {r.eliminated && <Text style={styles.lbEliminated}>Eliminato</Text>}
+              {r.eliminated && (
+                <Text style={styles.lbEliminated}>
+                  {(r as any).eliminated_matchday
+                    ? `Eliminato · G${(r as any).eliminated_matchday}`
+                    : 'Eliminato'}
+                </Text>
+              )}
             </View>
             <View style={styles.lbBadgesCol}>
               <View style={[styles.livesBadge, styles.livesBadgeSmall]}>

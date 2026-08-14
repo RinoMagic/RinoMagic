@@ -21,6 +21,7 @@ export type SurvivaLeaderboardRow = {
   nickname: string;
   lives_left: number;
   eliminated: boolean;
+  eliminated_matchday?: number | null;
   rank: number;
 };
 
@@ -88,7 +89,7 @@ export function SurvivaPicksModal({
             <View style={{ flex: 1 }}>
               <Text style={styles.title}>{row?.nickname ?? ''}</Text>
               <Text style={styles.sub}>
-                {row ? `#${row.rank} · ${row.lives_left} ${row.lives_left === 1 ? 'vita' : 'vite'}${row.eliminated ? ' · Eliminato' : ''}` : ''}
+                {row ? `#${row.rank} · ${row.lives_left} ${row.lives_left === 1 ? 'vita' : 'vite'}${row.eliminated ? (row.eliminated_matchday ? ` · Eliminato G${row.eliminated_matchday}` : ' · Eliminato') : ''}` : ''}
               </Text>
             </View>
             <Pressable onPress={onClose} hitSlop={10} testID="sv-modal-close">

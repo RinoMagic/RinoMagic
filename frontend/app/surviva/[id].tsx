@@ -933,7 +933,11 @@ function LeaderboardTab({
           <View style={{ flex: 1 }}>
             <Text style={styles.lbName}>{r.nickname}</Text>
             {r.eliminated && (
-              <Text style={styles.lbEliminated}>Eliminato</Text>
+              <Text style={styles.lbEliminated}>
+                {(r as any).eliminated_matchday
+                  ? `Eliminato · G${(r as any).eliminated_matchday}`
+                  : 'Eliminato'}
+              </Text>
             )}
             {!r.eliminated && (
               <View style={styles.lbStatusRow}>
