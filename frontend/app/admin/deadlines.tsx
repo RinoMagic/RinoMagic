@@ -12,7 +12,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
-  TextInput,
+  TextInput, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -23,6 +23,55 @@ import { confirmDialog } from '@/src/utils/confirm';
 
 const COLOR = '#F97316';
 const SEASON = '2026-27';
+
+/**
+ * Cross-platform datetime picker.
+ * On web (Expo web / Emergent preview / deployed PWA) it renders the native
+ * browser `<input type="datetime-local">` which shows a full calendar +
+ * clock UI. On native (Expo Go) it falls back to a plain TextInput —
+ * acceptable because the admin normally uses this from a desktop browser.
+ * Value format is "YYYY-MM-DDTHH:MM" (HTML5 datetime-local standard),
+ * which the backend already accepts.
+ */
+function DateTimePicker({ value, onChange, testID }: {
+  value: string; onChange: (v: string) => void; testID?: string;
+}) {
+  if (Platform.OS === 'web') {
+    // Convert our "YYYY-MM-DD HH:MM" storage format to the "YYYY-MM-DDTHH:MM"
+    // format the browser input expects.
+    const html5Value = value.replace(' ', 'T');
+    return React.createElement('input', {
+      type: 'datetime-local',
+      value: html5Value,
+      onChange: (e: any) => onChange(String(e.target.value).replace('T', ' ')),
+      'data-testid': testID,
+      style: {
+        flex: 1,
+        minWidth: 0,
+        height: 42,
+        borderRadius: 8,
+        border: `1px solid ${theme.colors.border}`,
+        background: theme.colors.surfaceSecondary,
+        color: theme.colors.onSurface,
+        padding: '0 10px',
+        fontSize: 14,
+        colorScheme: 'dark',
+      },
+    });
+  }
+  return (
+    <TextInput
+      style={{ flex: 1, height: 42 }}
+      value={value}
+      onChangeText={onChange}
+      placeholder="YYYY-MM-DD HH:MM"
+      placeholderTextColor={theme.colors.muted}
+      autoCapitalize="none"
+      autoCorrect={false}
+      testID={testID}
+    />
+  );
+}
 
 type Row = {
   season: string;
@@ -233,14 +282,9 @@ export default function AdminDeadlines() {
                 )}
               </View>
               <View style={styles.rowInputRow}>
-                <TextInput
-                  style={styles.input}
+                <DateTimePicker
                   value={draft}
-                  onChangeText={(v) => setDrafts((d) => ({ ...d, [r.matchday]: v }))}
-                  placeholder="YYYY-MM-DD HH:MM"
-                  placeholderTextColor={theme.colors.muted}
-                  autoCapitalize="none"
-                  autoCorrect={false}
+                  onChange={(v) => setDrafts((d) => ({ ...d, [r.matchday]: v }))}
                   testID={`dl-input-${r.matchday}`}
                 />
                 <Pressable
