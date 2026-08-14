@@ -154,8 +154,8 @@ export default function InvitePage() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: theme.colors.surface },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.surface, gap: theme.spacing.md, padding: theme.spacing.lg },
+  wrap: { flex: 1, backgroundColor: 'transparent' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent', gap: theme.spacing.md, padding: theme.spacing.lg },
   scroll: { padding: theme.spacing.lg, gap: theme.spacing.lg },
   gameBadge: {
     marginTop: 6,

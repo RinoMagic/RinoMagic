@@ -689,7 +689,7 @@ const PITCH_W = Math.min(SCREEN_W - 24, 500);
 const PITCH_H = Math.round(PITCH_W * 1.35);
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: theme.colors.surface },
+  wrap: { flex: 1, backgroundColor: 'transparent' },
   loadingBox: { padding: 32, alignItems: 'center' },
 
   header: {

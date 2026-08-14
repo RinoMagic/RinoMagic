@@ -24,6 +24,9 @@ export default function Root({ children }: PropsWithChildren) {
               body > div:first-child { position: fixed !important; top: 0; left: 0; right: 0; bottom: 0; }
               [role="tablist"] [role="tab"] * { overflow: visible !important; }
               [role="heading"], [role="heading"] * { overflow: visible !important; }
+              /* React Navigation default scene background is #f2f2f2 (light gray).
+                 Force transparent so the app-wide ImageBackground (stadium) shows through. */
+              html, body, body > div:first-child { background-color: transparent !important; }
             `,
           }}
         />

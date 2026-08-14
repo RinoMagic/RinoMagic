@@ -60,7 +60,7 @@ export default function ResetPassword() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: theme.colors.surface, padding: theme.spacing.lg, justifyContent: 'center' },
+  wrap: { flex: 1, backgroundColor: 'transparent', padding: theme.spacing.lg, justifyContent: 'center' },
   card: { padding: theme.spacing.xl, backgroundColor: theme.colors.surfaceSecondary, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.border, gap: theme.spacing.md },
   title: { color: theme.colors.onSurface, fontSize: 20, fontWeight: '800', textAlign: 'center' },
   help: { color: theme.colors.muted, fontSize: 13, textAlign: 'center' },

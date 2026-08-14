@@ -266,8 +266,8 @@ export default function AdminHome() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: theme.colors.surface },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.surface },
+  wrap: { flex: 1, backgroundColor: 'transparent' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent' },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: theme.spacing.lg },
   hi: { color: theme.colors.onSurface, fontSize: 18, fontWeight: '800' },
   mail: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },

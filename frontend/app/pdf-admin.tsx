@@ -330,8 +330,8 @@ export default function PdfAdmin() {
 // -----------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: theme.colors.surface },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.surface },
+  wrap: { flex: 1, backgroundColor: 'transparent' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent' },
   header: {
     flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
     padding: theme.spacing.lg,

@@ -344,7 +344,7 @@ export default function SurvivaTournament() {
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.surface }}>
+    <View style={{ flex: 1, backgroundColor: 'transparent' }}>
       <SafeAreaView edges={['top']}>
         <View style={styles.header}>
           <Pressable onPress={() => router.replace('/surviva')} hitSlop={12}>

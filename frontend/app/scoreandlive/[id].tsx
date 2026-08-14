@@ -230,7 +230,7 @@ export default function TournamentPage() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: theme.colors.surface },
+  wrap: { flex: 1, backgroundColor: 'transparent' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   header: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, padding: theme.spacing.lg },
   title: { color: theme.colors.onSurface, fontSize: 18, fontWeight: '800', flex: 1 },

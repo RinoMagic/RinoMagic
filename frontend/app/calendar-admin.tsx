@@ -371,7 +371,7 @@ Milan - Juventus
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: theme.colors.surface },
+  wrap: { flex: 1, backgroundColor: 'transparent' },
   header: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, padding: theme.spacing.lg },
   title: { color: theme.colors.onSurface, fontSize: 17, fontWeight: '800' },
   subtitle: { color: theme.colors.muted, fontSize: 12, marginTop: 2 },
