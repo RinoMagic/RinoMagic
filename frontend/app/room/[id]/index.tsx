@@ -48,6 +48,7 @@ type BreakdownItem = {
   prediction: string;
   odd: number;
   won: boolean;
+  postponed?: boolean;
   matched_fixture: string | null;
   score: string | null;
 };
@@ -841,7 +842,13 @@ function PlayerSchedinaModal({
             {entry?.breakdown?.length ? (
               entry.breakdown.map((b, i) => {
                 const evaluated = hasResults && b.matched_fixture;
-                const isWin = !!b.won;
+                const isPostponed = !!b.postponed;
+                // A postponed match is *not* counted as a real win: the
+                // schedina gets a neutral 1.00 contribution and the UI must
+                // render it as such (gray + "RINV." + quota shown as 1.00)
+                // — otherwise the original odd on a green pill looks like a
+                // real winning pick, which is misleading.
+                const isWin = !!b.won && !isPostponed;
                 const isLose = evaluated && !b.won;
                 // Admin-only: match this breakdown item to the review to
                 // surface anti-tamper flags.
@@ -856,16 +863,24 @@ function PlayerSchedinaModal({
                 const suspect =
                   !!reviewMatch &&
                   (reviewMatch.odd_exceeds_cap || reviewMatch.quota_tampering_suspect);
-                const borderColor = isWin
-                  ? theme.colors.success
-                  : isLose
-                    ? theme.colors.error
-                    : theme.colors.border;
-                const bg = isWin
-                  ? theme.colors.success + '18'
-                  : isLose
-                    ? theme.colors.error + '18'
-                    : theme.colors.surfaceSecondary;
+                const borderColor = isPostponed
+                  ? theme.colors.border
+                  : isWin
+                    ? theme.colors.success
+                    : isLose
+                      ? theme.colors.error
+                      : theme.colors.border;
+                const bg = isPostponed
+                  ? theme.colors.surfaceTertiary
+                  : isWin
+                    ? theme.colors.success + '18'
+                    : isLose
+                      ? theme.colors.error + '18'
+                      : theme.colors.surfaceSecondary;
+                // Display odd: for postponed matches the effective quota is
+                // 1.00 (neutral). Original quota is kept alongside in small
+                // parentheses so users can still recognise their pick.
+                const oddDisplay = isPostponed ? '1.00' : b.odd.toFixed(2);
                 return (
                   <View
                     key={`${b.home_team}-${b.away_team}-${i}`}
@@ -895,11 +910,15 @@ function PlayerSchedinaModal({
                         style={[
                           styles.oddPill,
                           {
-                            backgroundColor: isWin
-                              ? theme.colors.success
-                              : isLose
-                                ? theme.colors.error
-                                : theme.colors.surfaceTertiary,
+                            backgroundColor: isPostponed
+                              ? theme.colors.surfaceTertiary
+                              : isWin
+                                ? theme.colors.success
+                                : isLose
+                                  ? theme.colors.error
+                                  : theme.colors.surfaceTertiary,
+                            borderWidth: isPostponed ? 1 : 0,
+                            borderColor: isPostponed ? theme.colors.border : 'transparent',
                           },
                         ]}
                       >
@@ -907,13 +926,15 @@ function PlayerSchedinaModal({
                           style={[
                             styles.oddText,
                             {
-                              color: isWin || isLose
-                                ? '#FFFFFF'
-                                : theme.colors.onSurface,
+                              color: isPostponed
+                                ? theme.colors.muted
+                                : isWin || isLose
+                                  ? '#FFFFFF'
+                                  : theme.colors.onSurface,
                             },
                           ]}
                         >
-                          {b.odd.toFixed(2)}
+                          {oddDisplay}
                         </Text>
                       </View>
                     </View>
@@ -925,6 +946,23 @@ function PlayerSchedinaModal({
                         </Text>
                       </View>
                       {evaluated ? (
+                        isPostponed ? (
+                          <View style={styles.resultChip}>
+                            <Ionicons
+                              name="time-outline"
+                              size={16}
+                              color={theme.colors.muted}
+                            />
+                            <Text
+                              style={[
+                                styles.resultText,
+                                { color: theme.colors.muted },
+                              ]}
+                            >
+                              RINVIATA · quota 1.00
+                            </Text>
+                          </View>
+                        ) : (
                         <View style={styles.resultChip}>
                           <Ionicons
                             name={isWin ? 'checkmark-circle' : 'close-circle'}
@@ -941,6 +979,7 @@ function PlayerSchedinaModal({
                             {b.score ? ` · ${b.score}` : ''}
                           </Text>
                         </View>
+                        )
                       ) : (
                         <View style={styles.resultChip}>
                           <Ionicons
