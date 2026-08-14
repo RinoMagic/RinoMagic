@@ -292,6 +292,7 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         return {
             "id": p["id"],
             "user_id": p["user_id"],
+            "nickname": p.get("nickname"),
             "game": p["game"],
             "subscription_id": p.get("subscription_id"),
             "subscription_name": p.get("subscription_name"),
@@ -739,7 +740,7 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             )
         cfg = await db.bonus_configs.find_one(
             {"season": body.season, "bonus_type": "exact_score", "settled_at": None},
-            {"_id": 0}, sort=[("matchday", -1)],
+            {"_id": 0}, sort=[("matchday", 1)],
         )
         if not cfg:
             raise HTTPException(status_code=404, detail="Nessun bonus attivo")
@@ -759,7 +760,7 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
             )
         cfg = await db.bonus_configs.find_one(
             {"season": body.season, "bonus_type": "first_scorer", "settled_at": None},
-            {"_id": 0}, sort=[("matchday", -1)],
+            {"_id": 0}, sort=[("matchday", 1)],
         )
         if not cfg:
             raise HTTPException(status_code=404, detail="Nessun bonus attivo")
@@ -843,55 +844,31 @@ def build_router(*, db, current_user, require_admin, display_name) -> APIRouter:
         if game not in GAMES:
             raise HTTPException(status_code=400, detail="Gioco non valido")
         bonus_type = BONUS_TYPE_BY_GAME[game]
-        # Iterate config newest-first and return the first one that is
-        # locked (deadline passed) BUT NOT yet settled. This is exactly
-        # the "current" round waiting for admin to settle — its picks
-        # must be public.
-        # NB: settled configs are intentionally skipped; the frontend
-        # shows them via ``/bonus/history/full`` (with winners flagged).
-        chosen_cfg = None
-        chosen_status = None
-        chosen_deadline_passed = False
-        async for cfg in db.bonus_configs.find(
-            {"season": season, "bonus_type": bonus_type},
-            {"_id": 0},
-        ).sort("matchday", -1):
-            status = _config_status(cfg)
-            if status == "settled":
-                # Handled by /history/full — do not surface here as it
-                # would hide older still-locked rounds.
-                continue
-            md = cfg.get("matchday")
-            deadline_passed = False
-            if isinstance(md, int):
-                deadline_passed = await _global_deadline_passed(db, season, md)
-            if status == "locked" or deadline_passed:
-                chosen_cfg = cfg
-                chosen_status = status
-                chosen_deadline_passed = deadline_passed
-                break
+        # Match the SAME query used by /available so the "current locked"
+        # config is always consistent with the one the frontend shows for
+        # submission. This avoids the inconsistency where /available shows
+        # config X but current-locked-picks returned config Y.
+        cfg = await db.bonus_configs.find_one(
+            {"season": season, "bonus_type": bonus_type, "settled_at": None},
+            {"_id": 0}, sort=[("matchday", 1)],
+        )
+        if cfg is None:
+            return {"visible": False, "reason": "no_config", "picks": []}
 
-        if chosen_cfg is None:
-            # No config visible yet — either the season hasn't started or
-            # every existing config is still open with a future deadline.
-            # Fall back to reporting the newest one as "deadline_not_passed"
-            # so the frontend can still show the meta info if desired.
-            newest = await db.bonus_configs.find_one(
-                {"season": season, "bonus_type": bonus_type},
-                {"_id": 0}, sort=[("matchday", -1)],
-            )
-            if not newest:
-                return {"visible": False, "reason": "no_config", "picks": []}
+        status = _config_status(cfg)
+        md = cfg.get("matchday")
+        deadline_passed = False
+        if isinstance(md, int):
+            deadline_passed = await _global_deadline_passed(db, season, md)
+
+        if not (status == "locked" or deadline_passed):
             return {
                 "visible": False,
                 "reason": "deadline_not_passed",
-                "matchday": newest.get("matchday"),
-                "big_match": newest.get("big_match"),
+                "matchday": cfg.get("matchday"),
+                "big_match": cfg.get("big_match"),
                 "picks": [],
             }
-
-        cfg = chosen_cfg
-        status = chosen_status
 
         raw = [
             p async for p in db.bonus_picks.find({

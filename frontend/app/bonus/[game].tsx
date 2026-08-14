@@ -144,6 +144,11 @@ export default function BonusGame() {
 
   const isAdmin = me?.role === 'admin';
   const canPlay = !!data.config && data.config.status === 'open';
+  const isExact = data.bonus_type === 'exact_score';
+  const pickText = (p: any): string => {
+    if (isExact) return `${p?.pick?.home_score ?? '-'}-${p?.pick?.away_score ?? '-'}`;
+    return p?.pick?.player_name ?? '-';
+  };
 
   return (
     <View style={styles.wrap}>
