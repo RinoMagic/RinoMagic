@@ -7,6 +7,7 @@ import {
   ScrollView,
   ActivityIndicator,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -64,10 +65,11 @@ export default function Hub() {
 
   const openGame = (g: GameInfo) => {
     if (!g.enabled) {
-      // Show the "Coming Soon" page anyway so users see what's in the pipeline
-      if (g.id === 'scoreandlive') router.push('/scoreandlive');
-      else if (g.id === 'fantagiornata') router.push('/fantagiornata');
-      else if (g.id === 'surviva') router.push('/surviva');
+      Alert.alert(
+        `${g.name} — Prossimamente`,
+        'Questo gioco sarà disponibile a breve. Nel frattempo puoi giocare a TheBestTiket, Survival e ai Giochi Bonus!',
+        [{ text: 'OK', style: 'default' }],
+      );
       return;
     }
     if (g.id === 'thebesttiket') {
@@ -140,7 +142,7 @@ export default function Hub() {
                 <Text style={styles.cardName}>{g.name}</Text>
                 {!g.enabled && (
                   <View style={styles.pillSoon}>
-                    <Text style={styles.pillSoonText}>COMING SOON</Text>
+                    <Text style={styles.pillSoonText}>PROSSIMAMENTE</Text>
                   </View>
                 )}
               </View>

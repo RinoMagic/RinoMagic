@@ -74,7 +74,7 @@ GAMES: Dict[str, Dict[str, Any]] = {
         "tagline": "Indovina i marcatori e sopravvivi",
         "color": "#3B82F6",
         "icon": "pulse",
-        "enabled": True,
+        "enabled": False,
     },
     "fantagiornata": {
         "id": "fantagiornata",
@@ -82,7 +82,7 @@ GAMES: Dict[str, Dict[str, Any]] = {
         "tagline": "Fantacalcio a giornata singola",
         "color": "#A855F7",
         "icon": "football",
-        "enabled": True,
+        "enabled": False,
     },
     "surviva": {
         "id": "surviva",
