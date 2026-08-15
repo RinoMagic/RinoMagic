@@ -153,6 +153,13 @@ export default function AdminHome() {
               <Ionicons name="document-text-outline" size={22} color={theme.colors.onSurface} />
             </Pressable>
             <Pressable
+              onPress={() => router.push('/admin/notifications')}
+              hitSlop={12}
+              testID="admin-notifications"
+            >
+              <Ionicons name="notifications-outline" size={22} color={theme.colors.onSurface} />
+            </Pressable>
+            <Pressable
               onPress={() => router.push('/settings')}
               hitSlop={12}
               testID="admin-settings"

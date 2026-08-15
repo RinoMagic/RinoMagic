@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, session, User } from '@/src/api';
 import { theme } from '@/src/theme';
 import { MatchdayCountdown } from '@/src/components/MatchdayCountdown';
+import { NotifPrompt } from '@/src/components/NotifPrompt';
 
 type GameInfo = {
   id: string;
@@ -121,6 +122,8 @@ export default function Hub() {
         <MatchdayCountdown
           onPress={me.role === 'admin' ? () => router.push('/admin/deadlines') : undefined}
         />
+
+        <NotifPrompt />
 
         {games.map((g) => (
           <Pressable

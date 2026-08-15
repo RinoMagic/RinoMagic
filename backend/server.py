@@ -188,6 +188,19 @@ api.include_router(_deadlines_router)
 
 
 # =========================================================================
+# Web Push (PWA notifications) — VAPID-based
+# =========================================================================
+from web_push import create_router as _build_push_router  # noqa: E402
+
+_push_router = _build_push_router(
+    db=db,
+    current_user=current_user,
+    current_admin=require_admin,
+)
+api.include_router(_push_router)
+
+
+# =========================================================================
 # Startup / shutdown
 # =========================================================================
 
